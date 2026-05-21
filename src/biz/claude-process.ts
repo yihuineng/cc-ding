@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import { spawn } from 'child_process';
-import { DingClaude } from '././cc-ding-cli';
+import { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IClaudeSetting, ISession } from './types';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { timestamp, getReplyWebhook, getReplyConversationId } from './session';

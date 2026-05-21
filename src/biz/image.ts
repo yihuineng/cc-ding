@@ -2,10 +2,10 @@ import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import urllib from 'urllib';
-import { DingClaude } from '././cc-ding-cli';
+import { DingClaude } from './cc-ding-cli';
 import { IDownloadedImage, ImageMediaType, IRichTextParagraph } from './types';
 import { timestamp } from './session';
-import { projUtil } from '../../common';
+import { projUtil } from '../common';
 
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
 

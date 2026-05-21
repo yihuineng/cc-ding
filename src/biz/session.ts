@@ -4,7 +4,7 @@ import os from 'os';
 import assert from 'assert';
 import crypto from 'crypto';
 import path from 'path';
-import { DingClaude } from '././cc-ding-cli';
+import { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IActiveSessionPersist, IConfig, ISession } from './types';
 import { parseEndCommand } from './commands';
 import { sendDingMessage } from './messaging';

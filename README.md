@@ -1,18 +1,10 @@
-# any-cli
+# cc-ding
 
-通用的cli工具, 可用于skill开发
+钉钉机器人对接本地Claude工具
 
 ## usage
 
 ```bash
-npm i any-cli -g
-anycli --help
+npm i cc-ding -g
+cc-ding --help
 ```
-
-## 概要
-
-### cli工具
-
-- anycli
-- anycli-util
-- anycli-web

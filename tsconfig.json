@@ -13,14 +13,13 @@
     "stripInternal": true,
     "skipLibCheck": true,
     "pretty": true,
-    "declaration": true,
-    "removeComments": false,
+    "declaration": false,
+    "removeComments": true,
     "types": [ "node", "mocha" ],
     "outDir": "./dist"
   },
   "include": [
     "bin",
-    "src",
-    "index.ts"
+    "src"
   ]
 }

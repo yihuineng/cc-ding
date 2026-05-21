@@ -1,7 +1,7 @@
 import { DingClient } from 'utils-ok';
 import { baseUtil } from 'utils-ok';
 import urllib from 'urllib';
-import { DingClaude } from '././cc-ding-cli';
+import { DingClaude } from './cc-ding-cli';
 import { ISendMsgOpts } from './types';
 
 const DING_API_BASE = 'https://api.dingtalk.com';

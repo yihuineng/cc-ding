@@ -2,7 +2,7 @@ import fs from 'fs';
 import readline from 'readline';
 import { spawn } from 'child_process';
 import { dateUtil } from 'utils-ok';
-import { DingClaude } from '././cc-ding-cli';
+import { DingClaude } from './cc-ding-cli';
 import { ISession } from './types';
 import { sendDingMessage } from './messaging';
 import { parseClaudeStreamLine, executeClaudeQuery, resolveClaudeSettingsPath } from './claude-process';

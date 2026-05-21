@@ -38,3 +38,20 @@ export const helper = {
     return cookieInfo.cookies;
   },
 };
+
+export const utils = {
+  /**
+   * 给文件添加后缀
+   * @param filePath
+   * @param suffix
+   */
+  addSuffixToFile(filePath: string, suffix: string) {
+    const dir = path.dirname(filePath);              // 目录
+    const ext = path.extname(filePath);              // 原始扩展名
+    const base = path.basename(filePath, ext);       // 纯文件名（无 ext）
+    const newName = `${base}${suffix}${ext}`;        // 新文件名
+    const newPath = path.join(dir, newName);
+    fs.renameSync(filePath, newPath);
+  },
+};
+

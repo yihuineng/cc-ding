@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
-import { DingClaude } from '././cc-ding-cli';
+import { DingClaude } from './cc-ding-cli';
 import { IClaudeSetting } from './types';
 import { timestamp, getHomeDir } from './session';
 import { dateUtil } from 'utils-ok';
