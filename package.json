@@ -1,0 +1,55 @@
+{
+  "name": "cc-ding",
+  "version": "0.0.1",
+  "description": "钉钉机器人对接本地Claude工具",
+  "keywords": [
+    "cli",
+    "claude",
+    "ding"
+  ],
+  "main": "dist/index",
+  "typings": "dist/index.d.ts",
+  "dependencies": {
+    "commander": "^7.2.0",
+    "dotenv": "^16.0.3",
+    "shelljs": "^0.10.0",
+    "urllib": "^4.9.0",
+    "utils-ok": "1"
+  },
+  "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^9.0.0",
+    "@types/node": "^16.11.12",
+    "@types/shelljs": "^0.10.0",
+    "blacklint": "^1.0.0",
+    "chai": "^6.2.2",
+    "eslint": "9",
+    "eslint-config-egg": "^14.1.0",
+    "globals": "^17.4.0",
+    "husky": "8",
+    "javascript-obfuscator": "^5.4.2",
+    "mocha": "^8.0.1",
+    "ts-node": "^10.9.1",
+    "typescript": "5"
+  },
+  "author": "yhn",
+  "bin": {
+    "cc-ding": "./dist/bin/cc-ding.js"
+  },
+  "scripts": {
+    "lint": "eslint . && tsc && npm run blacklint",
+    "lint:fix": "eslint . --fix",
+    "blacklint": "utils-ok blacklint -bd 'test src bin'",
+    "test": "mocha 'test/**/*.test.ts'",
+    "build": "npm run lint && sh build.sh",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist"
+  ],
+  "husky": {
+    "hooks": {
+      "pre-commit": "npm run lint"
+    }
+  }
+}

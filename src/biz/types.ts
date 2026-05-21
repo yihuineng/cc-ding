@@ -1,0 +1,162 @@
+import { spawn } from 'child_process';
+import { RobotTextMessage } from 'utils-ok';
+
+// config.json
+export interface IConfig {
+  clientName?: string;
+  whiteUserList: string[]; // 白名单
+  owner?: string; // 机器人 owner（可执行敏感操作如 /clean）
+  clientSecret: string;
+  dingSecret: string; // 搭配dingToken发送对应群的消息
+  /** 默认 dingToken，当会话无 dingToken 时使用（必填） */
+  defaultDingToken: string;
+  conversations: {
+    conversationId: string;
+    linkConversationId?: string; // 关联会话ID, 指定时共用该id的工作目录(多个群机器人记忆共享场景, 同时也需要注意并发控制避免文件操作冲突)
+    conversationTitle?: string;
+    dingToken?: string; // 机器人单聊时, 不存在
+    whiteUserList?: string[]; // 机器人实例维度白名单, 定义时优先级高于Client维度
+    agent?: string; // 指定agent
+    useLocalOcr?: boolean; // 本地 OCR 降级（用于不支持图片识别的模型），默认 true
+    sessionCfg?: {
+      // task 功能默认开启，无需配置开关
+    }; // 群维度session相关配置
+    taskCfg?: {
+      skill?: string; // 指定技能处理
+    }; // 群维度task相关配置
+  }[];
+  taskQueueSize?: number; // 默认50
+  taskHandlerCount?: number; // 默认1个
+  sessionMaxConcurrency?: number; // 最大并发cc会话, session场景, 默认5
+  /** 是否在回复中包含思考过程，默认 false */
+  includeThinking?: boolean;
+  /** 是否只返回最终结果（不包含过程信息），默认 true */
+  resultOnly?: boolean;
+  /** API Key 池化管理（可选，配置后启用 API Key 轮换） */
+  apiKeyCfg?: {
+    resetTime?: string; // 最近一次重置时间 yyyy-MM-dd HH:mm:ss
+    claudeSettings: IClaudeSetting[];
+  };
+  /** 是否开启 DEBUG 日志，默认 false */
+  debug?: boolean;
+}
+
+// 会话信息
+export interface ISession {
+  conversationId: string;
+  sessionWebhook: string;
+  currentWebhook?: string; // 当前提问来源的回复webhook(关联群场景)
+  currentConversationId?: string;  // 当前提问来源的会话ID(关联群场景)
+  startTime: number;
+  startTimeStr: string;
+  startStaffId: string;
+  startNickName: string;
+  claudeSessionId?: string;
+}
+
+// 任务信息
+export interface ITask {
+  conversationId: string;
+  sessionWebhook: string;
+  startTime: number; // 用于taskId
+  startTimeStr: string; // 任务开始时间字符串，用于目录命名
+  senderStaffId: string;
+  senderNickName: string;
+  prompt: string;
+  promptSimply?: string; // 预处理优化后的需求描述
+  title?: string; // 预处理生成的简短标题
+  retryCount?: number; // 重试次数，超过上限标记为失败
+  type?: 'cron' | 'normal'; // 任务类型：cron-定时任务，normal-普通任务
+}
+
+// 活跃会话状态
+export interface IActiveSession {
+  session: ISession;
+  lastSenderStaffId: string;
+  isProcessing: boolean;
+  conversationConfig: IConfig['conversations'][0];
+  currentProcess?: ReturnType<typeof spawn>; // 当前执行的 Claude 进程
+  interrupted?: boolean; // 是否被用户中断
+}
+
+// 活跃会话持久化数据（不含运行时字段）
+export interface IActiveSessionPersist {
+  session: ISession;
+  lastSenderStaffId: string;
+  conversationConfig: IConfig['conversations'][0];
+}
+
+// Claude 配置项（API Key 池化管理的单个配置）
+export interface IClaudeSetting {
+  isValid: boolean;   // 是否有效，429 或连续 TPM 快速失败时置 false，跨天自动重置为 true
+  apiKey: string;     // API Key
+  baseUrl: string;    // API Base URL
+  model: string;      // 使用的模型
+  smallModel?: string; // 可选的小模型（预处理等轻量场景）
+  memo?: string; // 备注信息
+}
+
+/** 钉钉回调中被引用的消息结构 */
+export interface IRepliedMsg {
+  createdAt?: number;
+  senderId?: string;
+  senderNick?: string;
+  senderStaffId?: string;
+  msgType?: string;
+  msgId?: string;
+  content?: {
+    text?: string;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+/** 钉钉回调 text 字段(扩展 RobotTextMessage.text,包含引用相关字段) */
+export interface ITextWithReply {
+  content: string;
+  isReply?: boolean;
+  repliedMsg?: IRepliedMsg;
+}
+
+/** 图��� MIME 类型 */
+export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+
+/** 下载后的图片信息 */
+export interface IDownloadedImage {
+  mediaType: ImageMediaType;
+  filePath: string;
+  sizeBytes: number;
+}
+
+/** richText 段落结构 */
+export interface IRichTextParagraph {
+  type: 'text' | 'picture' | 'mention';
+  text?: string;
+  downloadCode?: string;           // 图片下载码(用于 /v1.0/robot/messageFiles/download API)
+  pictureDownloadCode?: string;    // 图片下载码(备用字段)
+  userId?: string;
+}
+
+/** 钉钉回调原始数据(扩展 RobotTextMessage,包含引用相关字段) */
+export interface IRawCallbackData extends Omit<RobotTextMessage, 'text' | 'msgtype'> {
+  msgtype: string;
+  text?: ITextWithReply;
+  content?: { richText: IRichTextParagraph[] };  // richText 消息内容(msgtype=richText 时)
+  pictureDownloadCode?: string;                  // 独立图片消息的下载码(msgtype=picture 时)
+  originalMsgId?: string;   // 原始消息ID(钉钉回调可选字段)
+}
+
+/** 解析后的引用信息 */
+export interface IQuoteInfo {
+  quoteText: string;           // 引用消息的文本内容
+  quoteMessageId?: string;     // 引用消息ID(调试用)
+  quoteSenderNick?: string;    // 引用消息的发送者昵称(如可获取)
+}
+
+export interface ISendMsgOpts {
+  conversationId: string;
+  sessionWebhook: string;
+  atUserId?: string;
+  content: string;
+  msgType?: 'text' | 'markdown';
+}

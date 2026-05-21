@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020", "DOM"],
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "resolveJsonModule": true,
+    "inlineSourceMap":true,
+    "noImplicitThis": true,
+    "esModuleInterop": true,
+    "noUnusedLocals": true,
+    "stripInternal": true,
+    "skipLibCheck": true,
+    "pretty": true,
+    "declaration": true,
+    "removeComments": false,
+    "types": [ "node", "mocha" ],
+    "outDir": "./dist"
+  },
+  "include": [
+    "bin",
+    "src",
+    "index.ts"
+  ]
+}

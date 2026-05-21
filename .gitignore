@@ -1,0 +1,13 @@
+.idea
+/dist
+/coverage
+/node_modules
+/logs
+.nyc_output
+.run
+.env
+.anycli.env
+.node
+package-lock.json
+pnpm-lock.yaml
+.claude

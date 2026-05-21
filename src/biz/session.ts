@@ -1,0 +1,730 @@
+import { dateUtil, fileUtil } from 'utils-ok';
+import fs from 'fs';
+import os from 'os';
+import assert from 'assert';
+import crypto from 'crypto';
+import path from 'path';
+import { DingClaude } from '././cc-ding-cli';
+import { IActiveSession, IActiveSessionPersist, IConfig, ISession } from './types';
+import { parseEndCommand } from './commands';
+import { sendDingMessage } from './messaging';
+import { interruptClaudeProcess, executeClaudeQuery } from './claude-process';
+
+/**
+ * 获取当前时间戳字符串 (YYYY-MM-DD HH:mm:ss)
+ */
+export function timestamp(): string {
+  return dateUtil.mm(Date.now()).format('YYYY-MM-DD HH:mm:ss');
+}
+
+// ==================== 配置与鉴权 ====================
+
+/** 跨平台获取用户 HOME 目录 */
+export function getHomeDir(): string {
+  return os.homedir();
+}
+
+export function getClientDir(self: DingClaude): string {
+  return path.join(getHomeDir(), '.anycli', 'cc-ding', self.clientId);
+}
+
+/**
+ * 初始化客户端目录：创建目录并写入配置文件
+ * @returns 配置文件路径
+ */
+export function initClientDir(clientId: string, config: IConfig): string {
+  const clientDir = path.join(getHomeDir(), '.anycli', 'cc-ding', clientId);
+  const cfgFile = path.join(clientDir, 'config.json');
+  fs.mkdirSync(clientDir, { recursive: true });
+  fs.writeFileSync(cfgFile, JSON.stringify(config, null, 2), 'utf-8');
+  return cfgFile;
+}
+
+/**
+ * 检查客户端目录和 config.json 是否存在，不存在则自动初始化
+ * 生成占位配置后 exit，提示用户编辑后重启
+ */
+export function ensureClientDir(clientId: string): void {
+  const clientDir = path.join(getHomeDir(), '.anycli', 'cc-ding', clientId);
+  const cfgFile = path.join(clientDir, 'config.json');
+
+  if (fs.existsSync(cfgFile)) {
+    return;
+  }
+
+  console.log(`[${timestamp()}] 客户端目录未初始化: ${clientDir}`);
+  console.log(`[${timestamp()}] 正在自动初始化...`);
+
+  const defaultConfig: IConfig = {
+    clientName: 'cc助手',
+    whiteUserList: [],
+    clientSecret: '<clientSecret-钉钉Stream连接密钥>',
+    dingSecret: '<dingSecret-钉钉签名密钥>',
+    defaultDingToken: '<兜底钉钉机器人Token>',
+    conversations: [],
+  };
+
+  initClientDir(clientId, defaultConfig);
+  console.log(`[${timestamp()}] 已生成默认配置文件: ${cfgFile}`);
+  console.log(`[${timestamp()}] 请编辑 config.json 填写必要的配置项后重新启动`);
+  process.exit(1);
+}
+
+export function getClientConfig(self: DingClaude): IConfig {
+  const appCfgFile = `${getClientDir(self)}/config.json`;
+  assert(fs.existsSync(appCfgFile), `Could not find client config file: ${appCfgFile}`);
+  const cfg = fileUtil.getJSON(appCfgFile);
+  assert(cfg.clientSecret, 'config.json missing required field: clientSecret');
+  assert(cfg.whiteUserList, 'config.json missing required field: whiteUserList');
+  return cfg;
+}
+
+export function authCheck(self: DingClaude, userId: string, conversationId?: string): boolean {
+  if (conversationId) {
+    const conv = self.config.conversations.find(it => it.conversationId === conversationId);
+    if (conv?.whiteUserList && conv.whiteUserList.length > 0) {
+      return conv.whiteUserList.includes(userId);
+    }
+  }
+  return self.config.whiteUserList.includes(userId);
+}
+
+/**
+ * 检查用户是否为机器人 owner
+ */
+export function isOwner(self: DingClaude, userId: string): boolean {
+  return !!self.config.owner && self.config.owner === userId;
+}
+
+export function debugLog(self: DingClaude, message: string, ...args: unknown[]): void {
+  if (self.config.debug) {
+    console.log(`[DEBUG] ${message}`, ...args);
+  }
+}
+
+export function hashConversationId(self: DingClaude, conversationId: string): string {
+  const convCfg = getConversationConfig(self, conversationId);
+  const convId = convCfg.linkConversationId || conversationId;
+  return crypto.createHash('md5').update(convId).digest('hex');
+}
+
+/**
+ * 获取回复用的webhook，优先使用当前提问来源的webhook（关联群场景）
+ */
+export function getReplyWebhook(session: ISession): string {
+  return session.currentWebhook || session.sessionWebhook;
+}
+
+/**
+ * 获取回复用的会话ID，优先使用当前提问来源的会话ID（关联群场景）
+ */
+export function getReplyConversationId(session: ISession): string {
+  return session.currentConversationId || session.conversationId;
+}
+
+/**
+ * 查找活跃会话，支持关联群查找
+ * 先按当前群ID查找，未找到时查找相同linkConversationId的其他群的活跃会话
+ */
+export function findActiveSession(self: DingClaude, conversationId: string): { key: string; session: IActiveSession } | undefined {
+  // 直接查找
+  const directSession = self.activeSessions.get(conversationId);
+  if (directSession) return { key: conversationId, session: directSession };
+
+  // 查找关联群的活跃会话
+  const convCfg = getConversationConfig(self, conversationId);
+  if (convCfg?.linkConversationId) {
+    for (const entry of self.activeSessions) {
+      const otherCfg = getConversationConfig(self, entry[0]);
+      if (otherCfg?.linkConversationId === convCfg.linkConversationId) {
+        return { key: entry[0], session: entry[1] };
+      }
+    }
+  }
+
+  return undefined;
+}
+
+export function getConversationConfig(self: DingClaude, conversationId: string): IConfig['conversations'][0] | undefined {
+  return self.config.conversations.find(it => it.conversationId === conversationId);
+}
+
+// ==================== 路径工具 ====================
+
+export function getConversationDir(self: DingClaude, conversationId: string): string {
+  const hashedId = hashConversationId(self, conversationId);
+  return `${getClientDir(self)}/${hashedId}`;
+}
+
+export function getSessionsDir(self: DingClaude, conversationId: string): string {
+  return `${getConversationDir(self, conversationId)}/.sessions`;
+}
+
+export function getTasksDir(self: DingClaude, conversationId: string): string {
+  return `${getConversationDir(self, conversationId)}/.tasks`;
+}
+
+export function getImagesDir(self: DingClaude, conversationId: string): string {
+  return `${getConversationDir(self, conversationId)}/.images`;
+}
+
+export function getSessionDir(self: DingClaude, session: ISession): string {
+  const dirName = session.claudeSessionId || session.startTimeStr;
+  return `${getSessionsDir(self, session.conversationId)}/${dirName}`;
+}
+
+export function getSessionId(session: ISession): string {
+  return session.claudeSessionId || session.startTimeStr;
+}
+
+// ==================== 会话信息与日志 ====================
+
+export function formatSessionInfo(self: DingClaude, conversationId: string): string | null {
+  const found = findActiveSession(self, conversationId);
+  if (!found) return null;
+
+  const { session, isProcessing } = found.session;
+  const lines = [
+    `- **会话ID:** ${getSessionId(session)}`,
+    `- **发起者:** ${session.startNickName}(${session.startStaffId})`,
+    `- **开始时间:** ${session.startTimeStr}`,
+    `- **最后发送者:** ${found.session.lastSenderStaffId}`,
+    `- **处理中:** ${isProcessing}`,
+  ];
+  return lines.join('\n');
+}
+
+export function readSessionLogTail(self: DingClaude, conversationId: string, n: number): string | null {
+  const found = findActiveSession(self, conversationId);
+  if (!found) return null;
+
+  const activeSession = found.session;
+
+  const logFile = `${getSessionDir(self, activeSession.session)}/session.log`;
+  if (!fs.existsSync(logFile)) return null;
+
+  try {
+    const content = fs.readFileSync(logFile, 'utf-8');
+    const lines = content.split('\n').filter(line => line.length > 0);
+    return lines.slice(-n).join('\n');
+  } catch {
+    return null;
+  }
+}
+
+// ==================== 会话持久化 ====================
+
+export function findHistorySession(self: DingClaude, conversationId: string, sessionId: string): ISession | null {
+  const sessionsDir = getSessionsDir(self, conversationId);
+
+  const directFile = `${sessionsDir}/${sessionId}/session.json`;
+  try {
+    return fileUtil.getJSON(directFile) as ISession;
+  } catch { /* continue */ }
+
+  const numericId = parseInt(sessionId, 10);
+  if (!isNaN(numericId) && numericId > 0) {
+    const startTimeStr = dateUtil.mm(numericId).format('YYYY-MM-DD-HH-mm-ss');
+    const fallbackFile = `${sessionsDir}/${startTimeStr}/session.json`;
+    try {
+      return fileUtil.getJSON(fallbackFile) as ISession;
+    } catch { /* continue */ }
+  }
+  return null;
+}
+
+/**
+ * 查找最近一个已结束的会话（按 startTime 降序）
+ */
+export function findLatestSession(self: DingClaude, conversationId: string): ISession | null {
+  const sessionsDir = getSessionsDir(self, conversationId);
+  if (!fs.existsSync(sessionsDir)) return null;
+
+  // 提前查找活跃会话ID，避免在循环中重复查找
+  const activeFound = findActiveSession(self, conversationId);
+  const activeSessionId = activeFound ? getSessionId(activeFound.session.session) : null;
+
+  let latestSession: ISession | null = null;
+  let latestTime = 0;
+
+  try {
+    const entries = fs.readdirSync(sessionsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const sessionFile = path.join(sessionsDir, entry.name, 'session.json');
+      if (!fs.existsSync(sessionFile)) continue;
+
+      try {
+        const session = fileUtil.getJSON(sessionFile) as ISession;
+        // 跳过当前活跃会话
+        if (activeSessionId && getSessionId(session) === activeSessionId) {
+          continue;
+        }
+        if (session.startTime > latestTime) {
+          latestTime = session.startTime;
+          latestSession = session;
+        }
+      } catch { continue; }
+    }
+  } catch { /* ignore */ }
+
+  return latestSession;
+}
+
+export function updateSessionFile(
+  self: DingClaude,
+  session: ISession,
+  opts: { claudeSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string },
+): void {
+  if (opts.claudeSessionId && !session.claudeSessionId) {
+    const oldDir = getSessionDir(self, session);
+    session.claudeSessionId = opts.claudeSessionId;
+    const newDir = getSessionDir(self, session);
+    if (oldDir !== newDir && fs.existsSync(oldDir)) {
+      fs.renameSync(oldDir, newDir);
+      console.log(`[${timestamp()}] 会话目录重命名: ${path.basename(oldDir)} -> ${path.basename(newDir)}`);
+    }
+  }
+
+  const sessionFile = `${getSessionDir(self, session)}/session.json`;
+  try {
+    if (opts.sessionWebhook) session.sessionWebhook = opts.sessionWebhook;
+    if (opts.currentWebhook !== undefined) session.currentWebhook = opts.currentWebhook || undefined;
+    if (opts.currentConversationId !== undefined) session.currentConversationId = opts.currentConversationId || undefined;
+    fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2), 'utf-8');
+    const changedField = opts.claudeSessionId ? 'claudeSessionId' : opts.currentWebhook !== undefined ? 'currentWebhook' : 'sessionWebhook';
+    console.log(`[${timestamp()}] 会话文件已保存: ${changedField}`);
+    saveActiveSession(self, session.conversationId);
+  } catch (err) {
+    console.error('更新 session.json 失败:', err);
+  }
+}
+
+export function appendSessionLog(sessionDir: string, role: 'user' | 'assistant' | 'system' | 'tool', content: string): void {
+  const logFile = `${sessionDir}/session.log`;
+  const ts = timestamp();
+  const logEntry = `[${ts}] [${role.toUpperCase()}]: ${content}\n`;
+  fs.appendFileSync(logFile, logEntry, 'utf-8');
+}
+
+export function getActiveSessionsFile(self: DingClaude, conversationId: string): string {
+  return `${getSessionsDir(self, conversationId)}/active.json`;
+}
+
+export function saveActiveSession(self: DingClaude, conversationId: string): void {
+  const activeSession = self.activeSessions.get(conversationId);
+  const filePath = getActiveSessionsFile(self, conversationId);
+  try {
+    if (!activeSession) {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      return;
+    }
+    const persistData: IActiveSessionPersist = {
+      session: activeSession.session,
+      lastSenderStaffId: activeSession.lastSenderStaffId,
+      conversationConfig: activeSession.conversationConfig,
+    };
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(persistData, null, 2), 'utf-8');
+    debugLog(self, `活跃会话已持久化: 群=${conversationId}`);
+  } catch (err) {
+    console.error(`持久化活跃会话失败: 群=${conversationId}`, err);
+  }
+}
+
+export function loadActiveSessions(self: DingClaude): void {
+  for (const conv of self.config.conversations) {
+    const filePath = getActiveSessionsFile(self, conv.conversationId);
+    if (!fs.existsSync(filePath)) continue;
+    try {
+      const data = fileUtil.getJSON(filePath) as IActiveSessionPersist;
+      if (!data?.session) {
+        console.log(`活跃会话文件无效，跳过: ${filePath}`);
+        continue;
+      }
+      const sessionDir = getSessionDir(self, data.session);
+      if (!fs.existsSync(sessionDir)) {
+        console.log(`活跃会话目录已不存在，清理持久化文件: ${filePath}`);
+        fs.unlinkSync(filePath);
+        continue;
+      }
+      self.activeSessions.set(conv.conversationId, {
+        session: data.session,
+        lastSenderStaffId: data.lastSenderStaffId || data.session.startStaffId,
+        isProcessing: false,
+        conversationConfig: data.conversationConfig,
+      });
+      console.log(`恢复活跃会话: 群=${conv.conversationId}, 会话ID=${getSessionId(data.session)}`);
+    } catch (err) {
+      console.error(`加载活跃会话失败: ${filePath}`, err);
+    }
+  }
+}
+
+// ==================== 会话生命周期 ====================
+
+export async function endSession(self: DingClaude, conversationId: string, sessionWebhook: string): Promise<void> {
+  const found = findActiveSession(self, conversationId);
+  if (!found) {
+    console.log(`群 ${conversationId} 无活跃会话`);
+    return;
+  }
+
+  const { key: sessionKey, session: activeSession } = found;
+  const { session } = activeSession;
+  const sessionDir = getSessionDir(self, session);
+  const sessionId = getSessionId(session);
+  console.log(`结束会话: 群=${conversationId}, 会话ID=${sessionId}`);
+
+  if (interruptClaudeProcess(activeSession, '结束会话时中断正在执行的 Claude 进程')) {
+    fs.appendFileSync(
+      `${sessionDir}/session.log`,
+      `[${timestamp()}] [SYSTEM]: 结束会话时中断 Claude 进程\n`,
+      'utf-8',
+    );
+  }
+
+  await sendDingMessage(self, {
+    conversationId,
+    sessionWebhook,
+    atUserId: session.startStaffId,
+    content: `💬 会话已结束\n📋 会话ID: ${sessionId}`,
+  });
+
+  self.activeSessions.delete(sessionKey);
+  saveActiveSession(self, sessionKey);
+
+  fs.appendFileSync(
+    `${sessionDir}/session.log`,
+    `[${timestamp()}] [SYSTEM]: 用户请求结束会话\n`,
+    'utf-8',
+  );
+}
+
+export async function switchToSession(
+  self: DingClaude,
+  conversationId: string,
+  sessionWebhook: string,
+  targetSessionId: string,
+  senderStaffId: string,
+  conversationConfig: IConfig['conversations'][0],
+): Promise<boolean> {
+  const targetSession = findHistorySession(self, conversationId, targetSessionId);
+  if (!targetSession) {
+    await sendDingMessage(self, {
+      conversationId, sessionWebhook, atUserId: senderStaffId,
+      content: `❌ 未找到会话 ${targetSessionId}，该会话可能已被清理，请发送新消息开始新会话`,
+    });
+    return false;
+  }
+
+  const sessionDir = getSessionDir(self, targetSession);
+  if (!fs.existsSync(sessionDir)) {
+    await sendDingMessage(self, {
+      conversationId, sessionWebhook, atUserId: senderStaffId,
+      content: `❌ 会话 ${targetSessionId} 的数据已被清理，无法恢复，请发送新消息开始新会话`,
+    });
+    return false;
+  }
+
+  const currentActive = findActiveSession(self, conversationId);
+  if (currentActive) {
+    console.log(`切换会话，先结束当前会话: ${getSessionId(currentActive.session.session)}`);
+    interruptClaudeProcess(currentActive.session, '切换会话时中断正在执行的 Claude 进程');
+    self.activeSessions.delete(currentActive.key);
+    saveActiveSession(self, currentActive.key);
+    fs.appendFileSync(
+      `${getSessionDir(self, currentActive.session.session)}/session.log`,
+      `[${timestamp()}] [SYSTEM]: 会话被切换到 ${targetSessionId}，结束当前会话\n`,
+      'utf-8',
+    );
+  }
+
+  self.activeSessions.set(conversationId, {
+    session: targetSession,
+    lastSenderStaffId: senderStaffId,
+    isProcessing: false,
+    conversationConfig,
+  });
+  saveActiveSession(self, conversationId);
+
+  const hasClaudeSession = !!targetSession.claudeSessionId;
+  const displayId = getSessionId(targetSession);
+  await sendDingMessage(self, {
+    conversationId, sessionWebhook, atUserId: senderStaffId,
+    content: `✅ 已切换到历史会话 (会话ID: ${displayId})\n${hasClaudeSession ? '🔄 已恢复对话上下文' : '⚠️ 该会话无历史上下文，将从头开始'}\n💡 回复 /end 可结束本轮对话`,
+  });
+
+  console.log(`已切换到历史会话: 群=${conversationId}, 会话ID=${displayId}, 有Claude上下文=${hasClaudeSession}`);
+  return true;
+}
+
+export async function startNewSession(self: DingClaude, opts: {
+  conversationId: string;
+  sessionWebhook: string;
+  senderStaffId: string;
+  senderNick: string;
+  message: string;
+  conversationConfig: IConfig['conversations'][0];
+}): Promise<void> {
+  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig } = opts;
+
+  const maxConcurrency = self.config.sessionMaxConcurrency ?? self.DEFAULT_SESSION_MAX_CONCURRENCY;
+  if (self.activeSessions.size >= maxConcurrency) {
+    console.log(`达到最大并发数 (${maxConcurrency})，拒绝新会话: 群=${conversationId}`);
+    await sendDingMessage(self, {
+      conversationId, sessionWebhook, atUserId: senderStaffId,
+      content: '🤯 当前繁忙，请稍后再试...',
+    });
+    return;
+  }
+
+  const now = Date.now();
+  const session: ISession = {
+    conversationId,
+    sessionWebhook,
+    startTime: now,
+    startTimeStr: dateUtil.mm(now).format('YYYY-MM-DD-HH-mm-ss'),
+    startStaffId: senderStaffId,
+    startNickName: senderNick,
+  };
+
+  console.log(`创建新会话: 群=${conversationId}, 会话ID=${getSessionId(session)}, 发起者=${senderStaffId}, 当前并发=${self.activeSessions.size + 1}/${maxConcurrency}`);
+
+  const sessionDir = getSessionDir(self, session);
+  fs.mkdirSync(sessionDir, { recursive: true });
+  fs.writeFileSync(`${sessionDir}/session.json`, JSON.stringify(session, null, 2), 'utf-8');
+
+  self.activeSessions.set(conversationId, {
+    session,
+    lastSenderStaffId: senderStaffId,
+    isProcessing: true,
+    conversationConfig,
+  });
+  saveActiveSession(self, conversationId);
+
+  await sendDingMessage(self, {
+    conversationId, sessionWebhook, atUserId: senderStaffId,
+    content: `🚀 会话已开始！\n处理中...\n💡 回复 /end 可结束本轮对话`,
+  });
+
+  try {
+    await executeClaudeQuery(self, session, message, {
+      skill: conversationConfig.taskCfg?.skill,
+      agent: conversationConfig.agent,
+      senderNick,
+      senderStaffId,
+    });
+  } catch (err) {
+    console.error('执行 Claude 查询失败:', err);
+    await sendDingMessage(self, {
+      conversationId, sessionWebhook, atUserId: senderStaffId,
+      content: `❌ 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  } finally {
+    const activeSession = self.activeSessions.get(conversationId);
+    if (activeSession) activeSession.isProcessing = false;
+  }
+}
+
+export async function handleSessionMessage(self: DingClaude, opts: {
+  conversationId: string;
+  sessionWebhook: string;
+  senderStaffId: string;
+  senderNick: string;
+  message: string;
+  conversationConfig: IConfig['conversations'][0];
+}): Promise<void> {
+  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig } = opts;
+
+  if (parseEndCommand(message)) {
+    await endSession(self, conversationId, sessionWebhook);
+    return;
+  }
+
+  const found = findActiveSession(self, conversationId);
+  const activeSession = found?.session;
+
+  if (activeSession) {
+    const activeSessionDir = getSessionDir(self, activeSession.session);
+    if (!fs.existsSync(activeSessionDir)) {
+      const sessionId = getSessionId(activeSession.session);
+      console.log(`活跃会话目录已被清理: 群=${conversationId}, 会话ID=${sessionId}`);
+      self.activeSessions.delete(found!.key);
+      saveActiveSession(self, found!.key);
+      await sendDingMessage(self, {
+        conversationId, sessionWebhook, atUserId: senderStaffId,
+        content: `⚠️ 会话 ${sessionId} 的数据已被清理，无法继续。已自动结束该会话，请重新发送消息开始新会话`,
+      });
+      return;
+    }
+
+    if (activeSession.isProcessing) {
+      console.log(`会话 ${conversationId} 正在处理中，忽略新消息`);
+      await sendDingMessage(self, {
+        conversationId, sessionWebhook, atUserId: senderStaffId,
+        content: '⏳ 正在处理上一条消息，请稍候...',
+      });
+      return;
+    }
+
+    const isFromSessionOwner = activeSession.session.conversationId === conversationId;
+    console.log(`追加消息到活跃会话: 群=${conversationId}, 会话ID=${getSessionId(activeSession.session)}${isFromSessionOwner ? '' : `(关联群,会话归属=${activeSession.session.conversationId})`}`);
+    activeSession.lastSenderStaffId = senderStaffId;
+    activeSession.isProcessing = true;
+    saveActiveSession(self, found!.key);
+
+    // 同群消息刷新sessionWebhook，关联群消息只更新currentWebhook/currentConversationId
+    if (isFromSessionOwner && sessionWebhook !== activeSession.session.sessionWebhook) {
+      activeSession.session.sessionWebhook = sessionWebhook;
+      updateSessionFile(self, activeSession.session, { sessionWebhook });
+    }
+    // 始终更新提问来源信息，确保回复到正确的群
+    activeSession.session.currentWebhook = sessionWebhook;
+    activeSession.session.currentConversationId = conversationId;
+    updateSessionFile(self, activeSession.session, { currentWebhook: sessionWebhook, currentConversationId: conversationId });
+
+    await sendDingMessage(self, {
+      conversationId, sessionWebhook, atUserId: senderStaffId,
+      content: '✅ 收到，我来处理...',
+    });
+
+    try {
+      await executeClaudeQuery(self, activeSession.session, message, {
+        skill: conversationConfig.taskCfg?.skill,
+        agent: conversationConfig.agent,
+        senderNick,
+        senderStaffId,
+      });
+    } catch (err) {
+      console.error('执行 Claude 查询失败:', err);
+      await sendDingMessage(self, {
+        conversationId, sessionWebhook, atUserId: senderStaffId,
+        content: `❌ 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    } finally {
+      activeSession.isProcessing = false;
+    }
+  } else {
+    await startNewSession(self, {
+      conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig,
+    });
+  }
+}
+
+// ==================== 缓存清理 ====================
+
+export interface ICleanResult {
+  sessionsDeleted: number;
+  tasksDeleted: number;
+  imagesDeleted: number;
+  errors: string[];
+}
+
+/**
+ * 清除历史会话和缓存（包括 .sessions, .tasks, .images）
+ * @param conversationId 群会话ID，传入 null 表示清除所有群
+ * @param keepActiveSession 是否保留活跃会话（true=保留，false=全部清除）
+ */
+export function cleanCache(self: DingClaude, conversationId: string | null, keepActiveSession = true): ICleanResult {
+  const result: ICleanResult = {
+    sessionsDeleted: 0,
+    tasksDeleted: 0,
+    imagesDeleted: 0,
+    errors: [],
+  };
+
+  const targetConversations = conversationId
+    ? [ conversationId ]
+    : self.config.conversations.map(c => c.conversationId);
+
+  for (const convId of targetConversations) {
+    // 获取活跃会话ID（保留用）
+    let activeSessionId: string | null = null;
+    if (keepActiveSession) {
+      const activeFound = findActiveSession(self, convId);
+      if (activeFound) {
+        activeSessionId = getSessionId(activeFound.session.session);
+      }
+    }
+
+    // 清除 .sessions（保留活跃会话）
+    const sessionsDir = getSessionsDir(self, convId);
+    if (fs.existsSync(sessionsDir)) {
+      try {
+        const entries = fs.readdirSync(sessionsDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          // 跳过活跃会话
+          if (activeSessionId && entry.name === activeSessionId) continue;
+          const dirPath = path.join(sessionsDir, entry.name);
+          try {
+            fs.rmSync(dirPath, { recursive: true, force: true });
+            result.sessionsDeleted++;
+          } catch (e) {
+            result.errors.push(`删除会话目录失败: ${dirPath}`);
+          }
+        }
+      } catch (e) {
+        result.errors.push(`读取sessions目录失败: ${sessionsDir}`);
+      }
+    }
+
+    // 清除 .tasks
+    const tasksDir = getTasksDir(self, convId);
+    if (fs.existsSync(tasksDir)) {
+      try {
+        const entries = fs.readdirSync(tasksDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const dirPath = path.join(tasksDir, entry.name);
+          try {
+            fs.rmSync(dirPath, { recursive: true, force: true });
+            result.tasksDeleted++;
+          } catch (e) {
+            result.errors.push(`删除任务目录失败: ${dirPath}`);
+          }
+        }
+      } catch (e) {
+        result.errors.push(`读取tasks目录失败: ${tasksDir}`);
+      }
+    }
+
+    // 清除 .images
+    const imagesDir = getImagesDir(self, convId);
+    if (fs.existsSync(imagesDir)) {
+      try {
+        const entries = fs.readdirSync(imagesDir, { withFileTypes: true });
+        for (const entry of entries) {
+          const filePath = path.join(imagesDir, entry.name);
+          try {
+            fs.unlinkSync(filePath);
+            result.imagesDeleted++;
+          } catch (e) {
+            result.errors.push(`删除图片失败: ${filePath}`);
+          }
+        }
+      } catch (e) {
+        result.errors.push(`读取images目录失败: ${imagesDir}`);
+      }
+    }
+
+    // 仅清理活跃会话持久化文件（不删除内存中的活跃会话）
+    if (!keepActiveSession) {
+      const activeFile = getActiveSessionsFile(self, convId);
+      if (fs.existsSync(activeFile)) {
+        try {
+          fs.unlinkSync(activeFile);
+        } catch (e) {
+          result.errors.push(`删除活跃会话文件失败: ${activeFile}`);
+        }
+      }
+      // 从内存中移除该群的活跃会话
+      if (self.activeSessions.has(convId)) {
+        self.activeSessions.delete(convId);
+      }
+    }
+  }
+
+  return result;
+}

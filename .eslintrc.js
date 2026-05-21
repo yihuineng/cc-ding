@@ -1,0 +1,36 @@
+module.exports = {
+  root: true,
+  extends: 'eslint-config-egg/typescript',
+  env: {
+    browser: true,   // 打开浏览器环境，ESLint 就不再报 `document`、`window` 未定义
+    es2021: true,     // 如果你还用到现代 ES 语法
+  },
+  rules: {
+    indent: 0,
+    'valid-jsdoc': 0,
+    'no-script-url': 0,
+    'no-multi-spaces': 0,
+    'default-case': 0,
+    'jsdoc/require-returns-type': 0,
+    'no-case-declarations': 0,
+    'one-var-declaration-per-line': 0,
+    'no-restricted-syntax': 0,
+    'jsdoc/require-param': 0,
+    'jsdoc/check-param-names': 0,
+    'jsdoc/require-param-description': 0,
+    'arrow-parens': 0,
+    'prefer-promise-reject-errors': 0,
+    'no-control-regex': 0,
+    'no-use-before-define': 0,
+    'array-callback-return': 0,
+    'no-bitwise': 0,
+    'no-self-compare': 0,
+    '@typescript-eslint/class-name-casing': 0,
+    '@typescript-eslint/no-var-requires': 0,
+    '@typescript-eslint/ban-ts-ignore': 0,
+    '@typescript-eslint/no-use-before-define': 0,
+    'one-var': 0,
+    'no-sparse-arrays': 0,
+    'no-useless-concat': 0,
+  },
+};
