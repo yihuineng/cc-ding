@@ -273,7 +273,11 @@ export function startupCheck(self: DingClaude): void {
   }
 
   // ---- 2. conversations 结构检查 ----
-  if (Array.isArray(config.conversations)) {
+  if (!Array.isArray(config.conversations)) {
+    results.push({ level: 'FATAL', message: 'conversations 应为数组或已配置' });
+  } else if (config.conversations.length === 0) {
+    results.push({ level: 'PASS', message: 'conversations 为空数组，可通过 /reg 命令动态注册' });
+  } else {
     const convIds = new Set<string>();
     for (let i = 0; i < config.conversations.length; i++) {
       const conv = config.conversations[i];

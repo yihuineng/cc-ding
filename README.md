@@ -149,8 +149,8 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 ```json
 {
   "clientName": "cc助手",
-  "owner": "你的工号",
-  "whiteUserList": ["你的工号"],
+  "owner": "你的手机号",
+  "whiteUserList": ["你的手机号"],
   "clientSecret": "钉钉Stream连接密钥",
   "defaultDingToken": "兜底钉钉机器人Token",
   "conversations": [

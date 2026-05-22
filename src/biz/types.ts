@@ -5,7 +5,7 @@ import { RobotTextMessage } from 'utils-ok';
 export interface IConfig {
   clientName?: string;
   whiteUserList: string[]; // 白名单
-  owner?: string; // 机器人 owner（可执行敏感操作如 /clean）
+  owner: string; // 机器人 owner（手机号，可执行敏感操作如 /clean）
   clientSecret: string; // 钉钉 Stream Client 密钥
   /** 默认 dingToken，当会话无 dingToken 时使用（必填） */
   defaultDingToken: string;

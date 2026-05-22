@@ -719,13 +719,10 @@ export class DingClaude {
 
     // /version 命令：查看工具版本
     if (parseVersionCommand(prompt)) {
-      const ownerDisplay = this.config.owner
-        ? (userIdToPhone(this, this.config.owner) || this.config.owner)
-        : '未配置';
       await this.sendDingMessage({
         conversationId,
         sessionWebhook,
-        content: `**版本:** ${TOOL_VERSION}\n**作者:** ${ownerDisplay}`,
+        content: `**版本:** ${TOOL_VERSION}`,
         msgType: 'markdown',
       });
       return;
@@ -834,16 +831,6 @@ export class DingClaude {
     const authCmd = parseAuthCommand(prompt);
     if (authCmd) {
       if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
-
-      if (!conversationConfig) {
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: '⚠️ 当前群未注册，请先使用 /reg 注册',
-          msgType: 'markdown',
-        });
-        return;
-      }
 
       const convWhiteList = conversationConfig.whiteUserList;
 
@@ -1046,7 +1033,7 @@ export class DingClaude {
 
     // 处理特殊命令
     // /new 命令
-    if (prompt.toLowerCase().startsWith('/new')) {
+    if (/^\/new(?:\s|$)/i.test(prompt)) {
       const activeFound = this.findActiveSession(conversationId);
       if (activeFound) {
         console.log(`收到新会话命令，结束旧会话: 群=${activeFound.session.session.conversationId}, 会话ID=${this.getSessionId(activeFound.session.session)}`);
@@ -1250,11 +1237,13 @@ export class DingClaude {
    * 启动服务
    */
   async run(): Promise<void> {
+    // 防御：config.conversations 可能为 null/undefined（虽然 startupCheck 会拦截，但在 startupCheck 之前已访问）
+    const conversations = Array.isArray(this.config.conversations) ? this.config.conversations : [];
     const taskHandlerCount = this.config.taskHandlerCount ?? this.DEFAULT_TASK_HANDLER_COUNT;
-    const hasTaskEnabled = this.config.conversations.length > 0;
+    const hasTaskEnabled = conversations.length > 0;
 
     console.log(`[${timestamp()}] 钉钉机器人服务启动，clientId: ${this.clientId}`);
-    console.log(`[${timestamp()}] 群配置: ${this.config.conversations.map(c => c.conversationTitle || c.conversationId).join(', ')}`);
+    console.log(`[${timestamp()}] 群配置: ${conversations.map(c => c.conversationTitle || c.conversationId).join(', ')}`);
 
     // 启动自检
     startupCheck(this);

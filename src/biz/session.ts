@@ -57,6 +57,7 @@ export function ensureClientDir(clientId: string): void {
 
   const defaultConfig: IConfig = {
     clientName: 'cc助手',
+    owner: '<owner手机号>',
     whiteUserList: [],
     clientSecret: '<clientSecret-钉钉Stream连接密钥>',
     defaultDingToken: '<兜底钉钉机器人Token>',
@@ -94,14 +95,13 @@ export function authCheck(self: DingClaude, userId: string, conversationId?: str
 }
 
 /**
- * 检查用户是否为机器人 owner
+ * 检查用户是否为机器人 owner（owner 只能填手机号）
  */
 export function isOwner(self: DingClaude, userId: string): boolean {
   const owner = self.config.owner;
-  if (!owner) return false;
-  // owner 可能是手机号（需解析）或直接是 userId
-  const ownerUserId = isMobile(owner) ? (self.resolvedPhones[owner] || owner) : owner;
-  return ownerUserId === userId;
+  if (!owner || !isMobile(owner)) return false;
+  const ownerUserId = self.resolvedPhones[owner];
+  return !!ownerUserId && ownerUserId === userId;
 }
 
 export function debugLog(self: DingClaude, message: string, ...args: unknown[]): void {
@@ -180,11 +180,15 @@ export async function resolveAllPhonesInConfig(self: DingClaude): Promise<void> 
     }
   };
 
-  // 解析 owner
-  if (self.config.owner && isMobile(self.config.owner)) {
-    await ensureResolved(self.config.owner);
-    if (!self.resolvedPhones[self.config.owner]) {
-      console.warn(`[WARN] 无法解析 owner 手机号: ${self.config.owner}`);
+  // 解析 owner（必须是手机号）
+  if (self.config.owner) {
+    if (isMobile(self.config.owner)) {
+      await ensureResolved(self.config.owner);
+      if (!self.resolvedPhones[self.config.owner]) {
+        console.warn(`[WARN] 无法解析 owner 手机号: ${self.config.owner}`);
+      }
+    } else {
+      console.warn(`[WARN] owner 必须为手机号，当前值无效: ${self.config.owner}`);
     }
   }
 

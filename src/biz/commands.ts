@@ -179,7 +179,7 @@ export function parseHelpCommand(text: string): boolean {
  */
 export function parseCommandHelp(text: string): string | null {
   const trimmed = text.trim();
-  const match = trimmed.match(/^(\/\w+|\S+)\s+--help$/i);
+  const match = trimmed.match(/^(\/\w+)\s+--help$/i);
   if (!match) return null;
   return match[1].toLowerCase();
 }
