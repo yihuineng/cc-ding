@@ -26,7 +26,7 @@ program
   `)
   .addHelpText('after', `
 Examples:
-  $ cc-ding init -ci {clientId}
+  $ cc-ding init -ci {clientId} -cs {clientSecret} -m {mobile}
   $ cc-ding run -ci {clientId}
 `)
   .version(projUtil().getPkgVersion());
@@ -36,8 +36,7 @@ program
   .description('初始化cc-ding配置文件, 生成最简config.json')
   .requiredOption('-ci, --clientId <value>', 'clientId')
   .requiredOption('-cs, --clientSecret <value>', 'clientSecret (钉钉Stream连接密钥)')
-  .requiredOption('-ds, --dingSecret <value>', 'dingSecret (钉钉签名密钥)')
-  .requiredOption('-uid, --userId <value>', 'userId (自己的工号, 自动加入白名单)')
+  .requiredOption('-m, --mobile <value>', 'mobile (自己的手机号, 自动加入白名单)')
   .option('-cn, --clientName <value>', 'clientName (机器人名称, 可选)')
   .action(async (opts) => {
     // init 命令执行前检查 Node 版本
@@ -51,7 +50,7 @@ program
       process.exit(1);
     }
 
-    const clientDir = `${getHomeDir()}/.anycli/cc-ding/${opts.clientId}`;
+    const clientDir = `${getHomeDir()}/.cc-ding/${opts.clientId}`;
     const cfgFile = `${clientDir}/config.json`;
 
     if (fs.existsSync(cfgFile)) {
@@ -62,26 +61,11 @@ program
 
     const config: IConfig = {
       clientName: opts.clientName || 'cc助手',
-      whiteUserList: [ opts.userId ],
+      owner: opts.mobile,
+      whiteUserList: [ opts.mobile ],
       clientSecret: opts.clientSecret,
-      dingSecret: opts.dingSecret,
       defaultDingToken: '<兜底钉钉机器人Token-用于无dingToken群的消息接收>',
-      conversations: [
-        {
-          conversationTitle: '单聊-个人助手(建议只给自己授权)',
-          conversationId: '<单聊conversationId>',
-          whiteUserList: [ opts.userId ],
-          sessionCfg: {},
-          useLocalOcr: true,
-        },
-        {
-          conversationTitle: '工作群(AI提效)',
-          conversationId: '<群聊conversationId>',
-          dingToken: '<群聊机器人dingToken>',
-          whiteUserList: [ opts.userId, '<群成员工号2>' ],
-          sessionCfg: {},
-        },
-      ],
+      conversations: [],
       includeThinking: false,
       resultOnly: true,
       debug: false,
@@ -95,7 +79,7 @@ program
     console.log('配置文件已生成:', cfgFile);
     console.log('');
     console.log('后续步骤:');
-    console.log('  1. 编辑 config.json 添加更多工号到 whiteUserList');
+    console.log('  1. 编辑 config.json 添加 conversations 配置(群聊需配置dingToken)');
     console.log('  2. 启动机器人: cc-ding run -ci', opts.clientId);
     console.log('  3. 推荐PM2启动:');
     console.log(`     pm2 start --name "cc-ding-${opts.clientId}" npx -- -p cc-ding cc-ding run -ci ${opts.clientId}`);

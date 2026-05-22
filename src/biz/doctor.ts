@@ -88,10 +88,9 @@ export function runDoctor(clientDir: string): CheckResult[] {
   // 1.1 必填字段
   const requiredFields: { key: string; label: string; isArr?: boolean }[] = [
     { key: 'clientSecret', label: 'clientSecret' },
-    { key: 'dingSecret', label: 'dingSecret' },
     { key: 'defaultDingToken', label: 'defaultDingToken' },
     { key: 'whiteUserList', label: 'whiteUserList', isArr: true },
-    { key: 'conversations', label: 'conversations', isArr: true },
+    { key: 'owner', label: 'owner' },
   ];
   for (const { key, label, isArr } of requiredFields) {
     const val = config[key];
@@ -116,7 +115,7 @@ export function runDoctor(clientDir: string): CheckResult[] {
   }
 
   // 1.3 占位符检查
-  const placeholderFields = [ 'clientSecret', 'dingSecret', 'defaultDingToken' ];
+  const placeholderFields = [ 'clientSecret', 'defaultDingToken' ];
   for (const key of placeholderFields) {
     const val = config[key];
     if (typeof val === 'string' && /^<.*>$/.test(val.trim())) {
@@ -129,7 +128,7 @@ export function runDoctor(clientDir: string): CheckResult[] {
   if (!Array.isArray(config.conversations)) {
     results.push(check('FATAL', 'conversations 应为数组'));
   } else if (config.conversations.length === 0) {
-    results.push(check('WARN', 'conversations 为空数组，至少配置一个群'));
+    results.push(check('PASS', 'conversations 为空数组，可通过 /reg 命令动态注册'));
   } else {
     for (let i = 0; i < config.conversations.length; i++) {
       const conv = config.conversations[i];
@@ -219,7 +218,7 @@ export function runDoctor(clientDir: string): CheckResult[] {
   }
 
   // ---- 5. settings-tpl.json 检查 ----
-  const tplPath = path.join(getHomeDir(), '.anycli', 'cc-ding', 'settings-tpl.json');
+  const tplPath = path.join(getHomeDir(), '.cc-ding', 'settings-tpl.json');
   if (fs.existsSync(tplPath)) {
     try {
       const tpl = JSON.parse(fs.readFileSync(tplPath, 'utf-8'));

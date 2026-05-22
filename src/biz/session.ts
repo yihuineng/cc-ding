@@ -7,7 +7,7 @@ import path from 'path';
 import { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IActiveSessionPersist, IConfig, ISession } from './types';
 import { parseEndCommand } from './commands';
-import { sendDingMessage } from './messaging';
+import { sendDingMessage, queryUserIdByMobile } from './messaging';
 import { interruptClaudeProcess, executeClaudeQuery } from './claude-process';
 
 /**
@@ -25,7 +25,7 @@ export function getHomeDir(): string {
 }
 
 export function getClientDir(self: DingClaude): string {
-  return path.join(getHomeDir(), '.anycli', 'cc-ding', self.clientId);
+  return path.join(getHomeDir(), '.cc-ding', self.clientId);
 }
 
 /**
@@ -33,7 +33,7 @@ export function getClientDir(self: DingClaude): string {
  * @returns 配置文件路径
  */
 export function initClientDir(clientId: string, config: IConfig): string {
-  const clientDir = path.join(getHomeDir(), '.anycli', 'cc-ding', clientId);
+  const clientDir = path.join(getHomeDir(), '.cc-ding', clientId);
   const cfgFile = path.join(clientDir, 'config.json');
   fs.mkdirSync(clientDir, { recursive: true });
   fs.writeFileSync(cfgFile, JSON.stringify(config, null, 2), 'utf-8');
@@ -45,7 +45,7 @@ export function initClientDir(clientId: string, config: IConfig): string {
  * 生成占位配置后 exit，提示用户编辑后重启
  */
 export function ensureClientDir(clientId: string): void {
-  const clientDir = path.join(getHomeDir(), '.anycli', 'cc-ding', clientId);
+  const clientDir = path.join(getHomeDir(), '.cc-ding', clientId);
   const cfgFile = path.join(clientDir, 'config.json');
 
   if (fs.existsSync(cfgFile)) {
@@ -59,7 +59,6 @@ export function ensureClientDir(clientId: string): void {
     clientName: 'cc助手',
     whiteUserList: [],
     clientSecret: '<clientSecret-钉钉Stream连接密钥>',
-    dingSecret: '<dingSecret-钉钉签名密钥>',
     defaultDingToken: '<兜底钉钉机器人Token>',
     conversations: [],
   };
@@ -79,27 +78,144 @@ export function getClientConfig(self: DingClaude): IConfig {
   return cfg;
 }
 
+/** 将配置值解析为 userId：手机号走 resolvedPhones，userId 直接返回 */
+export function resolveToUserId(self: DingClaude, value: string): string {
+  return isMobile(value) ? (self.resolvedPhones[value] || value) : value;
+}
+
 export function authCheck(self: DingClaude, userId: string, conversationId?: string): boolean {
   if (conversationId) {
     const conv = self.config.conversations.find(it => it.conversationId === conversationId);
     if (conv?.whiteUserList && conv.whiteUserList.length > 0) {
-      return conv.whiteUserList.includes(userId);
+      return conv.whiteUserList.some(item => resolveToUserId(self, item) === userId);
     }
   }
-  return self.config.whiteUserList.includes(userId);
+  return self.config.whiteUserList.some(item => resolveToUserId(self, item) === userId);
 }
 
 /**
  * 检查用户是否为机器人 owner
  */
 export function isOwner(self: DingClaude, userId: string): boolean {
-  return !!self.config.owner && self.config.owner === userId;
+  const owner = self.config.owner;
+  if (!owner) return false;
+  // owner 可能是手机号（需解析）或直接是 userId
+  const ownerUserId = isMobile(owner) ? (self.resolvedPhones[owner] || owner) : owner;
+  return ownerUserId === userId;
 }
 
 export function debugLog(self: DingClaude, message: string, ...args: unknown[]): void {
   if (self.config.debug) {
     console.log(`[DEBUG] ${message}`, ...args);
   }
+}
+
+// ==================== 手机号解析与缓存 ====================
+
+const PHONE_RE = /^1\d{10}$/;
+
+/** 判断是否为手机号格式 */
+export function isMobile(value: string): boolean {
+  return PHONE_RE.test(value);
+}
+
+export function getPhoneMapFile(self: DingClaude): string {
+  return path.join(getClientDir(self), 'phone-map.json');
+}
+
+export function loadPhoneMap(self: DingClaude): Record<string, string> {
+  const file = getPhoneMapFile(self);
+  if (!fs.existsSync(file)) return {};
+  try {
+    const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    if (typeof data === 'object' && data !== null) return data as Record<string, string>;
+  } catch { /* ignore */ }
+  return {};
+}
+
+export function savePhoneMap(self: DingClaude, map: Record<string, string>): void {
+  const file = getPhoneMapFile(self);
+  try {
+    fs.writeFileSync(file, JSON.stringify(map, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('保存 phone-map.json 失败:', err);
+  }
+}
+
+/** 通过运行时映射反向查找 userId 对应的手机号 */
+export function userIdToPhone(self: DingClaude, userId: string): string | null {
+  for (const [ phone, uid ] of Object.entries(self.resolvedPhones)) {
+    if (uid === userId) return phone;
+  }
+  return null;
+}
+
+/** 解析单个值：手机号走 API 解析并缓存，userId 直接返回 */
+export async function resolveUserId(
+  self: DingClaude,
+  value: string,
+): Promise<string | null> {
+  if (!value) return null;
+  if (!isMobile(value)) return value;
+  if (self.resolvedPhones[value]) return self.resolvedPhones[value];
+  const userId = await queryUserIdByMobile(self, value);
+  if (userId) {
+    self.resolvedPhones[value] = userId;
+    savePhoneMap(self, self.resolvedPhones);
+  }
+  return userId;
+}
+
+/** 启动时批量解析 config 中的手机号，填充到 self.resolvedPhones */
+export async function resolveAllPhonesInConfig(self: DingClaude): Promise<void> {
+  self.resolvedPhones = loadPhoneMap(self);
+  const newEntries: string[] = [];
+
+  const ensureResolved = async (phone: string) => {
+    if (self.resolvedPhones[phone]) return;
+    const userId = await queryUserIdByMobile(self, phone);
+    if (userId) {
+      self.resolvedPhones[phone] = userId;
+      newEntries.push(phone);
+    }
+  };
+
+  // 解析 owner
+  if (self.config.owner && isMobile(self.config.owner)) {
+    await ensureResolved(self.config.owner);
+    if (!self.resolvedPhones[self.config.owner]) {
+      console.warn(`[WARN] 无法解析 owner 手机号: ${self.config.owner}`);
+    }
+  }
+
+  // 解析全局 whiteUserList
+  for (const item of self.config.whiteUserList) {
+    if (isMobile(item)) {
+      await ensureResolved(item);
+      if (!self.resolvedPhones[item]) {
+        console.warn(`[WARN] 无法解析 whiteUserList 手机号: ${item}`);
+      }
+    }
+  }
+
+  // 解析群级 whiteUserList
+  for (const conv of self.config.conversations) {
+    if (conv.whiteUserList) {
+      for (const item of conv.whiteUserList) {
+        if (isMobile(item)) {
+          await ensureResolved(item);
+          if (!self.resolvedPhones[item]) {
+            console.warn(`[WARN] 无法解析群白名单手机号: ${item}`);
+          }
+        }
+      }
+    }
+  }
+
+  if (newEntries.length > 0) {
+    savePhoneMap(self, self.resolvedPhones);
+  }
+  console.log(`[手机解析] 已加载 ${Object.keys(self.resolvedPhones).length} 条记录 (${newEntries.length} 条新解析)`);
 }
 
 export function hashConversationId(self: DingClaude, conversationId: string): string {

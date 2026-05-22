@@ -1,6 +1,6 @@
 {
   "name": "cc-ding",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "钉钉机器人对接本地Claude工具",
   "keywords": [
     "cli",
@@ -10,26 +10,26 @@
   "main": "dist/index",
   "dependencies": {
     "commander": "^7.2.0",
-    "dotenv": "^16.0.3",
+    "dotenv": "^16.6.1",
     "shelljs": "^0.10.0",
     "urllib": "^4.9.0",
-    "utils-ok": "1"
+    "utils-ok": "^1.1.2"
   },
   "devDependencies": {
     "@types/chai": "^5.2.3",
-    "@types/mocha": "^9.0.0",
-    "@types/node": "^16.11.12",
+    "@types/mocha": "^9.1.1",
+    "@types/node": "^16.18.126",
     "@types/shelljs": "^0.10.0",
     "blacklint": "^1.0.0",
     "chai": "^6.2.2",
-    "eslint": "9",
+    "eslint": "^9.39.4",
     "eslint-config-egg": "^14.1.0",
-    "globals": "^17.4.0",
-    "husky": "8",
+    "globals": "^17.6.0",
+    "husky": "^8.0.3",
     "javascript-obfuscator": "^5.4.2",
-    "mocha": "^8.0.1",
-    "ts-node": "^10.9.1",
-    "typescript": "5"
+    "mocha": "^8.4.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
   },
   "author": "yhn",
   "bin": {

@@ -143,16 +143,16 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/reg',
     description: '注册当前群到配置(未注册群可用)',
-    usage: '/reg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称]',
-    examples: [ '/reg', '/reg --dingToken myToken --whiteUserList 123,456', '/reg --conversationTitle 工作群' ],
+    usage: '/reg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称]',
+    examples: [ '/reg', '/reg --dingToken myToken --whiteUserList 13800138000,13900139000', '/reg --conversationTitle 工作群' ],
     category: '管理',
     ownerOnly: true,
   },
   {
     name: '/auth',
     description: '管理当前群白名单(add/del,默认list)',
-    usage: '/auth [add|del <userId>]',
-    examples: [ '/auth', '/auth add 123456', '/auth del 123456' ],
+    usage: '/auth [add|del <手机号或userId>]',
+    examples: [ '/auth', '/auth add 13800138000', '/auth del 13800138000' ],
     category: '管理',
     ownerOnly: true,
   },
@@ -204,9 +204,8 @@ export function formatHelpOverview(version: string, isOwner: boolean): string {
     '### 🤗',
     '----',
     `- **版本:** ${version}`,
-    `- **作者:** owner`,
-    `- **文档:** https://doc-to/cc-ding`,
-    `- **反馈:** 缺陷&需求请反馈给作者`,
+    `- **作者:** yihuineng`,
+    `- **Github:** https://github.com/yihuineng/cc-ding`,
     '----',
   ];
 
@@ -264,7 +263,11 @@ export function parseInfoCommand(text: string): 'all' | 'robot' | 'session' | 't
 /**
  * 格式化群配置信息
  */
-export function formatConversationInfo(conv: IConfig['conversations'][0], conversationId: string): string {
+export function formatConversationInfo(
+  conv: IConfig['conversations'][0],
+  conversationId: string,
+  phoneLookup?: (userId: string) => string | null,
+): string {
   const lines = [
     `- **群ID:** ${conversationId}`,
   ];
@@ -272,7 +275,13 @@ export function formatConversationInfo(conv: IConfig['conversations'][0], conver
   if (conv.linkConversationId) lines.push(`- **关联会话ID:** ${conv.linkConversationId}`);
   if (conv.agent) lines.push(`- **agent:** ${conv.agent}`);
   if (conv.dingToken) lines.push(`- **dingToken:** ${conv.dingToken}...`);
-  if (conv.whiteUserList?.length) lines.push(`- **群白名单:** ${conv.whiteUserList.join(', ')}`);
+  if (conv.whiteUserList?.length) {
+    const display = conv.whiteUserList.map(uid => {
+      const phone = phoneLookup?.(uid);
+      return phone || uid;
+    }).join(', ');
+    lines.push(`- **群白名单:** ${display}`);
+  }
   if (conv.taskCfg?.skill) lines.push(`- **taskSkill:** ${conv.taskCfg.skill}`);
   return lines.join('\n');
 }
@@ -535,12 +544,15 @@ export function parseRegCommand(text: string): IRegOptions | null {
   const trimmed = text.trim();
   if (!/^\/reg(?:\s|$)/i.test(trimmed)) return null;
 
-  const result: IRegOptions = {};
   const rest = trimmed.substring(4).trim();
 
   // 无参数，直接返回空对象
-  if (!rest) return result;
+  if (!rest) return {};
 
+  // --help 请求，返回 null 交由 --help 处理器处理
+  if (/^--help$/i.test(rest)) return null;
+
+  const result: IRegOptions = {};
   // 逐个解析 --key value
   const tokens = rest.split(/\s+/);
   for (let i = 0; i < tokens.length; i++) {

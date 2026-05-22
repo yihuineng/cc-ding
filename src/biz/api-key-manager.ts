@@ -130,7 +130,7 @@ export function ensureSettingsWithApiKey(workDir: string, setting: IClaudeSettin
     }
   } else {
     // settings-ding.json 不存在，从模板创建
-    const tplPath = path.join(getHomeDir(), '.anycli', 'cc-ding', 'settings-tpl.json');
+    const tplPath = path.join(getHomeDir(), '.cc-ding', 'settings-tpl.json');
     if (fs.existsSync(tplPath)) {
       try {
         settings = JSON.parse(fs.readFileSync(tplPath, 'utf-8'));
@@ -260,9 +260,8 @@ export function startupCheck(self: DingClaude): void {
   // ---- 1. config.json 必填字段检查 ----
   const requiredFields: { key: string; label: string }[] = [
     { key: 'clientSecret', label: 'clientSecret (钉钉 Stream Client 密钥)' },
-    { key: 'dingSecret', label: 'dingSecret (钉钉加签密钥)' },
     { key: 'whiteUserList', label: 'whiteUserList (白名单用户)' },
-    { key: 'conversations', label: 'conversations (群配置列表)' },
+    { key: 'owner', label: 'owner (机器人 owner)' },
   ];
   for (const { key, label } of requiredFields) {
     const val = (config as any)[key];
@@ -334,7 +333,7 @@ export function startupCheck(self: DingClaude): void {
   }
 
   // ---- 4. settings-tpl.json 检查 ----
-  const tplPath = path.join(getHomeDir(), '.anycli', 'cc-ding', 'settings-tpl.json');
+  const tplPath = path.join(getHomeDir(), '.cc-ding', 'settings-tpl.json');
   if (fs.existsSync(tplPath)) {
     try {
       const tpl = JSON.parse(fs.readFileSync(tplPath, 'utf-8'));

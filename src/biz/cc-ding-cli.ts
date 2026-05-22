@@ -26,6 +26,7 @@ import {
   endSession, switchToSession, startNewSession, handleSessionMessage,
   findActiveSession, cleanCache,
   timestamp,
+  resolveAllPhonesInConfig, resolveUserId, resolveToUserId, userIdToPhone, isMobile,
 } from './session';
 import {
   countTodoTask, getOneTodoTask, finishTask,
@@ -46,6 +47,9 @@ export class DingClaude {
   clientId: string;
   config: IConfig;
   dingStreamClient: DingStreamClient;
+
+  /** 运行时手机号 → userId 映射（用于鉴权，不写入 config.json） */
+  resolvedPhones: Record<string, string> = {};
 
   /** 活跃会话管理 (session模式) */
   activeSessions = new Map<string, IActiveSession>();
@@ -587,6 +591,7 @@ export class DingClaude {
   private async botMsgGetCallback(res: DWClientDownStream): Promise<void> {
     this.dingStreamClient.socketCallBackResponse(res.headers.messageId, '');
     const rawData = JSON.parse(res.data) as IRawCallbackData;
+    // console.log('rawData', rawData);
     const { senderNick, senderStaffId, conversationId, conversationTitle, sessionWebhook, msgtype } = rawData;
     const textContent = rawData.text?.content?.trim() ?? '';
 
@@ -663,6 +668,12 @@ export class DingClaude {
       if (regOpts.linkConversationId) newConv.linkConversationId = regOpts.linkConversationId;
       if (regOpts.whiteUserList && regOpts.whiteUserList.length > 0) {
         newConv.whiteUserList = regOpts.whiteUserList;
+        // 预解析手机号到缓存
+        for (const item of regOpts.whiteUserList) {
+          if (isMobile(item)) {
+            await resolveUserId(this, item);
+          }
+        }
       }
       this.config.conversations.push(newConv);
       saveClientConfig(this);
@@ -675,7 +686,13 @@ export class DingClaude {
       if (newConv.dingToken) info.push(`- **dingToken:** ${newConv.dingToken.substring(0, 8)}...`);
       else info.push('- **dingToken:** (未指定, 使用 defaultDingToken)');
       if (newConv.linkConversationId) info.push(`- **linkConversationId:** ${newConv.linkConversationId}`);
-      if (newConv.whiteUserList?.length) info.push(`- **whiteUserList:** ${newConv.whiteUserList.join(', ')}`);
+      if (newConv.whiteUserList?.length) {
+        const display = newConv.whiteUserList.map(item => {
+          if (isMobile(item)) return item;
+          return userIdToPhone(this, item) || item;
+        }).join(', ');
+        info.push(`- **whiteUserList:** ${display}`);
+      }
       info.push('\n💡 可编辑 config.json 补充更多配置');
 
       console.log(`[${timestamp()}] 注册新群: ${newConv.conversationTitle}(${conversationId})`);
@@ -688,16 +705,7 @@ export class DingClaude {
       return;
     }
 
-    if (!conversationConfig) {
-      console.log(`未注册的机器人,群:${conversationTitle},${conversationId}`);
-      await this.sendDingMessage({
-        conversationId,
-        sessionWebhook,
-        atUserId: senderStaffId,
-        content: `抱歉,该群的机器人未在服务端注册,请联系应用机器人owner注册(${conversationId})...`,
-      });
-      return;
-    }
+    // 帮助类命令：未注册群也可查看
     // /help 命令：查看所有可用命令
     if (parseHelpCommand(prompt)) {
       await this.sendDingMessage({
@@ -711,12 +719,58 @@ export class DingClaude {
 
     // /version 命令：查看工具版本
     if (parseVersionCommand(prompt)) {
+      const ownerDisplay = this.config.owner
+        ? (userIdToPhone(this, this.config.owner) || this.config.owner)
+        : '未配置';
       await this.sendDingMessage({
         conversationId,
         sessionWebhook,
-        content: `**版本:** ${TOOL_VERSION}\n**作者:** owner`,
+        content: `**版本:** ${TOOL_VERSION}\n**作者:** ${ownerDisplay}`,
         msgType: 'markdown',
       });
+      return;
+    }
+
+    // /{cmd} --help 命令：查看单个命令详细帮助
+    const helpCmdName = parseCommandHelp(prompt);
+    if (helpCmdName) {
+      const cmdDef = getCommandByName(helpCmdName);
+      if (cmdDef) {
+        await this.sendDingMessage({
+          conversationId,
+          sessionWebhook,
+          content: formatCommandHelp(cmdDef),
+          msgType: 'markdown',
+        });
+      } else {
+        await this.sendDingMessage({
+          conversationId,
+          sessionWebhook,
+          content: `❌ 未找到命令: **${helpCmdName}**\n\n💡 输入 \`/help\` 查看所有可用命令`,
+          msgType: 'markdown',
+        });
+      }
+      return;
+    }
+
+    if (!conversationConfig) {
+      console.log(`未注册的机器人,群:${conversationTitle},${conversationId}`);
+      if (this.isOwner(senderStaffId)) {
+        await this.sendDingMessage({
+          conversationId,
+          sessionWebhook,
+          atUserId: senderStaffId,
+          content: `⚠️ 该群未注册，请先使用 \`/reg\` 命令注册`,
+          msgType: 'markdown',
+        });
+      } else {
+        await this.sendDingMessage({
+          conversationId,
+          sessionWebhook,
+          atUserId: senderStaffId,
+          content: `抱歉,该群的机器人未在服务端注册,请联系应用机器人owner注册(${conversationId})...`,
+        });
+      }
       return;
     }
 
@@ -795,7 +849,10 @@ export class DingClaude {
 
       if (authCmd.type === 'list') {
         const list = convWhiteList && convWhiteList.length > 0
-          ? convWhiteList.map(id => `- ${id}`).join('\n')
+          ? convWhiteList.map(id => {
+            const phone = userIdToPhone(this, id);
+            return `- ${phone || id}`;
+          }).join('\n')
           : '(未配置群级白名单，使用全局白名单)';
         await this.sendDingMessage({
           conversationId,
@@ -807,11 +864,29 @@ export class DingClaude {
       }
 
       if (authCmd.type === 'add') {
-        if (convWhiteList && convWhiteList.includes(authCmd.staffId)) {
+        // 解析手机号为 userId（用于去重检查），但 config 中存储原始值
+        let targetUserId = authCmd.staffId;
+        if (isMobile(authCmd.staffId)) {
+          targetUserId = await resolveUserId(this, authCmd.staffId);
+          if (!targetUserId) {
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              content: `⚠️ 无法解析手机号: ${authCmd.staffId}`,
+              msgType: 'markdown',
+            });
+            return;
+          }
+        }
+
+        // 去重检查：比较 resolved userId
+        const alreadyExists = convWhiteList?.some(item => resolveToUserId(this, item) === targetUserId);
+        if (alreadyExists) {
+          const display = userIdToPhone(this, targetUserId) || targetUserId;
           await this.sendDingMessage({
             conversationId,
             sessionWebhook,
-            content: `⚠️ userId ${authCmd.staffId} 已在当前群白名单中`,
+            content: `⚠️ ${display} 已在当前群白名单中`,
             msgType: 'markdown',
           });
           return;
@@ -821,38 +896,66 @@ export class DingClaude {
         }
         conversationConfig.whiteUserList.push(authCmd.staffId);
         saveClientConfig(this);
+        const displayItems = conversationConfig.whiteUserList.map(item => {
+          const uid = resolveToUserId(this, item);
+          return userIdToPhone(this, uid) || item;
+        });
+        const addedDisplay = isMobile(authCmd.staffId) ? authCmd.staffId : (userIdToPhone(this, authCmd.staffId) || authCmd.staffId);
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: `✅ 已添加userId ${authCmd.staffId} 到当前群白名单\n当前白名单: ${conversationConfig.whiteUserList.join(', ')}`,
+          content: `✅ 已添加 ${addedDisplay} 到当前群白名单\n当前白名单: ${displayItems.join(', ')}`,
           msgType: 'markdown',
         });
         return;
       }
 
       if (authCmd.type === 'del') {
-        if (!convWhiteList || !convWhiteList.includes(authCmd.staffId)) {
+        // 解析手机号为 userId（用于查找），但 config 中删除匹配项
+        let targetUserId = authCmd.staffId;
+        if (isMobile(authCmd.staffId)) {
+          targetUserId = await resolveUserId(this, authCmd.staffId);
+          if (!targetUserId) {
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              content: `⚠️ 无法解析手机号: ${authCmd.staffId}`,
+              msgType: 'markdown',
+            });
+            return;
+          }
+        }
+
+        // 查找匹配项：比较 resolved userId
+        const foundIndex = convWhiteList?.findIndex(item => resolveToUserId(this, item) === targetUserId) ?? -1;
+        if (foundIndex < 0) {
+          const display = userIdToPhone(this, targetUserId) || targetUserId;
           await this.sendDingMessage({
             conversationId,
             sessionWebhook,
-            content: `⚠️ userId ${authCmd.staffId} 不在当前群白名单中`,
+            content: `⚠️ ${display} 不在当前群白名单中`,
             msgType: 'markdown',
           });
           return;
         }
-        conversationConfig.whiteUserList = convWhiteList.filter(id => id !== authCmd.staffId);
+        const removedItem = conversationConfig.whiteUserList![foundIndex];
+        conversationConfig.whiteUserList.splice(foundIndex, 1);
         // 清理空数组
         if (conversationConfig.whiteUserList.length === 0) {
           delete conversationConfig.whiteUserList;
         }
         saveClientConfig(this);
         const display = conversationConfig.whiteUserList?.length
-          ? conversationConfig.whiteUserList.join(', ')
+          ? conversationConfig.whiteUserList.map(item => {
+            const uid = resolveToUserId(this, item);
+            return userIdToPhone(this, uid) || item;
+          }).join(', ')
           : '(空，使用全局白名单)';
+        const removedDisplay = userIdToPhone(this, targetUserId) || removedItem;
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: `✅ 已从当前群白名单移除userId ${authCmd.staffId}\n当前白名单: ${display}`,
+          content: `✅ 已移除 ${removedDisplay}\n当前白名单: ${display}`,
           msgType: 'markdown',
         });
         return;
@@ -896,28 +999,6 @@ export class DingClaude {
         await this.sendDingMessage({
           conversationId, sessionWebhook,
           content: `❌ 打开失败: ${err instanceof Error ? err.message : String(err)}`,
-          msgType: 'markdown',
-        });
-      }
-      return;
-    }
-
-    // /{cmd} --help 命令：查看单个命令详细帮助
-    const helpCmdName = parseCommandHelp(prompt);
-    if (helpCmdName) {
-      const cmdDef = getCommandByName(helpCmdName);
-      if (cmdDef) {
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: formatCommandHelp(cmdDef),
-          msgType: 'markdown',
-        });
-      } else {
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: `❌ 未找到命令: **${helpCmdName}**\n\n💡 输入 \`/help\` 查看所有可用命令`,
           msgType: 'markdown',
         });
       }
@@ -1043,7 +1124,7 @@ export class DingClaude {
     if (infoType !== null) {
       const parts: string[] = [];
       if (infoType === 'all' || infoType === 'robot') {
-        parts.push('### 🤖 群配置信息\n' + formatConversationInfo(conversationConfig, conversationId));
+        parts.push('### 🤖 群配置信息\n' + formatConversationInfo(conversationConfig, conversationId, (uid) => userIdToPhone(this, uid)));
       }
       if (infoType === 'all' || infoType === 'session') {
         const sessionInfo = this.formatSessionInfo(conversationId);
@@ -1178,10 +1259,15 @@ export class DingClaude {
     // 启动自检
     startupCheck(this);
 
-    // 启动时重置 apiKeyCfg
-    resetApiKeyCfg(this);
-    // 调度每天 0 点自动重置 apiKeyCfg
-    scheduleApiKeyCfgDailyReset(this);
+    // 解析 config 中的手机号为 userId
+    await resolveAllPhonesInConfig(this);
+
+    // 启动时重置 apiKeyCfg（仅当已配置时）
+    if (this.config.apiKeyCfg) {
+      resetApiKeyCfg(this);
+      // 调度每天 0 点自动重置 apiKeyCfg
+      scheduleApiKeyCfgDailyReset(this);
+    }
 
     this.loadActiveSessions();
 

@@ -1,10 +1,10 @@
-import { DingClient } from 'utils-ok';
 import { baseUtil } from 'utils-ok';
 import urllib from 'urllib';
 import { DingClaude } from './cc-ding-cli';
-import { ISendMsgOpts } from './types';
+import { ISendMsgOpts, IDingUserDetail } from './types';
 
 const DING_API_BASE = 'https://api.dingtalk.com';
+const DING_OAPI_BASE = 'https://oapi.dingtalk.com';
 
 /**
  * 通过钉钉服务端 API 获取引用消息的文本内容
@@ -61,6 +61,80 @@ export async function fetchQuotedMessage(self: DingClaude, messageId: string): P
     return null;
   } catch (err) {
     console.warn('fetchQuotedMessage 请求失败:', err);
+    return null;
+  }
+}
+
+/**
+ * 根据 userid 查询用户详情
+ * POST /topapi/v2/user/get
+ * @see https://open.dingtalk.com/document/development/query-user-details
+ */
+export async function queryDingUser(self: DingClaude, userid: string): Promise<IDingUserDetail | null> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `${DING_OAPI_BASE}/topapi/v2/user/get?access_token=${accessToken}`;
+
+    const result = await urllib.request(url, {
+      method: 'POST',
+      data: { userid },
+      contentType: 'json',
+      dataType: 'json',
+      timeout: 5000,
+    });
+
+    if (result.status !== 200 || !result.data) {
+      self.debugLog(`queryDingUser API 返回非200: status=${result.status}, data=${JSON.stringify(result.data)}`);
+      return null;
+    }
+
+    const body = result.data as Record<string, unknown>;
+    // 钉钉 oapi 标准返回: { errcode: 0, errmsg: "ok", result: {...} }
+    if (body.errcode !== 0) {
+      console.warn(`queryDingUser 接口返回错误: errcode=${body.errcode}, errmsg=${body.errmsg}`);
+      return null;
+    }
+
+    return (body.result || null) as IDingUserDetail | null;
+  } catch (err) {
+    console.warn('queryDingUser 请求失败:', err);
+    return null;
+  }
+}
+
+/**
+ * 根据手机号查询 userId
+ * POST /topapi/v2/user/getbymobile
+ * @see https://open.dingtalk.com/document/development/query-users-by-phone-number
+ */
+export async function queryUserIdByMobile(self: DingClaude, mobile: string): Promise<string | null> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `${DING_OAPI_BASE}/topapi/v2/user/getbymobile?access_token=${accessToken}`;
+
+    const result = await urllib.request(url, {
+      method: 'POST',
+      data: { mobile },
+      contentType: 'json',
+      dataType: 'json',
+      timeout: 5000,
+    });
+
+    if (result.status !== 200 || !result.data) {
+      self.debugLog(`queryUserIdByMobile API 返回非200: status=${result.status}, data=${JSON.stringify(result.data)}`);
+      return null;
+    }
+
+    const body = result.data as Record<string, unknown>;
+    if (body.errcode !== 0) {
+      console.warn(`queryUserIdByMobile 接口返回错误: errcode=${body.errcode}, errmsg=${body.errmsg}`);
+      return null;
+    }
+
+    const resultObj = body.result as Record<string, unknown> | undefined;
+    return (resultObj?.userid as string) || null;
+  } catch (err) {
+    console.warn('queryUserIdByMobile 请求失败:', err);
     return null;
   }
 }
@@ -131,36 +205,34 @@ export async function sendDingMessage(self: DingClaude, opts: ISendMsgOpts): Pro
 
   // 优先级: 会话级 dingToken > sessionWebhook > 客户端级 defaultDingToken
   const dingToken = conversation?.dingToken;
-  const dingSecret = self.config.dingSecret;
+  const body = msgType === 'markdown'
+    ? {
+      msgtype: 'markdown',
+      markdown: { title: content, text: content },
+      at: { atUserIds, isAtAll: false },
+    }
+    : {
+      msgtype: 'text',
+      text: { content },
+      at: { atUserIds, isAtAll: false },
+    };
 
   if (dingToken) {
-    const client = new DingClient(dingToken, dingSecret);
-    if (msgType === 'markdown') {
-      await client.sendMd(
-        'ai-reply',
-        `${content} ${atUserId ? `@${atUserId}` : ''}`,
-        [], atUserIds,
-      );
-    } else {
-      await client.send(
-        `${content} ${atUserId ? `@${atUserId}` : ''}`,
-        [], atUserIds,
-      );
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `https://oapi.dingtalk.com/robot/send?access_token=${dingToken}`;
+    try {
+      await urllib.request(url, {
+        method: 'POST',
+        data: body,
+        contentType: 'json',
+        headers: { 'x-acs-dingtalk-access-token': accessToken },
+        dataType: 'json',
+      });
+    } catch (err) {
+      console.error('通过 dingToken 发送钉钉消息失败:', err);
     }
   } else if (sessionWebhook) {
     const accessToken = await self.dingStreamClient.getAccessToken();
-    const body = msgType === 'markdown'
-      ? {
-        msgtype: 'markdown',
-        markdown: { title: 'reply', text: content },
-        at: { atUserIds, isAtAll: false },
-      }
-      : {
-        msgtype: 'text',
-        text: { content },
-        at: { atUserIds, isAtAll: false },
-      };
-
     try {
       await urllib.request(sessionWebhook, {
         method: 'POST',
@@ -173,19 +245,18 @@ export async function sendDingMessage(self: DingClaude, opts: ISendMsgOpts): Pro
       console.error('通过 sessionWebhook 发送钉钉消息失败:', err);
     }
   } else if (self.config.defaultDingToken) {
-    // 无 dingToken 且无 sessionWebhook 时，使用客户端级 defaultDingToken
-    const client = new DingClient(self.config.defaultDingToken, dingSecret);
-    if (msgType === 'markdown') {
-      await client.sendMd(
-        'ai-reply',
-        `${content} ${atUserId ? `@${atUserId}` : ''}`,
-        [], atUserIds,
-      );
-    } else {
-      await client.send(
-        `${content} ${atUserId ? `@${atUserId}` : ''}`,
-        [], atUserIds,
-      );
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `https://oapi.dingtalk.com/robot/send?access_token=${self.config.defaultDingToken}`;
+    try {
+      await urllib.request(url, {
+        method: 'POST',
+        data: body,
+        contentType: 'json',
+        headers: { 'x-acs-dingtalk-access-token': accessToken },
+        dataType: 'json',
+      });
+    } catch (err) {
+      console.error('通过 defaultDingToken 发送钉钉消息失败:', err);
     }
   } else {
     console.error('未能获取机器人信息发送途径');

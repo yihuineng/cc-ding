@@ -6,8 +6,7 @@ export interface IConfig {
   clientName?: string;
   whiteUserList: string[]; // 白名单
   owner?: string; // 机器人 owner（可执行敏感操作如 /clean）
-  clientSecret: string;
-  dingSecret: string; // 搭配dingToken发送对应群的消息
+  clientSecret: string; // 钉钉 Stream Client 密钥
   /** 默认 dingToken，当会话无 dingToken 时使用（必填） */
   defaultDingToken: string;
   conversations: {
@@ -159,4 +158,35 @@ export interface ISendMsgOpts {
   atUserId?: string;
   content: string;
   msgType?: 'text' | 'markdown';
+}
+
+/** 钉钉 /topapi/v2/user/get 返回的用户详情 */
+export interface IDingUserDetail {
+  userid: string;
+  unionid?: string;
+  name: string;
+  avatar?: string;
+  mobile?: string;
+  email?: string;
+  orgEmail?: string;
+  telephone?: string;
+  jobNumber?: string;
+  title?: string;
+  workPlace?: string;
+  remark?: string;
+  leader?: boolean;
+  dept?: number[];
+  deptOrder?: number[];
+  isLeaderInDept?: boolean[];
+  active?: boolean;
+  hiredDate?: number;
+  roleList?: Array<{
+    id: number;
+    name: string;
+    groupName: string;
+    type: number;
+  }>;
+  extattr?: string;
+  senior?: boolean;
+  userId?: string; // 兼容字段
 }
