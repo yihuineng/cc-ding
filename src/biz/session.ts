@@ -85,6 +85,9 @@ export function resolveToUserId(self: DingClaude, value: string): string {
 }
 
 export function authCheck(self: DingClaude, userId: string, conversationId?: string): boolean {
+  // owner 拥有所有权限，无需检查白名单
+  if (isOwner(self, userId)) return true;
+
   if (conversationId) {
     const conv = self.config.conversations.find(it => it.conversationId === conversationId);
     if (conv?.whiteUserList && conv.whiteUserList.length > 0) {

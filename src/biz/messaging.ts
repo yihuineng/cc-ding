@@ -203,12 +203,19 @@ export async function sendDingMessage(self: DingClaude, opts: ISendMsgOpts): Pro
   const atUserIds = atUserId ? [ atUserId ] : [];
   const conversation = self.config.conversations.find(it => it.conversationId === conversationId);
 
-  // 优先级: 会话级 dingToken > sessionWebhook > 客户端级 defaultDingToken
+  // 优先: 会话级 dingToken > sessionWebhook > 客户端级 defaultDingToken
   const dingToken = conversation?.dingToken;
+
+  // 钉钉 markdown 消息需要在 content 中显式写 @staffId 才能触发 at 提醒
+  let actualContent = content;
+  if (atUserId && msgType === 'markdown') {
+    actualContent = `${content}\n@${atUserId}`;
+  }
+
   const body = msgType === 'markdown'
     ? {
       msgtype: 'markdown',
-      markdown: { title: content, text: content },
+      markdown: { title: actualContent, text: actualContent },
       at: { atUserIds, isAtAll: false },
     }
     : {
