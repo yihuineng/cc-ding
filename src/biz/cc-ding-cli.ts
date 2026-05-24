@@ -1,3 +1,4 @@
+import { exec as childExec } from 'child_process';
 import { DingStreamClient, DWClientDownStream, dateUtil } from 'utils-ok';
 import fs from 'fs';
 import path from 'path';
@@ -1092,38 +1093,36 @@ export class DingClaude {
     const bashCmd = parseBashCommand(prompt);
     if (bashCmd !== null) {
       const conversationDir = this.getConversationDir(conversationId);
-      const { exec } = await import('child_process');
+      const self = this;
 
-      await this.sendDingMessage({
-        conversationId, sessionWebhook,
-        content: `⏳ 执行中: \`${bashCmd}\``,
-        msgType: 'markdown',
-      });
-
-      exec(bashCmd, {
+      childExec(bashCmd, {
         cwd: conversationDir,
         timeout: 30000,
         maxBuffer: 1024 * 1024, // 1MB
       }, async (error, stdout, stderr) => {
-        let replyContent: string;
-        if (error) {
-          replyContent = `❌ 命令执行失败\n\`\`\`\n${error.message}\n\`\`\``;
-          if (stderr) {
-            replyContent += `\n\n**stderr:**\n\`\`\`\n${this.sanitizeOutput(stderr)}\n\`\`\``;
+        try {
+          let replyContent: string;
+          if (error) {
+            replyContent = `❌ 命令执行失败\n\`\`\`\n${error.message}\n\`\`\``;
+            if (stderr) {
+              replyContent += `\n\n**stderr:**\n\`\`\`\n${self.sanitizeOutput(stderr)}\n\`\`\``;
+            }
+          } else {
+            const output = stdout || '(无输出)';
+            replyContent = `✅ 执行成功\n\`\`\`\n${self.sanitizeOutput(output)}\n\`\`\``;
+            if (stderr) {
+              replyContent += `\n\n**stderr:**\n\`\`\`\n${self.sanitizeOutput(stderr)}\n\`\`\``;
+            }
           }
-        } else {
-          const output = stdout || '(无输出)';
-          replyContent = `✅ 执行成功\n\`\`\`\n${this.sanitizeOutput(output)}\n\`\`\``;
-          if (stderr) {
-            replyContent += `\n\n**stderr:**\n\`\`\`\n${this.sanitizeOutput(stderr)}\n\`\`\``;
-          }
-        }
 
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: replyContent,
-          msgType: 'markdown',
-        });
+          await self.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: replyContent,
+            msgType: 'markdown',
+          });
+        } catch (sendErr) {
+          console.error(`[bash] 发送消息失败:`, sendErr);
+        }
       });
       return;
     }
