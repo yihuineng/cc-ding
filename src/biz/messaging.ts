@@ -200,16 +200,23 @@ export function splitMessage(content: string, maxLength: number): string[] {
  */
 export async function sendDingMessage(self: DingClaude, opts: ISendMsgOpts): Promise<void> {
   const { conversationId, sessionWebhook, atUserId, content, msgType = 'text' } = opts;
-  const atUserIds = atUserId ? [ atUserId ] : [];
   const conversation = self.config.conversations.find(it => it.conversationId === conversationId);
+
+  // 会话级 atSender 为 false 时，不 at 发送人
+  let effectiveAtUserId = atUserId;
+  if (conversation?.atSender === false) {
+    effectiveAtUserId = undefined;
+  }
+
+  const atUserIds = effectiveAtUserId ? [ effectiveAtUserId ] : [];
 
   // 优先: 会话级 dingToken > sessionWebhook > 客户端级 defaultDingToken
   const dingToken = conversation?.dingToken;
 
   // 钉钉 markdown 消息需要在 content 中显式写 @staffId 才能触发 at 提醒
   let actualContent = content;
-  if (atUserId && msgType === 'markdown') {
-    actualContent = `${content}\n@${atUserId}`;
+  if (effectiveAtUserId && msgType === 'markdown') {
+    actualContent = `${content}\n@${effectiveAtUserId}`;
   }
 
   const body = msgType === 'markdown'

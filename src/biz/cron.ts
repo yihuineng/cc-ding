@@ -486,6 +486,7 @@ export class CronEngine {
         session,
         lastSenderStaffId: job.senderStaffId,
         isProcessing: true,
+        messageQueue: [],
         conversationConfig: convCfg,
       });
       saveActiveSession(this.dc, job.conversationId);

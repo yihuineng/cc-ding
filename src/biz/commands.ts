@@ -142,9 +142,9 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/reg',
-    description: '注册当前群到配置(未注册群可用)',
-    usage: '/reg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称]',
-    examples: [ '/reg', '/reg --dingToken myToken --whiteUserList 13800138000,13900139000', '/reg --conversationTitle 工作群' ],
+    description: '注册当前群到配置，或刷新指定字段(已注册群)',
+    usage: '/reg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false]',
+    examples: [ '/reg', '/reg --dingToken myToken --whiteUserList 13800138000,13900139000', '/reg --conversationTitle 工作群', '/reg --whiteUserList 13800138000', '/reg --atSender false', '/reg --receiveReply false' ],
     category: '管理',
     ownerOnly: true,
   },
@@ -267,14 +267,16 @@ export function formatConversationInfo(
   conv: IConfig['conversations'][0],
   conversationId: string,
   phoneLookup?: (userId: string) => string | null,
+  workDir?: string,
 ): string {
   const lines = [
     `- **群ID:** ${conversationId}`,
   ];
   if (conv.conversationTitle) lines.push(`- **群名称:** ${conv.conversationTitle}`);
+  if (workDir) lines.push(`- **工作目录:** \`${workDir}\``);
   if (conv.linkConversationId) lines.push(`- **关联会话ID:** ${conv.linkConversationId}`);
   if (conv.agent) lines.push(`- **agent:** ${conv.agent}`);
-  if (conv.dingToken) lines.push(`- **dingToken:** ${conv.dingToken}...`);
+  if (conv.dingToken) lines.push(`- **dingToken:** ${conv.dingToken.substring(0, 8)}...`);
   if (conv.whiteUserList?.length) {
     const display = conv.whiteUserList.map(uid => {
       const phone = phoneLookup?.(uid);
@@ -282,7 +284,33 @@ export function formatConversationInfo(
     }).join(', ');
     lines.push(`- **群白名单:** ${display}`);
   }
+  if (conv.atSender === false) lines.push(`- **atSender:** false`);
+  if (conv.receiveReply === false) lines.push(`- **receiveReply:** false (不回复确认消息)`);
+  if (conv.useLocalOcr === false) lines.push(`- **本地OCR:** 关闭`);
   if (conv.taskCfg?.skill) lines.push(`- **taskSkill:** ${conv.taskCfg.skill}`);
+  return lines.join('\n');
+}
+
+/**
+ * 格式化全局核心配置
+ */
+export function formatGlobalConfig(cfg: IConfig): string {
+  const lines = [
+    `- **clientName:** ${cfg.clientName || '-'}`,
+    `- **sessionMaxConcurrency:** ${cfg.sessionMaxConcurrency ?? 5}`,
+    `- **taskHandlerCount:** ${cfg.taskHandlerCount ?? 1}`,
+    `- **taskQueueSize:** ${cfg.taskQueueSize ?? 50}`,
+    `- **includeThinking:** ${cfg.includeThinking ?? false}`,
+    `- **resultOnly:** ${cfg.resultOnly ?? true}`,
+  ];
+  if (cfg.defaultDingToken) lines.push(`- **defaultDingToken:** ${cfg.defaultDingToken.substring(0, 8)}...`);
+  if (cfg.owner) lines.push(`- **owner:** ${cfg.owner}`);
+  if (cfg.whiteUserList?.length) lines.push(`- **全局白名单:** ${cfg.whiteUserList.join(', ')}`);
+  if (cfg.apiKeyCfg) {
+    const validCount = cfg.apiKeyCfg.claudeSettings.filter(s => s.isValid).length;
+    lines.push(`- **apiKeyCfg:** ${validCount}/${cfg.apiKeyCfg.claudeSettings.length} 有效`);
+    lines.push(`  - **最近重置:** ${cfg.apiKeyCfg.resetTime || '-'}`);
+  }
   return lines.join('\n');
 }
 
@@ -528,9 +556,11 @@ export function parseResetApiKeyCfgCommand(text: string): boolean {
 
 /**
  * 解析 /reg 命令
- * 格式: /reg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称]
+ * 格式: /reg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false]
  * - /reg                                -> 注册当前群（所有选项均为默认值）
  * - /reg --dingToken xxx               -> 指定 dingToken
+ * - /reg --atSender false              -> 关闭回复时 at 发送人
+ * - /reg --receiveReply false          -> 关闭"收到"确认消息
  * - 其他                                -> null
  */
 export interface IRegOptions {
@@ -538,6 +568,8 @@ export interface IRegOptions {
   linkConversationId?: string;
   whiteUserList?: string[];
   conversationTitle?: string;
+  atSender?: boolean;
+  receiveReply?: boolean;
 }
 
 export function parseRegCommand(text: string): IRegOptions | null {
@@ -572,6 +604,12 @@ export function parseRegCommand(text: string): IRegOptions | null {
       if (titleParts.length > 0) {
         result.conversationTitle = titleParts.join(' ');
       }
+    } else if (token === '--atSender' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      result.atSender = val === 'true' || val === '1' || val === 'yes';
+    } else if (token === '--receiveReply' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      result.receiveReply = val === 'true' || val === '1' || val === 'yes';
     }
   }
 

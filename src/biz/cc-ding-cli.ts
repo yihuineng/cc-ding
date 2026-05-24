@@ -7,7 +7,7 @@ import { extractQuoteInfo, formatPromptWithQuote } from './quote';
 import { fetchQuotedMessage } from './messaging';
 import { processPictureMessage, processRichTextMessage } from './image';
 import {
-  parseInfoCommand, formatConversationInfo, parseLogCommand,
+  parseInfoCommand, formatConversationInfo, formatGlobalConfig, parseLogCommand,
   parseLsCommand, findSubdirByName, getDirectoryStructure,
   parseContinueSessionCommand, parseHelpCommand, parseCommandHelp,
   getCommandByName, formatHelpOverview, formatCommandHelp,
@@ -656,46 +656,90 @@ export class DingClaude {
       }
     }
 
-    // /reg 命令：注册当前群到配置（仅 owner 可用，用于未注册群）
-    const regOpts = conversationConfig ? null : parseRegCommand(prompt);
+    // /reg 命令：注册当前群到配置（仅 owner 可用）
+    // 未注册群：创建新配置；已注册群：刷新指定字段
+    const regOpts = parseRegCommand(prompt);
     if (regOpts !== null) {
       if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
-      const newConv: IConfig['conversations'][0] = {
-        conversationId,
-        conversationTitle: regOpts.conversationTitle || conversationTitle,
-      };
-      if (regOpts.dingToken) newConv.dingToken = regOpts.dingToken;
-      if (regOpts.linkConversationId) newConv.linkConversationId = regOpts.linkConversationId;
-      if (regOpts.whiteUserList && regOpts.whiteUserList.length > 0) {
-        newConv.whiteUserList = regOpts.whiteUserList;
-        // 预解析手机号到缓存
-        for (const item of regOpts.whiteUserList) {
-          if (isMobile(item)) {
-            await resolveUserId(this, item);
+
+      const existingConv = conversationConfig;
+
+      // 如果传入了任何字段，执行更新
+      const hasUpdates = !!(regOpts.dingToken || regOpts.linkConversationId ||
+        (regOpts.whiteUserList && regOpts.whiteUserList.length > 0) || regOpts.conversationTitle ||
+        regOpts.atSender !== undefined || regOpts.receiveReply !== undefined);
+
+      if (existingConv && hasUpdates) {
+        // 已注册群，刷新指定字段
+        if (regOpts.conversationTitle) existingConv.conversationTitle = regOpts.conversationTitle;
+        if (regOpts.dingToken) existingConv.dingToken = regOpts.dingToken;
+        if (regOpts.linkConversationId) existingConv.linkConversationId = regOpts.linkConversationId;
+        if (regOpts.atSender !== undefined) existingConv.atSender = regOpts.atSender;
+        if (regOpts.receiveReply !== undefined) existingConv.receiveReply = regOpts.receiveReply;
+        if (regOpts.whiteUserList && regOpts.whiteUserList.length > 0) {
+          existingConv.whiteUserList = regOpts.whiteUserList;
+          // 预解析手机号到缓存
+          for (const item of regOpts.whiteUserList) {
+            if (isMobile(item)) {
+              await resolveUserId(this, item);
+            }
           }
         }
+        saveClientConfig(this);
+        console.log(`[${timestamp()}] 刷新群配置: ${existingConv.conversationTitle || conversationTitle}(${conversationId})`);
+      } else if (!existingConv) {
+        // 未注册群，创建新配置
+        const newConv: IConfig['conversations'][0] = {
+          conversationId,
+          conversationTitle: regOpts.conversationTitle || conversationTitle,
+        };
+        if (regOpts.dingToken) newConv.dingToken = regOpts.dingToken;
+        if (regOpts.linkConversationId) newConv.linkConversationId = regOpts.linkConversationId;
+        if (regOpts.atSender !== undefined) newConv.atSender = regOpts.atSender;
+        if (regOpts.receiveReply !== undefined) newConv.receiveReply = regOpts.receiveReply;
+        if (regOpts.whiteUserList && regOpts.whiteUserList.length > 0) {
+          newConv.whiteUserList = regOpts.whiteUserList;
+          // 预解析手机号到缓存
+          for (const item of regOpts.whiteUserList) {
+            if (isMobile(item)) {
+              await resolveUserId(this, item);
+            }
+          }
+        }
+        this.config.conversations.push(newConv);
+        saveClientConfig(this);
+        console.log(`[${timestamp()}] 注册新群: ${newConv.conversationTitle || conversationTitle}(${conversationId})`);
       }
-      this.config.conversations.push(newConv);
-      saveClientConfig(this);
 
+      // 确保工作目录已创建
+      const workDir = this.getConversationDir(conversationId);
+      if (!fs.existsSync(workDir)) {
+        fs.mkdirSync(workDir, { recursive: true });
+        console.log(`[${timestamp()}] 创建工作目录: ${workDir}`);
+      }
+
+      // 统一返回当前群配置信息
+      const convToShow = existingConv || this.getConversationConfig(conversationId);
       const info: string[] = [
-        `✅ 群已注册`,
-        `- **群名称:** ${newConv.conversationTitle || '-'}`,
+        existingConv ? `✅ 群配置已刷新` : `✅ 群已注册`,
+        `- **群名称:** ${convToShow?.conversationTitle || conversationTitle || '-'}`,
         `- **群ID:** ${conversationId}`,
       ];
-      if (newConv.dingToken) info.push(`- **dingToken:** ${newConv.dingToken.substring(0, 8)}...`);
+      if (convToShow?.dingToken) info.push(`- **dingToken:** ${convToShow.dingToken.substring(0, 8)}...`);
       else info.push('- **dingToken:** (未指定, 使用 defaultDingToken)');
-      if (newConv.linkConversationId) info.push(`- **linkConversationId:** ${newConv.linkConversationId}`);
-      if (newConv.whiteUserList?.length) {
-        const display = newConv.whiteUserList.map(item => {
+      if (convToShow?.linkConversationId) info.push(`- **linkConversationId:** ${convToShow.linkConversationId}`);
+      if (convToShow?.atSender === false) info.push('- **atSender:** false (不 @ 发送人)');
+      if (convToShow?.receiveReply === false) info.push('- **receiveReply:** false (不回复确认消息)');
+      if (convToShow?.whiteUserList?.length) {
+        const display = convToShow.whiteUserList.map(item => {
           if (isMobile(item)) return item;
           return userIdToPhone(this, item) || item;
         }).join(', ');
         info.push(`- **whiteUserList:** ${display}`);
       }
       info.push('\n💡 可编辑 config.json 补充更多配置');
+      info.push(`📂 工作目录: \`${workDir}\``);
 
-      console.log(`[${timestamp()}] 注册新群: ${newConv.conversationTitle}(${conversationId})`);
       await this.sendDingMessage({
         conversationId,
         sessionWebhook,
@@ -1110,8 +1154,10 @@ export class DingClaude {
     const infoType = parseInfoCommand(prompt);
     if (infoType !== null) {
       const parts: string[] = [];
+      const workDir = this.getConversationDir(conversationId);
       if (infoType === 'all' || infoType === 'robot') {
-        parts.push('### 🤖 群配置信息\n' + formatConversationInfo(conversationConfig, conversationId, (uid) => userIdToPhone(this, uid)));
+        parts.push('### 🌐 全局核心配置\n' + formatGlobalConfig(this.config));
+        parts.push('### 🤖 群配置信息\n' + formatConversationInfo(conversationConfig, conversationId, (uid) => userIdToPhone(this, uid), workDir));
       }
       if (infoType === 'all' || infoType === 'session') {
         const sessionInfo = this.formatSessionInfo(conversationId);

@@ -227,7 +227,7 @@ export async function resolveAllPhonesInConfig(self: DingClaude): Promise<void> 
 
 export function hashConversationId(self: DingClaude, conversationId: string): string {
   const convCfg = getConversationConfig(self, conversationId);
-  const convId = convCfg.linkConversationId || conversationId;
+  const convId = convCfg?.linkConversationId || conversationId;
   return crypto.createHash('md5').update(convId).digest('hex');
 }
 
@@ -306,13 +306,14 @@ export function formatSessionInfo(self: DingClaude, conversationId: string): str
   const found = findActiveSession(self, conversationId);
   if (!found) return null;
 
-  const { session, isProcessing } = found.session;
+  const { session, isProcessing, messageQueue } = found.session;
   const lines = [
     `- **会话ID:** ${getSessionId(session)}`,
     `- **发起者:** ${session.startNickName}(${session.startStaffId})`,
     `- **开始时间:** ${session.startTimeStr}`,
     `- **最后发送者:** ${found.session.lastSenderStaffId}`,
     `- **处理中:** ${isProcessing}`,
+    `- **排队消息:** ${messageQueue?.length || 0} 条`,
   ];
   return lines.join('\n');
 }
@@ -427,7 +428,9 @@ export function appendSessionLog(sessionDir: string, role: 'user' | 'assistant' 
   const logFile = `${sessionDir}/session.log`;
   const ts = timestamp();
   const logEntry = `[${ts}] [${role.toUpperCase()}]: ${content}\n`;
-  fs.appendFileSync(logFile, logEntry, 'utf-8');
+  try {
+    fs.appendFileSync(logFile, logEntry, 'utf-8');
+  } catch { /* 会话目录被清理则忽略 */ }
 }
 
 export function getActiveSessionsFile(self: DingClaude, conversationId: string): string {
@@ -475,6 +478,7 @@ export function loadActiveSessions(self: DingClaude): void {
         session: data.session,
         lastSenderStaffId: data.lastSenderStaffId || data.session.startStaffId,
         isProcessing: false,
+        messageQueue: [],
         conversationConfig: data.conversationConfig,
       });
       console.log(`恢复活跃会话: 群=${conv.conversationId}, 会话ID=${getSessionId(data.session)}`);
@@ -567,6 +571,7 @@ export async function switchToSession(
     session: targetSession,
     lastSenderStaffId: senderStaffId,
     isProcessing: false,
+    messageQueue: [],
     conversationConfig,
   });
   saveActiveSession(self, conversationId);
@@ -622,6 +627,7 @@ export async function startNewSession(self: DingClaude, opts: {
     session,
     lastSenderStaffId: senderStaffId,
     isProcessing: true,
+    messageQueue: [],
     conversationConfig,
   });
   saveActiveSession(self, conversationId);
@@ -646,7 +652,58 @@ export async function startNewSession(self: DingClaude, opts: {
     });
   } finally {
     const activeSession = self.activeSessions.get(conversationId);
-    if (activeSession) activeSession.isProcessing = false;
+    if (activeSession) {
+      activeSession.isProcessing = false;
+    }
+  }
+  // 检查并处理排队消息
+  await processMessageQueue(self, conversationId);
+}
+
+/**
+ * 处理消息队列：依次处理排队中的消息
+ */
+export async function processMessageQueue(self: DingClaude, conversationId: string): Promise<void> {
+  const activeSession = self.activeSessions.get(conversationId);
+  if (!activeSession || activeSession.messageQueue.length === 0) return;
+
+  const entry = activeSession.messageQueue.shift()!;
+  const { message, senderStaffId, senderNick } = entry;
+  const sessionWebhook = activeSession.session.sessionWebhook;
+
+  console.log(`处理队列消息: 群=${conversationId}, 剩余 ${activeSession.messageQueue.length} 条`);
+
+  activeSession.isProcessing = true;
+  activeSession.lastSenderStaffId = senderStaffId;
+  saveActiveSession(self, conversationId);
+
+  if (activeSession.conversationConfig.receiveReply !== false) {
+    await sendDingMessage(self, {
+      conversationId, sessionWebhook, atUserId: senderStaffId,
+      content: '✅ 收到，我来处理...',
+    }).catch(() => {});
+  }
+
+  try {
+    await executeClaudeQuery(self, activeSession.session, message, {
+      skill: activeSession.conversationConfig.taskCfg?.skill,
+      agent: activeSession.conversationConfig.agent,
+      senderNick,
+      senderStaffId,
+    });
+  } catch (err) {
+    console.error('执行队列 Claude 查询失败:', err);
+    await sendDingMessage(self, {
+      conversationId, sessionWebhook, atUserId: senderStaffId,
+      content: `❌ 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  } finally {
+    activeSession.isProcessing = false;
+  }
+
+  // 如果队列还有消息，继续处理
+  if (activeSession.messageQueue.length > 0) {
+    await processMessageQueue(self, conversationId);
   }
 }
 
@@ -671,22 +728,21 @@ export async function handleSessionMessage(self: DingClaude, opts: {
   if (activeSession) {
     const activeSessionDir = getSessionDir(self, activeSession.session);
     if (!fs.existsSync(activeSessionDir)) {
-      const sessionId = getSessionId(activeSession.session);
-      console.log(`活跃会话目录已被清理: 群=${conversationId}, 会话ID=${sessionId}`);
-      self.activeSessions.delete(found!.key);
-      saveActiveSession(self, found!.key);
-      await sendDingMessage(self, {
-        conversationId, sessionWebhook, atUserId: senderStaffId,
-        content: `⚠️ 会话 ${sessionId} 的数据已被清理，无法继续。已自动结束该会话，请重新发送消息开始新会话`,
-      });
-      return;
+      // 目录不存在，重新创建（可能因目录重命名或清理导致）
+      fs.mkdirSync(activeSessionDir, { recursive: true });
+      fs.writeFileSync(`${activeSessionDir}/session.json`, JSON.stringify(activeSession.session, null, 2), 'utf-8');
+      console.log(`会话目录已重建: 群=${conversationId}, 路径=${activeSessionDir}`);
     }
 
     if (activeSession.isProcessing) {
-      console.log(`会话 ${conversationId} 正在处理中，忽略新消息`);
+      // 正在处理中，将消息加入队列
+      const queueEntry = { message, senderStaffId, senderNick };
+      activeSession.messageQueue.push(queueEntry);
+      const queuePos = activeSession.messageQueue.length;
+      console.log(`会话 ${conversationId} 消息已入队，排队第 ${queuePos} 条`);
       await sendDingMessage(self, {
         conversationId, sessionWebhook, atUserId: senderStaffId,
-        content: '⏳ 正在处理上一条消息，请稍候...',
+        content: `⏳ 正在处理中，已加入队列（排队第 ${queuePos} 条）`,
       });
       return;
     }
@@ -707,10 +763,12 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     activeSession.session.currentConversationId = conversationId;
     updateSessionFile(self, activeSession.session, { currentWebhook: sessionWebhook, currentConversationId: conversationId });
 
-    await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
-      content: '✅ 收到，我来处理...',
-    });
+    if (conversationConfig.receiveReply !== false) {
+      await sendDingMessage(self, {
+        conversationId, sessionWebhook, atUserId: senderStaffId,
+        content: '✅ 收到，我来处理...',
+      });
+    }
 
     try {
       await executeClaudeQuery(self, activeSession.session, message, {
@@ -720,6 +778,30 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         senderStaffId,
       });
     } catch (err) {
+      // 恢复会话失败（可能会话已失效），清除 claudeSessionId 重新发起一次
+      if (activeSession.session.claudeSessionId) {
+        console.log(`[会话恢复失败] 清除 claudeSessionId 并重新发起: ${activeSession.session.claudeSessionId}`);
+        activeSession.session.claudeSessionId = undefined;
+        self.updateSessionFile(activeSession.session, {});
+        try {
+          await executeClaudeQuery(self, activeSession.session, message, {
+            skill: conversationConfig.taskCfg?.skill,
+            agent: conversationConfig.agent,
+            senderNick,
+            senderStaffId,
+          });
+          return;
+        } catch (retryErr) {
+          console.error('重试执行 Claude 查询失败:', retryErr);
+          await sendDingMessage(self, {
+            conversationId, sessionWebhook, atUserId: senderStaffId,
+            content: `❌ 处理消息时发生错误: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
+          });
+          activeSession.isProcessing = false;
+          await processMessageQueue(self, conversationId);
+          return;
+        }
+      }
       console.error('执行 Claude 查询失败:', err);
       await sendDingMessage(self, {
         conversationId, sessionWebhook, atUserId: senderStaffId,
@@ -728,6 +810,8 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     } finally {
       activeSession.isProcessing = false;
     }
+    // 检查并处理排队消息
+    await processMessageQueue(self, conversationId);
   } else {
     await startNewSession(self, {
       conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig,

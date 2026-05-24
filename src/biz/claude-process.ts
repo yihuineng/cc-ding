@@ -105,6 +105,14 @@ class RetryableApiError extends Error {
   }
 }
 
+/** Claude 会话已失效（会话被清理或过期），需清除 claudeSessionId 重新发起 */
+class ConversationNotFoundError extends Error {
+  constructor() {
+    super('Claude conversation not found');
+    this.name = 'ConversationNotFoundError';
+  }
+}
+
 /**
  * 判断错误是否为需要授权
  */
@@ -116,6 +124,13 @@ function isPermissionError(stderrOutput: string): boolean {
     'not authorized', 'access denied', '需要授权', '权限不足', '没有权限',
   ];
   return permissionKeywords.some(keyword => lowerOutput.includes(keyword));
+}
+
+/**
+ * 判断错误是否为会话已失效（Claude 侧会话被清理或过期）
+ */
+function isConversationNotFoundError(stderrOutput: string): boolean {
+  return /no conversation found with session id/i.test(stderrOutput);
 }
 
 /**
@@ -197,6 +212,12 @@ function runClaudeOnce(
 ): Promise<number> {
   let sessionDir = self.getSessionDir(session);
   let sessionLog = `${sessionDir}/session.log`;
+
+  // 确保 session 目录存在（可能被 /clean 清理了）
+  if (!fs.existsSync(sessionDir)) {
+    fs.mkdirSync(sessionDir, { recursive: true });
+  }
+
   const startTime = Date.now();
 
   return new Promise((resolve, reject) => {
@@ -406,6 +427,13 @@ function runClaudeOnce(
         return;
       }
 
+      // Claude 会话已失效（被清理或过期），抛出特殊错误让外层清除 claudeSessionId 后重试
+      if (session.claudeSessionId && isConversationNotFoundError(combinedOutput)) {
+        console.log(`[${timestamp()}] Claude 会话已失效: ${session.claudeSessionId}，通知外层重新发起新会话`);
+        reject(new ConversationNotFoundError());
+        return;
+      }
+
       reject(new Error(`Claude 进程退出，代码: ${code}`));
     });
 
@@ -464,18 +492,14 @@ export async function executeClaudeQuery(
   self.appendSessionLog(sessionDir, 'user', messageWithPrefix);
 
   const entryCmd = 'claude';
-  const baseCmdArgs = [
+  const fixedCmdArgs = [
     '--permission-mode', 'bypassPermissions',
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
   ];
   if (agent) {
-    baseCmdArgs.push('--agent', agent);
-  }
-  if (session.claudeSessionId) {
-    baseCmdArgs.push('--resume', session.claudeSessionId);
-    console.log(`[${timestamp()}] 恢复 Claude 会话: ${session.claudeSessionId}`);
+    fixedCmdArgs.push('--agent', agent);
   }
 
   const actualMessage = skill ? `/${skill} ${messageWithPrefix}` : messageWithPrefix;
@@ -484,8 +508,14 @@ export async function executeClaudeQuery(
   while (true) {
     const isRetry = consecutiveFastFail > 0;
 
-    // 动态构建命令参数（settings 可能在重试时变化）
-    const cmdArgs = [ ...baseCmdArgs ];
+    // 每次循环动态构建命令参数（settings 和 resume 可能在重试时变化）
+    const cmdArgs = [ ...fixedCmdArgs ];
+    if (session.claudeSessionId) {
+      cmdArgs.push('--resume', session.claudeSessionId);
+      if (!isRetry) {
+        console.log(`[${timestamp()}] 恢复 Claude 会话: ${session.claudeSessionId}`);
+      }
+    }
     const settingsPath = resolveClaudeSettingsPath(self, dingGroupDir, opts?.settings);
     if (settingsPath) {
       cmdArgs.push('--settings', settingsPath);
@@ -494,9 +524,6 @@ export async function executeClaudeQuery(
     let stdinMessage: string;
 
     if (isRetry) {
-      if (session.claudeSessionId && !cmdArgs.includes('--resume')) {
-        cmdArgs.push('--resume', session.claudeSessionId);
-      }
       stdinMessage = '继续';
       console.log(`[${timestamp()}] 发送"继续"重试 (快速失败连续${consecutiveFastFail}/${MAX_FAST_FAIL}次)`);
       fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: TPM 限流，发送"继续"重试 (快速失败连续${consecutiveFastFail}/${MAX_FAST_FAIL})\n`, 'utf-8');
@@ -566,6 +593,17 @@ export async function executeClaudeQuery(
         }
         fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: TPM 限流，${API_RETRY_DELAY_MS / 1000}s 后重试\n`, 'utf-8');
         await sleep(API_RETRY_DELAY_MS);
+        continue;
+      }
+      if (err instanceof ConversationNotFoundError) {
+        // Claude 会话已失效，清除 claudeSessionId 后重新发起新会话
+        console.log(`[${timestamp()}] Claude 会话失效，清除 claudeSessionId 并重新发起`);
+        fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Claude 会话已失效，清除旧会话并重新发起\n`, 'utf-8');
+        if (session.claudeSessionId) {
+          session.claudeSessionId = undefined;
+          self.updateSessionFile(session, {});
+        }
+        consecutiveFastFail = 0;
         continue;
       }
       throw err;

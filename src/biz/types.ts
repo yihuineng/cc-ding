@@ -17,6 +17,9 @@ export interface IConfig {
     whiteUserList?: string[]; // 机器人实例维度白名单, 定义时优先级高于Client维度
     agent?: string; // 指定agent
     useLocalOcr?: boolean; // 本地 OCR 降级（用于不支持图片识别的模型），默认 true
+    atSender?: boolean; // 回复时是否 at 发送人，默认 true
+    /** 是否回复"收到"等确认消息，默认 true */
+    receiveReply?: boolean;
     sessionCfg?: {
       // task 功能默认开启，无需配置开关
     }; // 群维度session相关配置
@@ -76,6 +79,8 @@ export interface IActiveSession {
   conversationConfig: IConfig['conversations'][0];
   currentProcess?: ReturnType<typeof spawn>; // 当前执行的 Claude 进程
   interrupted?: boolean; // 是否被用户中断
+  /** 排队中的消息，当前查询完成后依次处理 */
+  messageQueue: Array<{ message: string; senderStaffId: string; senderNick: string }>;
 }
 
 // 活跃会话持久化数据（不含运行时字段）
