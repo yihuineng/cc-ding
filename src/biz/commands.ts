@@ -149,6 +149,13 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     ownerOnly: true,
   },
   {
+    name: '/bash',
+    description: '在工作目录执行 bash 命令',
+    usage: '/bash <命令>',
+    examples: [ '/bash ls -la', '/bash pwd', '/bash git status' ],
+    category: '文件',
+  },
+  {
     name: '/auth',
     description: '管理当前群白名单(add/del,默认list)',
     usage: '/auth [add|del <手机号或userId>]',
@@ -614,6 +621,20 @@ export function parseRegCommand(text: string): IRegOptions | null {
   }
 
   return result;
+}
+
+/**
+ * 解析 /bash 命令
+ * - /bash ls -la -> 'ls -la'
+ * - /bash pwd -> 'pwd'
+ * - 其他 -> null
+ */
+export function parseBashCommand(text: string): string | null {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^\/bash\s+(.+)$/i);
+  if (!match) return null;
+  const cmd = match[1].trim();
+  return cmd || null;
 }
 
 /**

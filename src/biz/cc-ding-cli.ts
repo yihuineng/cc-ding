@@ -13,6 +13,7 @@ import {
   getCommandByName, formatHelpOverview, formatCommandHelp,
   parseCronCommand, parsePwdCommand, parseMkdirCommand, parseTouchCommand, parseRmCommand,
   parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseRegCommand, parseAuthCommand,
+  parseBashCommand,
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery } from './claude-process';
@@ -331,6 +332,18 @@ export class DingClaude {
    */
   private sanitizeLogContent(content: string): string {
     return content.replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+  }
+
+  /**
+   * 对命令输出进行截断和清理，防止过长或含特殊字符破坏钉钉消息
+   */
+  private sanitizeOutput(content: string): string {
+    const cleaned = content.replace(/\r\n/g, '\n');
+    const MAX_OUTPUT = 8000;
+    if (cleaned.length > MAX_OUTPUT) {
+      return cleaned.substring(0, MAX_OUTPUT) + '\n...(输出已截断)';
+    }
+    return cleaned;
   }
 
   /**
@@ -1072,6 +1085,46 @@ export class DingClaude {
     const rmPath = parseRmCommand(prompt);
     if (rmPath !== null) {
       await this.handleRmCommand(conversationId, sessionWebhook, rmPath);
+      return;
+    }
+
+    // /bash 命令：在工作目录执行 bash 命令
+    const bashCmd = parseBashCommand(prompt);
+    if (bashCmd !== null) {
+      const conversationDir = this.getConversationDir(conversationId);
+      const { exec } = await import('child_process');
+
+      await this.sendDingMessage({
+        conversationId, sessionWebhook,
+        content: `⏳ 执行中: \`${bashCmd}\``,
+        msgType: 'markdown',
+      });
+
+      exec(bashCmd, {
+        cwd: conversationDir,
+        timeout: 30000,
+        maxBuffer: 1024 * 1024, // 1MB
+      }, async (error, stdout, stderr) => {
+        let replyContent: string;
+        if (error) {
+          replyContent = `❌ 命令执行失败\n\`\`\`\n${error.message}\n\`\`\``;
+          if (stderr) {
+            replyContent += `\n\n**stderr:**\n\`\`\`\n${this.sanitizeOutput(stderr)}\n\`\`\``;
+          }
+        } else {
+          const output = stdout || '(无输出)';
+          replyContent = `✅ 执行成功\n\`\`\`\n${this.sanitizeOutput(output)}\n\`\`\``;
+          if (stderr) {
+            replyContent += `\n\n**stderr:**\n\`\`\`\n${this.sanitizeOutput(stderr)}\n\`\`\``;
+          }
+        }
+
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: replyContent,
+          msgType: 'markdown',
+        });
+      });
       return;
     }
 
