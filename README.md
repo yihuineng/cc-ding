@@ -141,7 +141,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `/open [shell]` | 在文件管理器或终端中打开工作目录 |
 | `/clean [all]` | 清除历史会话和缓存 |
 | `/reset-apikeycfg` | 重置 API Key 配置 |
-| `/reg` | 注册当前群到配置 |
+| `/cfg` | 注册当前群到配置 |
 | `/auth [add\|del <用户>]` | 管理当前群白名单 |
 
 ## 配置文件示例

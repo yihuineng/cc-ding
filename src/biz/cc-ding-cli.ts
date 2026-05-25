@@ -13,8 +13,8 @@ import {
   parseContinueSessionCommand, parseHelpCommand, parseCommandHelp,
   getCommandByName, formatHelpOverview, formatCommandHelp,
   parseCronCommand, parsePwdCommand, parseMkdirCommand, parseTouchCommand, parseRmCommand,
-  parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseRegCommand, parseAuthCommand,
-  parseBashCommand,
+  parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
+  parseBashCommand, parseMqCommand,
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery } from './claude-process';
@@ -348,6 +348,14 @@ export class DingClaude {
   }
 
   /**
+   * 截断消息文本，用于 /mq 队列显示
+   */
+  private truncateMsg(content: string, maxLen = 100): string {
+    const oneLine = content.replace(/\n/g, ' ').trim();
+    return oneLine.length > maxLen ? oneLine.slice(0, maxLen) + '...' : oneLine;
+  }
+
+  /**
    * 获取用于记录日志的 session
    * 如果有活跃 session 则复用，否则创建一个新的临时 session 目录
    * @param skipIfNoActiveSession 如果没有活跃 session 是否跳过创建（用于查询类操作）
@@ -670,30 +678,31 @@ export class DingClaude {
       }
     }
 
-    // /reg 命令：注册当前群到配置（仅 owner 可用）
+    // /cfg 命令：注册当前群到配置（仅 owner 可用）
     // 未注册群：创建新配置；已注册群：刷新指定字段
-    const regOpts = parseRegCommand(prompt);
-    if (regOpts !== null) {
+    const cfgOpts = parseCfgCommand(prompt);
+    if (cfgOpts !== null) {
       if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
 
       const existingConv = conversationConfig;
 
       // 如果传入了任何字段，执行更新
-      const hasUpdates = !!(regOpts.dingToken || regOpts.linkConversationId ||
-        (regOpts.whiteUserList && regOpts.whiteUserList.length > 0) || regOpts.conversationTitle ||
-        regOpts.atSender !== undefined || regOpts.receiveReply !== undefined);
+      const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
+        (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
+        cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined);
 
       if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
-        if (regOpts.conversationTitle) existingConv.conversationTitle = regOpts.conversationTitle;
-        if (regOpts.dingToken) existingConv.dingToken = regOpts.dingToken;
-        if (regOpts.linkConversationId) existingConv.linkConversationId = regOpts.linkConversationId;
-        if (regOpts.atSender !== undefined) existingConv.atSender = regOpts.atSender;
-        if (regOpts.receiveReply !== undefined) existingConv.receiveReply = regOpts.receiveReply;
-        if (regOpts.whiteUserList && regOpts.whiteUserList.length > 0) {
-          existingConv.whiteUserList = regOpts.whiteUserList;
+        if (cfgOpts.conversationTitle) existingConv.conversationTitle = cfgOpts.conversationTitle;
+        if (cfgOpts.dingToken) existingConv.dingToken = cfgOpts.dingToken;
+        if (cfgOpts.linkConversationId) existingConv.linkConversationId = cfgOpts.linkConversationId;
+        if (cfgOpts.atSender !== undefined) existingConv.atSender = cfgOpts.atSender;
+        if (cfgOpts.receiveReply !== undefined) existingConv.receiveReply = cfgOpts.receiveReply;
+        if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
+        if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
+          existingConv.whiteUserList = cfgOpts.whiteUserList;
           // 预解析手机号到缓存
-          for (const item of regOpts.whiteUserList) {
+          for (const item of cfgOpts.whiteUserList) {
             if (isMobile(item)) {
               await resolveUserId(this, item);
             }
@@ -705,16 +714,17 @@ export class DingClaude {
         // 未注册群，创建新配置
         const newConv: IConfig['conversations'][0] = {
           conversationId,
-          conversationTitle: regOpts.conversationTitle || conversationTitle,
+          conversationTitle: cfgOpts.conversationTitle || conversationTitle,
         };
-        if (regOpts.dingToken) newConv.dingToken = regOpts.dingToken;
-        if (regOpts.linkConversationId) newConv.linkConversationId = regOpts.linkConversationId;
-        if (regOpts.atSender !== undefined) newConv.atSender = regOpts.atSender;
-        if (regOpts.receiveReply !== undefined) newConv.receiveReply = regOpts.receiveReply;
-        if (regOpts.whiteUserList && regOpts.whiteUserList.length > 0) {
-          newConv.whiteUserList = regOpts.whiteUserList;
+        if (cfgOpts.dingToken) newConv.dingToken = cfgOpts.dingToken;
+        if (cfgOpts.linkConversationId) newConv.linkConversationId = cfgOpts.linkConversationId;
+        if (cfgOpts.atSender !== undefined) newConv.atSender = cfgOpts.atSender;
+        if (cfgOpts.receiveReply !== undefined) newConv.receiveReply = cfgOpts.receiveReply;
+        if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
+        if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
+          newConv.whiteUserList = cfgOpts.whiteUserList;
           // 预解析手机号到缓存
-          for (const item of regOpts.whiteUserList) {
+          for (const item of cfgOpts.whiteUserList) {
             if (isMobile(item)) {
               await resolveUserId(this, item);
             }
@@ -815,7 +825,7 @@ export class DingClaude {
           conversationId,
           sessionWebhook,
           atUserId: senderStaffId,
-          content: `⚠️ 该群未注册，请先使用 \`/reg\` 命令注册`,
+          content: `⚠️ 该群未注册，请先使用 \`/cfg\` 命令注册`,
           msgType: 'markdown',
         });
       } else {
@@ -1093,9 +1103,14 @@ export class DingClaude {
     const bashCmd = parseBashCommand(prompt);
     if (bashCmd !== null) {
       const conversationDir = this.getConversationDir(conversationId);
+      // 全局 preBash + 群级别 preBash 叠加执行
+      const preBashParts: string[] = [];
+      if (this.config.preBash) preBashParts.push(this.config.preBash);
+      if (conversationConfig?.preBash) preBashParts.push(conversationConfig.preBash);
+      const finalCmd = preBashParts.length > 0 ? `${preBashParts.join(' && ')} && ${bashCmd}` : bashCmd;
       const self = this;
 
-      childExec(bashCmd, {
+      childExec(finalCmd, {
         cwd: conversationDir,
         timeout: 30000,
         maxBuffer: 1024 * 1024, // 1MB
@@ -1318,6 +1333,76 @@ export class DingClaude {
         });
       }
       return;
+    }
+
+    // /mq 命令：查看和管理当前会话消息队列
+    const mqCmd = parseMqCommand(prompt);
+    if (mqCmd) {
+      const activeSession = this.findActiveSession(conversationId);
+      const queue = activeSession?.session.messageQueue ?? [];
+
+      switch (mqCmd.type) {
+        case 'list': {
+          if (queue.length === 0) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: '📭 当前无排队消息',
+              msgType: 'markdown',
+            });
+          } else {
+            const lines = queue.map((entry, i) =>
+              `${i + 1}. **${entry.senderNick || entry.senderStaffId}:** ${this.truncateMsg(entry.message)}`,
+            );
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: `📨 消息队列 (${queue.length} 条)\n${lines.join('\n')}`,
+              msgType: 'markdown',
+            });
+          }
+          return;
+        }
+
+        case 'cancel': {
+          if (queue.length === 0) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: '📭 当前无排队消息',
+              msgType: 'markdown',
+            });
+            return;
+          }
+          const removeCount = Math.min(mqCmd.count, queue.length);
+          const removed = queue.splice(queue.length - removeCount, removeCount);
+          const removedLines = removed.map((entry, i) =>
+            `${i + 1}. **${entry.senderNick || entry.senderStaffId}:** ${this.truncateMsg(entry.message)}`,
+          );
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: `✅ 已从队尾移除 ${removeCount} 条消息\n${removedLines.join('\n')}`,
+            msgType: 'markdown',
+          });
+          return;
+        }
+
+        case 'cancelAll': {
+          if (queue.length === 0) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: '📭 当前无排队消息',
+              msgType: 'markdown',
+            });
+            return;
+          }
+          const removedCount = queue.length;
+          queue.length = 0;
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: `✅ 已清空消息队列，共移除 ${removedCount} 条消息`,
+            msgType: 'markdown',
+          });
+          return;
+        }
+      }
     }
 
     // 处理普通 session 消息

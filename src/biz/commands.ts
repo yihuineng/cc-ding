@@ -68,6 +68,13 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     category: '任务',
   },
   {
+    name: '/mq',
+    description: '查看和管理当前会话消息队列(排队中的消息)',
+    usage: '/mq | /mq -n <数量> | /mq -all',
+    examples: [ '/mq', '/mq -n 1', '/mq -n 3', '/mq -all' ],
+    category: '任务',
+  },
+  {
     name: '/cron',
     description: '创建和管理定时任务(Claude自动分析自然语言)',
     usage: '/cron <自然语言描述> | /cron <cron表达式> <任务描述> | /cron list|pause|resume|delete <id>',
@@ -141,16 +148,16 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     ownerOnly: true,
   },
   {
-    name: '/reg',
+    name: '/cfg',
     description: '注册当前群到配置，或刷新指定字段(已注册群)',
-    usage: '/reg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false]',
-    examples: [ '/reg', '/reg --dingToken myToken --whiteUserList 13800138000,13900139000', '/reg --conversationTitle 工作群', '/reg --whiteUserList 13800138000', '/reg --atSender false', '/reg --receiveReply false' ],
+    usage: '/cfg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"]',
+    examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"' ],
     category: '管理',
     ownerOnly: true,
   },
   {
     name: '/bash',
-    description: '在工作目录执行 bash 命令',
+    description: '在工作目录执行 bash 命令（如配置了 preBash 全局/群级别，将叠加前置执行）',
     usage: '/bash <命令>',
     examples: [ '/bash ls -la', '/bash pwd', '/bash git status' ],
     category: '文件',
@@ -295,6 +302,7 @@ export function formatConversationInfo(
   if (conv.receiveReply === false) lines.push(`- **receiveReply:** false (不回复确认消息)`);
   if (conv.useLocalOcr === false) lines.push(`- **本地OCR:** 关闭`);
   if (conv.taskCfg?.skill) lines.push(`- **taskSkill:** ${conv.taskCfg.skill}`);
+  if (conv.preBash) lines.push(`- **preBash:** \`${conv.preBash}\``);
   return lines.join('\n');
 }
 
@@ -562,26 +570,27 @@ export function parseResetApiKeyCfgCommand(text: string): boolean {
 }
 
 /**
- * 解析 /reg 命令
- * 格式: /reg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false]
- * - /reg                                -> 注册当前群（所有选项均为默认值）
- * - /reg --dingToken xxx               -> 指定 dingToken
- * - /reg --atSender false              -> 关闭回复时 at 发送人
- * - /reg --receiveReply false          -> 关闭"收到"确认消息
+ * 解析 /cfg 命令
+ * 格式: /cfg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false]
+ * - /cfg                                -> 注册当前群（所有选项均为默认值）
+ * - /cfg --dingToken xxx               -> 指定 dingToken
+ * - /cfg --atSender false              -> 关闭回复时 at 发送人
+ * - /cfg --receiveReply false          -> 关闭"收到"确认消息
  * - 其他                                -> null
  */
-export interface IRegOptions {
+export interface ICfgOptions {
   dingToken?: string;
   linkConversationId?: string;
   whiteUserList?: string[];
   conversationTitle?: string;
   atSender?: boolean;
   receiveReply?: boolean;
+  preBash?: string;
 }
 
-export function parseRegCommand(text: string): IRegOptions | null {
+export function parseCfgCommand(text: string): ICfgOptions | null {
   const trimmed = text.trim();
-  if (!/^\/reg(?:\s|$)/i.test(trimmed)) return null;
+  if (!/^\/cfg(?:\s|$)/i.test(trimmed)) return null;
 
   const rest = trimmed.substring(4).trim();
 
@@ -591,7 +600,7 @@ export function parseRegCommand(text: string): IRegOptions | null {
   // --help 请求，返回 null 交由 --help 处理器处理
   if (/^--help$/i.test(rest)) return null;
 
-  const result: IRegOptions = {};
+  const result: ICfgOptions = {};
   // 逐个解析 --key value
   const tokens = rest.split(/\s+/);
   for (let i = 0; i < tokens.length; i++) {
@@ -617,6 +626,16 @@ export function parseRegCommand(text: string): IRegOptions | null {
     } else if (token === '--receiveReply' && tokens[i + 1]) {
       const val = tokens[++i].toLowerCase();
       result.receiveReply = val === 'true' || val === '1' || val === 'yes';
+    } else if (token === '--preBash' && tokens[i + 1]) {
+      // preBash 可能包含空格，取到下一个 -- 之前的所有内容
+      const bashParts: string[] = [];
+      while (i + 1 < tokens.length && !tokens[i + 1].startsWith('--')) {
+        bashParts.push(tokens[++i]);
+      }
+      if (bashParts.length > 0) {
+        // 去除首尾引号
+        result.preBash = bashParts.join(' ').replace(/^["']|["']$/g, '');
+      }
     }
   }
 
@@ -635,6 +654,33 @@ export function parseBashCommand(text: string): string | null {
   if (!match) return null;
   const cmd = match[1].trim();
   return cmd || null;
+}
+
+/**
+ * 解析 /mq 命令
+ * - /mq           -> { type: 'list' }
+ * - /mq -n 3      -> { type: 'cancel', count: 3 }
+ * - /mq -all      -> { type: 'cancelAll' }
+ * - 其他 -> null
+ */
+export type MqCommand = { type: 'list' } | { type: 'cancel'; count: number } | { type: 'cancelAll' };
+
+export function parseMqCommand(text: string): MqCommand | null {
+  const trimmed = text.trim();
+  if (!/^\/mq(?:\s|$)/i.test(trimmed) && trimmed.toLowerCase() !== '/mq') return null;
+
+  const rest = trimmed.substring(3).trim();
+  if (!rest) return { type: 'list' };
+
+  const match = rest.match(/^-n\s+(\d+)$/i);
+  if (match) {
+    const n = parseInt(match[1], 10);
+    return n > 0 ? { type: 'cancel', count: n } : { type: 'list' };
+  }
+
+  if (/^-all$/i.test(rest)) return { type: 'cancelAll' };
+
+  return null;
 }
 
 /**

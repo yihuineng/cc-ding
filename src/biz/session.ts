@@ -632,10 +632,12 @@ export async function startNewSession(self: DingClaude, opts: {
   });
   saveActiveSession(self, conversationId);
 
-  await sendDingMessage(self, {
-    conversationId, sessionWebhook, atUserId: senderStaffId,
-    content: `🚀 会话已开始！\n处理中...\n💡 回复 /end 可结束本轮对话`,
-  });
+  if (conversationConfig.receiveReply !== false) {
+    await sendDingMessage(self, {
+      conversationId, sessionWebhook, atUserId: senderStaffId,
+      content: `🚀 会话已开始！\n处理中...\n💡 回复 /end 可结束本轮对话`,
+    });
+  }
 
   try {
     await executeClaudeQuery(self, session, message, {

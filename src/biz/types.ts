@@ -20,6 +20,8 @@ export interface IConfig {
     atSender?: boolean; // 回复时是否 at 发送人，默认 true
     /** 是否回复"收到"等确认消息，默认 true */
     receiveReply?: boolean;
+    /** /bash 执行前的前置命令（群级别，与全局 preBash 叠加执行） */
+    preBash?: string;
     sessionCfg?: {
       // task 功能默认开启，无需配置开关
     }; // 群维度session相关配置
@@ -41,6 +43,8 @@ export interface IConfig {
   };
   /** 是否开启 DEBUG 日志，默认 false */
   debug?: boolean;
+  /** /bash 执行前的前置命令，与群级别 preBash 叠加执行，顺序为 `全局 && 群 && userCmd` */
+  preBash?: string;
 }
 
 // 会话信息
