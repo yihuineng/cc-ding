@@ -31,7 +31,11 @@
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },
+  "license": "MIT",
   "author": "yhn",
+  "engines": {
+    "node": ">=24"
+  },
   "bin": {
     "cc-ding": "./dist/bin/cc-ding.js"
   },
