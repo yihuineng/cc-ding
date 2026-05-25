@@ -9,26 +9,7 @@ export interface IConfig {
   clientSecret: string; // 钉钉 Stream Client 密钥
   /** 默认 dingToken，当会话无 dingToken 时使用（必填） */
   defaultDingToken: string;
-  conversations: {
-    conversationId: string;
-    linkConversationId?: string; // 关联会话ID, 指定时共用该id的工作目录(多个群机器人记忆共享场景, 同时也需要注意并发控制避免文件操作冲突)
-    conversationTitle?: string;
-    dingToken?: string; // 机器人单聊时, 不存在
-    whiteUserList?: string[]; // 机器人实例维度白名单, 定义时优先级高于Client维度
-    agent?: string; // 指定agent
-    useLocalOcr?: boolean; // 本地 OCR 降级（用于不支持图片识别的模型），默认 true
-    atSender?: boolean; // 回复时是否 at 发送人，默认 true
-    /** 是否回复"收到"等确认消息，默认 true */
-    receiveReply?: boolean;
-    /** /bash 执行前的前置命令（群级别，与全局 preBash 叠加执行） */
-    preBash?: string;
-    sessionCfg?: {
-      // task 功能默认开启，无需配置开关
-    }; // 群维度session相关配置
-    taskCfg?: {
-      skill?: string; // 指定技能处理
-    }; // 群维度task相关配置
-  }[];
+  conversations: IConversation[];
   taskQueueSize?: number; // 默认50
   taskHandlerCount?: number; // 默认1个
   sessionMaxConcurrency?: number; // 最大并发cc会话, session场景, 默认5
@@ -45,6 +26,27 @@ export interface IConfig {
   debug?: boolean;
   /** /bash 执行前的前置命令，与群级别 preBash 叠加执行，顺序为 `全局 && 群 && userCmd` */
   preBash?: string;
+}
+
+export interface IConversation {
+  conversationId: string;
+  linkConversationId?: string; // 关联会话ID, 指定时共用该id的工作目录(多个群机器人记忆共享场景, 同时也需要注意并发控制避免文件操作冲突)
+  conversationTitle?: string;
+  dingToken?: string; // 机器人单聊时, 不存在
+  whiteUserList?: string[]; // 机器人实例维度白名单, 定义时优先级高于Client维度
+  agent?: string; // 指定agent
+  useLocalOcr?: boolean; // 本地 OCR 降级（用于不支持图片识别的模型），默认 true
+  atSender?: boolean; // 回复时是否 at 发送人，默认 true
+  /** 是否回复"收到"等确认消息，默认 true */
+  receiveReply?: boolean;
+  /** /bash 执行前的前置命令（群级别，与全局 preBash 叠加执行） */
+  preBash?: string;
+  sessionCfg?: {
+    // task 功能默认开启，无需配置开关
+  }; // 群维度session相关配置
+  taskCfg?: {
+    skill?: string; // 指定技能处理
+  }; // 群维度task相关配置
 }
 
 // 会话信息

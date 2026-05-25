@@ -1,15 +1,30 @@
 # cc-ding
 
-钉钉机器人对接本地 Claude Code 工具，支持群聊多轮对话、任务队列、定时任务等功能。
+[![npm version](https://img.shields.io/npm/v/cc-ding.svg?style=flat-square)](https://www.npmjs.com/package/cc-ding)
+[![npm downloads](https://img.shields.io/npm/dm/cc-ding.svg?style=flat-square)](https://www.npmjs.com/package/cc-ding)
+[![License](https://img.shields.io/npm/l/cc-ding.svg?style=flat-square)](LICENSE)
+[![Node.js](https://img.shields.io/node/v/cc-ding.svg?style=flat-square)](https://nodejs.org)
 
-## 安装
+将钉钉机器人接入本地 [Claude Code](https://claude.ai/code)，实现群聊多轮对话、任务队列、定时任务等能力。
+
+## 功能特性
+
+- **多轮对话** — 支持私聊 / 群聊多轮会话，`/new` `/end` `/resume` 灵活切换
+- **群内多用户** — 白名单内所有成员均可参与同一会话
+- **任务队列** — `/task` 提交任务，按队列顺序执行，完成后自动回复
+- **定时任务** — 自然语言创建 cron，支持暂停 / 恢复 / 删除
+- **图片消息** — 自动接收钉钉图片 / 富文本内嵌图片，可选本地 OCR 识别
+- **API Key 池化** — 429 自动切换、跨天重置，提升服务稳定性
+- **关联群** — 多个群共享同一个 Claude 会话上下文
+
+## 快速开始
+
+### 安装
 
 ```bash
 pnpm i cc-ding -g
 cc-ding --help
 ```
-
-## 快速开始
 
 ### 1. 初始化配置
 
@@ -17,132 +32,107 @@ cc-ding --help
 cc-ding init -ci {clientId} -cs {clientSecret} -m {手机号}
 ```
 
-- `-ci, --clientId`: 钉钉应用的 ClientId
-- `-cs, --clientSecret`: 钉钉 Stream 连接密钥
-- `-m, --mobile`: 自己的手机号（自动加入白名单）
-- `-cn, --clientName`: 机器人名称（可选，默认 "cc助手"）
+| 参数 | 说明 |
+|------|------|
+| `-ci, --clientId` | 钉钉应用的 ClientId |
+| `-cs, --clientSecret` | 钉钉 Stream 连接密钥 |
+| `-m, --mobile` | 管理员手机号（自动加入白名单） |
+| `-cn, --clientName` | 机器人名称（可选，默认 "cc助手"） |
 
 ### 2. 编辑配置
 
-配置文件位于 `~/.cc-ding/{clientId}/config.json`，需要添加 `conversations` 配置（群聊需配置 `dingToken`）。
+配置文件位于 `~/.cc-ding/{clientId}/config.json`，按 [配置文件示例](#配置文件示例) 补充 `conversations` 等字段。
 
-### 3. 启动机器人
+### 3. 启动
 
 ```bash
 # 直接启动
 cc-ding run -ci {clientId}
 
-# 推荐：PM2 方式启动
+# 推荐：PM2 守护进程方式
 pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientId}
 ```
 
-## 数据存储路径
-
-| 数据类型 | 路径 |
-|---------|------|
-| 会话数据 | `~/.cc-ding/{clientId}/{MD5}/.sessions/{claudeSessionId}/session.{json\|log}` |
-| 任务数据 | `~/.cc-ding/{clientId}/{MD5}/.tasks/{时间戳}/task.{json\|log}` |
-| 定时任务 | `~/.cc-ding/{clientId}/cron.json` |
-| 图片缓存 | `~/.cc-ding/{clientId}/{MD5}/.images/` |
-| 手机号映射 | `~/.cc-ding/{clientId}/phone-map.json` |
-
-## 功能特性
+## 使用指南
 
 ### 会话模式
 
-- **会话ID**: 由 Claude 分配的 `claudeSessionId`
-- **结束会话**: `/end`
-- **新会话**: `/new [初始消息]` 强制结束当前会话并开启新会话
-- **恢复会话**: `/resume [会话ID]` 恢复指定历史会话，不指定则恢复最近一个
-- **会话持久化**: 活跃会话自动保存到 `active.json`，服务重启后自动恢复
-- **群内多用户**: 允许群内所有白名单用户参与对话
-
-### 任务模式
-
-- 使用 `/task <任务描述>` 提交任务到队列
-- 任务按队列顺序执行，完成后自动回复
-- 使用 `/task cancel` 取消任务
-
-### 定时任务
-
-- `/cron <自然语言描述>` — Claude 自动分析并生成 cron 表达式
-- `/cron 0 9 * * * 任务描述` — 直接指定 cron 表达式
-- `/cron list` — 查看定时任务列表
-- `/cron pause <id>` / `/cron resume <id>` — 暂停/恢复定时任务
-- `/cron delete <id>` — 删除定时任务
-
-### 图片消息支持
-
-- 支持接收钉钉图片消息（`picture`）和富文本消息（`richText`，含内嵌图片）
-- 图片自动下载保存到会话目录下的 `.images/` 目录
-- `useLocalOcr`: 默认开启，使用本地 OCR 识别图片文字，同时传入原图路径供 Claude 自主查看
-- 配置方式：`conversations[].useLocalOcr = false` 可关闭 OCR（适用于支持图片识别的模型）
-
-### API Key 池化管理（可选）
-
-配置 `apiKeyCfg` 后启用：
-
-- **429 自动切换**: 自动切换到可用的 API Key
-- **Key 轮换**: 遇到 429 或连续 TPM 不稳定时自动换 Key
-- **跨天重置**: 每日 0 点自动重置 API Key 状态
-
-### 白名单管理
-
-- 全局白名单：`config.json` 中的 `whiteUserList`
-- 群级白名单：`conversations[].whiteUserList`（优先级高于全局）
-- 支持手机号和 userId 两种格式，手机号自动解析为 userId
-- `/auth` 命令管理群级白名单（`/auth` 查看、`/auth add <手机号>`、`/auth del <手机号>`）
-
-### 关联群功能
-
-- 通过 `linkConversationId` 实现多个群共享同一个 Claude 会话上下文
-- 关联群的消息会自动路由到同一个活跃会话
-
-## 命令列表
-
-### 💬 会话
-
-| 命令 | 描述 |
+| 命令 | 说明 |
 |------|------|
 | `/help` | 查看所有可用命令 |
 | `/log [行数]` | 查看最近会话日志 |
-| `/new [初始消息]` | 开始新的对话会话 |
-| `/resume [会话ID]` | 继续指定的历史会话 |
+| `/new [初始消息]` | 开始新的对话 |
+| `/resume [会话ID]` | 继续历史会话（不指定则恢复最近一个） |
 | `/end` | 结束当前会话 |
 
-### 📋 任务
+- 会话自动持久化到 `active.json`，服务重启后自动恢复
+- 群内所有白名单用户均可参与对话
 
-| 命令 | 描述 |
+### 任务模式
+
+```
+/task <任务描述>      # 提交任务到队列
+/task cancel          # 取消任务
+```
+
+### 定时任务
+
+```
+/cron <自然语言描述>              # Claude 自动生成 cron 表达式
+/cron 0 9 * * * <任务描述>        # 直接指定 cron 表达式
+/cron list                        # 查看列表
+/cron pause <id> / resume <id>    # 暂停 / 恢复
+/cron delete <id>                 # 删除
+```
+
+### 文件操作
+
+| 命令 | 说明 |
 |------|------|
-| `/task <描述>` | 提交任务到队列 |
-| `/cron <描述>` | 创建和管理定时任务 |
-
-### 📂 文件
-
-| 命令 | 描述 |
-|------|------|
-| `/pwd` | 显示当前工作目录的绝对路径 |
-| `/ls [目录] [层数]` | 查看工作目录结构 |
+| `/pwd` | 显示工作目录绝对路径 |
+| `/ls [目录] [层数]` | 查看目录结构 |
 | `/mkdir <路径>` | 创建文件夹 |
 | `/touch <路径>` | 创建空文件 |
 | `/rm <路径>` | 删除文件或目录 |
 
-### ⚙️ 系统
+### 管理命令（仅 owner）
 
-| 命令 | 描述 |
+| 命令 | 说明 |
 |------|------|
 | `/info [robot\|session\|task]` | 查看群配置、会话和任务信息 |
-| `/version` | 查看工具版本信息 |
-
-### 🔧 管理（仅 owner）
-
-| 命令 | 描述 |
-|------|------|
+| `/version` | 查看版本信息 |
 | `/open [shell]` | 在文件管理器或终端中打开工作目录 |
 | `/clean [all]` | 清除历史会话和缓存 |
 | `/reset-apikeycfg` | 重置 API Key 配置 |
 | `/cfg` | 注册当前群到配置 |
-| `/auth [add\|del <用户>]` | 管理当前群白名单 |
+| `/auth [add\|del <用户>]` | 管理群级白名单 |
+
+## 配置说明
+
+### 白名单
+
+- **全局白名单**：`config.json` 中的 `whiteUserList`
+- **群级白名单**：`conversations[].whiteUserList`（优先级高于全局）
+- 支持手机号和 userId 两种格式，手机号自动解析为 userId
+
+### API Key 池化
+
+配置 `apiKeyCfg` 后启用：
+
+- 429 错误自动切换到可用 Key
+- 连续 TPM 不稳定时自动换 Key
+- 每日 0 点自动重置 API Key 状态
+
+### 图片消息
+
+- 支持 `picture` 和 `richText`（含内嵌图片）消息类型
+- 图片自动下载到 `.images/` 目录
+- `useLocalOcr: true`（默认）使用本地 OCR 识别，同时传入原图路径供 Claude 自主查看
+- 设置 `useLocalOcr: false` 关闭 OCR（适用于支持图片识别的模型）
+
+### 关联群
+
+通过 `linkConversationId` 实现多个群共享同一个 Claude 会话上下文，消息自动路由到同一活跃会话。
 
 ## 配置文件示例
 
@@ -175,15 +165,31 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 }
 ```
 
+## 数据存储
+
+所有数据存储在 `~/.cc-ding/{clientId}/` 目录下：
+
+| 类型 | 路径 |
+|------|------|
+| 会话数据 | `{MD5}/.sessions/{claudeSessionId}/session.{json,log}` |
+| 任务数据 | `{MD5}/.tasks/{时间戳}/task.{json,log}` |
+| 定时任务 | `cron.json` |
+| 图片缓存 | `{MD5}/.images/` |
+| 手机号映射 | `phone-map.json` |
+
 ## 开发
 
 ```bash
 pnpm install
-pnpm run lint
-pnpm run test
-pnpm run build
+pnpm run lint       # 代码检查
+pnpm run test       # 运行测试
+pnpm run build      # 构建
 ```
 
 ## 系统要求
 
 - Node.js >= 24
+
+## License
+
+MIT
