@@ -202,9 +202,9 @@ export async function sendDingMessage(self: DingClaude, opts: ISendMsgOpts): Pro
   const { conversationId, sessionWebhook, atUserId, content, msgType = 'text' } = opts;
   const conversation = self.config.conversations.find(it => it.conversationId === conversationId);
 
-  // 会话级 atSender 为 false 时，不 at 发送人
+  // 会话级 atSender 为 false 或单聊时，不 at 发送人
   let effectiveAtUserId = atUserId;
-  if (conversation?.atSender === false) {
+  if (conversation?.atSender === false || conversation?.conversationType === '1') {
     effectiveAtUserId = undefined;
   }
 

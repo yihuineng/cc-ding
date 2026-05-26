@@ -30,6 +30,7 @@ export interface IConfig {
 
 export interface IConversation {
   conversationId: string;
+  conversationType: string; // 1 为单聊 2 为群聊
   linkConversationId?: string; // 关联会话ID, 指定时共用该id的工作目录(多个群机器人记忆共享场景, 同时也需要注意并发控制避免文件操作冲突)
   conversationTitle?: string;
   dingToken?: string; // 机器人单聊时, 不存在

@@ -170,6 +170,27 @@ export class DingClaude {
     return true;
   }
 
+  /**
+   * Owner 或单聊模式权限检查
+   * 单聊已注册时允许非 owner 操作（仅限当前单聊）
+   */
+  private async requireOwnerOrSingleChat(
+    conversationId: string,
+    sessionWebhook: string,
+    senderStaffId: string,
+    conversationConfig: IConfig['conversations'][0],
+  ): Promise<boolean> {
+    if (this.isOwner(senderStaffId)) return true;
+    if (conversationConfig?.conversationType === '1') return true;
+    await this.sendDingMessage({
+      conversationId,
+      sessionWebhook,
+      content: '❌ 只有机器人 owner 才能执行此操作',
+      msgType: 'markdown',
+    });
+    return false;
+  }
+
   // ==================== 消息处理入口 ====================
 
   /**
@@ -614,7 +635,7 @@ export class DingClaude {
     this.dingStreamClient.socketCallBackResponse(res.headers.messageId, '');
     const rawData = JSON.parse(res.data) as IRawCallbackData;
     // console.log('rawData', rawData);
-    const { senderNick, senderStaffId, conversationId, conversationTitle, sessionWebhook, msgtype } = rawData;
+    const { senderNick, senderStaffId, conversationId, conversationTitle, sessionWebhook, msgtype, conversationType } = rawData;
     const textContent = rawData.text?.content?.trim() ?? '';
 
     this.debugLog(`收到消息: 群=${conversationTitle}(${conversationId}), 发送者=${senderNick}(${senderStaffId}), 类型=${msgtype}, 内容=${textContent.substring(0, 50)}`);
@@ -678,13 +699,30 @@ export class DingClaude {
       }
     }
 
-    // /cfg 命令：注册当前群到配置（仅 owner 可用）
+    // /cfg 命令：注册当前群到配置（仅 owner 可用，单聊模式也允许操作）
     // 未注册群：创建新配置；已注册群：刷新指定字段
+    // 支持 --conversationId <id> 指定目标群（仅 owner，单聊模式不允许指定）
     const cfgOpts = parseCfgCommand(prompt);
     if (cfgOpts !== null) {
-      if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+      // 单聊模式不允许指定 --conversationId
+      if (cfgOpts.conversationId && conversationConfig?.conversationType !== '1' && !this.isOwner(senderStaffId)) {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '❌ 只有机器人 owner 才能操作其他群的配置',
+          msgType: 'markdown',
+        });
+        return;
+      }
+      if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
 
-      const existingConv = conversationConfig;
+      // 确定目标 conversationId
+      const targetConvId = cfgOpts.conversationId || conversationId;
+      const isTargetOther = targetConvId !== conversationId;
+
+      // 查找目标群配置
+      const existingConv = isTargetOther
+        ? this.config.conversations.find(c => c.conversationId === targetConvId)
+        : conversationConfig;
 
       // 如果传入了任何字段，执行更新
       const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
@@ -694,6 +732,7 @@ export class DingClaude {
       if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
         if (cfgOpts.conversationTitle) existingConv.conversationTitle = cfgOpts.conversationTitle;
+        if (conversationType && !isTargetOther) existingConv.conversationType = conversationType;
         if (cfgOpts.dingToken) existingConv.dingToken = cfgOpts.dingToken;
         if (cfgOpts.linkConversationId) existingConv.linkConversationId = cfgOpts.linkConversationId;
         if (cfgOpts.atSender !== undefined) existingConv.atSender = cfgOpts.atSender;
@@ -701,7 +740,6 @@ export class DingClaude {
         if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
         if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
           existingConv.whiteUserList = cfgOpts.whiteUserList;
-          // 预解析手机号到缓存
           for (const item of cfgOpts.whiteUserList) {
             if (isMobile(item)) {
               await resolveUserId(this, item);
@@ -709,12 +747,13 @@ export class DingClaude {
           }
         }
         saveClientConfig(this);
-        console.log(`[${timestamp()}] 刷新群配置: ${existingConv.conversationTitle || conversationTitle}(${conversationId})`);
+        console.log(`[${timestamp()}] 刷新群配置: ${existingConv.conversationTitle || targetConvId}(${targetConvId})`);
       } else if (!existingConv) {
         // 未注册群，创建新配置
         const newConv: IConfig['conversations'][0] = {
-          conversationId,
-          conversationTitle: cfgOpts.conversationTitle || conversationTitle,
+          conversationId: targetConvId,
+          conversationType: isTargetOther ? '1' : conversationType,
+          conversationTitle: cfgOpts.conversationTitle || (isTargetOther ? '' : conversationTitle),
         };
         if (cfgOpts.dingToken) newConv.dingToken = cfgOpts.dingToken;
         if (cfgOpts.linkConversationId) newConv.linkConversationId = cfgOpts.linkConversationId;
@@ -723,7 +762,6 @@ export class DingClaude {
         if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
         if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
           newConv.whiteUserList = cfgOpts.whiteUserList;
-          // 预解析手机号到缓存
           for (const item of cfgOpts.whiteUserList) {
             if (isMobile(item)) {
               await resolveUserId(this, item);
@@ -732,23 +770,24 @@ export class DingClaude {
         }
         this.config.conversations.push(newConv);
         saveClientConfig(this);
-        console.log(`[${timestamp()}] 注册新群: ${newConv.conversationTitle || conversationTitle}(${conversationId})`);
+        console.log(`[${timestamp()}] 注册新群: ${newConv.conversationTitle || targetConvId}(${targetConvId}) 类型=${newConv.conversationType || '-'}`);
       }
 
       // 确保工作目录已创建
-      const workDir = this.getConversationDir(conversationId);
+      const workDir = this.getConversationDir(targetConvId);
       if (!fs.existsSync(workDir)) {
         fs.mkdirSync(workDir, { recursive: true });
         console.log(`[${timestamp()}] 创建工作目录: ${workDir}`);
       }
 
       // 统一返回当前群配置信息
-      const convToShow = existingConv || this.getConversationConfig(conversationId);
+      const convToShow = existingConv || this.getConversationConfig(targetConvId);
       const info: string[] = [
         existingConv ? `✅ 群配置已刷新` : `✅ 群已注册`,
-        `- **群名称:** ${convToShow?.conversationTitle || conversationTitle || '-'}`,
-        `- **群ID:** ${conversationId}`,
+        `- **群名称:** ${convToShow?.conversationTitle || targetConvId}`,
+        `- **群ID:** ${targetConvId}`,
       ];
+      if (convToShow?.conversationType) info.push(`- **会话类型:** ${convToShow.conversationType === '1' ? '单聊' : convToShow.conversationType === '2' ? '群聊' : convToShow.conversationType}`);
       if (convToShow?.dingToken) info.push(`- **dingToken:** ${convToShow.dingToken.substring(0, 8)}...`);
       else info.push('- **dingToken:** (未指定, 使用 defaultDingToken)');
       if (convToShow?.linkConversationId) info.push(`- **linkConversationId:** ${convToShow.linkConversationId}`);
@@ -838,10 +877,19 @@ export class DingClaude {
       return;
     }
 
-    // /clean 命令：清除历史会话和缓存（仅 owner 可用）
+    // /clean 命令：清除历史会话和缓存（单聊模式也允许操作）
     const cleanType = parseCleanCommand(prompt);
     if (cleanType !== null) {
-      if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+      // 单聊模式仅限 clean 当前群
+      if (cleanType === 'all' && conversationConfig?.conversationType !== '1' && !this.isOwner(senderStaffId)) {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '❌ 只有机器人 owner 才能清除所有群缓存',
+          msgType: 'markdown',
+        });
+        return;
+      }
+      if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
 
       const targetConvId = cleanType === 'all' ? null : conversationId;
       const result = this.cleanCache(targetConvId, true);

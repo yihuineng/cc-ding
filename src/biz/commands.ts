@@ -150,8 +150,8 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/cfg',
     description: '注册当前群到配置，或刷新指定字段(已注册群)',
-    usage: '/cfg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"]',
-    examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"' ],
+    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"]',
+    examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
     category: '管理',
     ownerOnly: true,
   },
@@ -287,6 +287,7 @@ export function formatConversationInfo(
     `- **群ID:** ${conversationId}`,
   ];
   if (conv.conversationTitle) lines.push(`- **群名称:** ${conv.conversationTitle}`);
+  if (conv.conversationType) lines.push(`- **会话类型:** ${conv.conversationType === '1' ? '单聊' : conv.conversationType === '2' ? '群聊' : conv.conversationType}`);
   if (workDir) lines.push(`- **工作目录:** \`${workDir}\``);
   if (conv.linkConversationId) lines.push(`- **关联会话ID:** ${conv.linkConversationId}`);
   if (conv.agent) lines.push(`- **agent:** ${conv.agent}`);
@@ -583,6 +584,7 @@ export interface ICfgOptions {
   linkConversationId?: string;
   whiteUserList?: string[];
   conversationTitle?: string;
+  conversationId?: string;
   atSender?: boolean;
   receiveReply?: boolean;
   preBash?: string;
@@ -609,6 +611,8 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
       result.dingToken = tokens[++i];
     } else if (token === '--linkConversationId' && tokens[i + 1]) {
       result.linkConversationId = tokens[++i];
+    } else if (token === '--conversationId' && tokens[i + 1]) {
+      result.conversationId = tokens[++i];
     } else if (token === '--whiteUserList' && tokens[i + 1]) {
       result.whiteUserList = tokens[++i].split(',').map(s => s.trim()).filter(Boolean);
     } else if (token === '--conversationTitle' && tokens[i + 1]) {
