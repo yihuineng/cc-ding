@@ -761,9 +761,8 @@ export class DingClaude {
         }).join(', ');
         info.push(`- **whiteUserList:** ${display}`);
       }
+      info.push(`- **工作目录:** ${workDir}`);
       info.push('\n💡 可编辑 config.json 补充更多配置');
-      info.push(`📂 工作目录: \`${workDir}\``);
-
       await this.sendDingMessage({
         conversationId,
         sessionWebhook,
