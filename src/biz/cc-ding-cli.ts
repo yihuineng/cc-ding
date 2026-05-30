@@ -1154,7 +1154,7 @@ export class DingClaude {
       const preBashParts: string[] = [];
       if (this.config.preBash) preBashParts.push(this.config.preBash);
       if (conversationConfig?.preBash) preBashParts.push(conversationConfig.preBash);
-      const finalCmd = preBashParts.length > 0 ? `${preBashParts.join(' && ')} && ${bashCmd}` : bashCmd;
+      const finalCmd = preBashParts.length > 0 ? `${preBashParts.join(' ; ')} ; ${bashCmd}` : bashCmd;
       const self = this;
 
       childExec(finalCmd, {
