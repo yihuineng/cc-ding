@@ -45,144 +45,262 @@ async function downloadAttachment(
   ext: string = '',
 ): Promise<string | null> {
   try {
-    const buffer = await downloadImageBuffer(self, downloadCode, robotCode);
-    const fileName = `${fileTimestamp()}${ext || '.png'}`;
-    const filePath = path.join(recorderDir, 'attachments', fileName);
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const downloadUrl = await getImageDownloadUrl(self, downloadCode, robotCode);
+    if (!downloadUrl) return null;
+
+    const buffer = await downloadImageBuffer(downloadUrl);
+    if (!buffer) return null;
+
+    const attachDir = path.join(recorderDir, 'attachments');
+    fs.mkdirSync(attachDir, { recursive: true });
+
+    const suffix = ext ? `.${ext}` : detectExtFromBuffer(buffer);
+    const fileName = `${fileTimestamp()}-${downloadCode.slice(-8)}${suffix}`;
+    const filePath = path.join(attachDir, fileName);
     fs.writeFileSync(filePath, buffer);
+    console.log(`[${timestamp()}] [recorder] 附件已保存: ${filePath} (${buffer.length} bytes)`);
     return filePath;
   } catch (err) {
-    console.error('下载附件失败:', err);
+    console.warn(`[${timestamp()}] [recorder] 附件下载失败:`, err);
     return null;
   }
 }
 
+function detectExtFromBuffer(buffer: Buffer): string {
+  if (buffer.length < 4) return '';
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) return '.png';
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) return '.jpg';
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) return '.gif';
+  if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) return '.webp';
+  if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) return '.pdf';
+  return '';
+}
+
+function extractDownloadCode(rawData: IRawCallbackData): string | null {
+  const data = rawData as unknown as Record<string, unknown>;
+
+  if (data.pictureDownloadCode) return data.pictureDownloadCode as string;
+
+  if (data.extensions && typeof data.extensions === 'object') {
+    const ext = data.extensions as Record<string, unknown>;
+    if (ext.downloadCode) return ext.downloadCode as string;
+  }
+
+  const contentKeys = [ 'image_content', 'file_content', 'video_content', 'audio_content' ];
+  for (const key of contentKeys) {
+    const c = data[key];
+    if (c && typeof c === 'object') {
+      const content = c as Record<string, unknown>;
+      if (content.download_code) return content.download_code as string;
+      if (content.downloadCode) return content.downloadCode as string;
+    }
+  }
+
+  return null;
+}
+
+function recordText(
+  rawData: IRawCallbackData, recorderDir: string,
+  senderNick: string, senderStaffId: string,
+): string {
+  const now = Date.now();
+  const text = rawData.text?.content?.trim() ?? '';
+  const content = buildFrontmatter('text', senderNick, senderStaffId, now) + text;
+  return saveRecordFile(recorderDir, 'text', content);
+}
+
+async function recordPicture(
+  self: DingClaude, rawData: IRawCallbackData, recorderDir: string,
+  senderNick: string, senderStaffId: string,
+): Promise<string> {
+  const now = Date.now();
+  const downloadCode = rawData.pictureDownloadCode || extractDownloadCode(rawData);
+  const parts: string[] = [ buildFrontmatter('picture', senderNick, senderStaffId, now) ];
+
+  if (downloadCode) {
+    const attachPath = await downloadAttachment(self, downloadCode, rawData.robotCode, recorderDir);
+    if (attachPath) {
+      parts.push(`![image](${attachPath})`);
+    } else {
+      parts.push(`[图片下载失败] downloadCode: ${downloadCode}`);
+    }
+  } else {
+    parts.push('[图片消息 - 无法获取下载码]');
+    parts.push('', '```json', JSON.stringify(rawData, null, 2), '```');
+  }
+
+  return saveRecordFile(recorderDir, 'picture', parts.join('\n'));
+}
+
+async function recordFileMessage(
+  self: DingClaude, rawData: IRawCallbackData, recorderDir: string,
+  senderNick: string, senderStaffId: string, msgType: string,
+): Promise<string> {
+  const now = Date.now();
+  const downloadCode = extractDownloadCode(rawData);
+  const parts: string[] = [ buildFrontmatter(msgType, senderNick, senderStaffId, now) ];
+
+  if (downloadCode) {
+    const attachPath = await downloadAttachment(self, downloadCode, rawData.robotCode, recorderDir);
+    if (attachPath) {
+      parts.push(`[${msgType}] ${attachPath}`);
+    } else {
+      parts.push(`[${msgType}下载失败] downloadCode: ${downloadCode}`);
+    }
+  } else {
+    parts.push(`[${msgType}消息 - 无法获取下载码，已保存原始数据]`);
+    parts.push('', '```json', JSON.stringify(rawData, null, 2), '```');
+  }
+
+  return saveRecordFile(recorderDir, msgType, parts.join('\n'));
+}
+
+function recordChatRecord(
+  rawData: IRawCallbackData, recorderDir: string,
+  senderNick: string, senderStaffId: string,
+): string {
+  const now = Date.now();
+  const parts: string[] = [ buildFrontmatter('chatRecord', senderNick, senderStaffId, now) ];
+
+  const data = rawData as unknown as Record<string, unknown>;
+  let records: Array<Record<string, unknown>> | null = null;
+
+  if (data.chatRecords && Array.isArray(data.chatRecords)) {
+    records = data.chatRecords as Array<Record<string, unknown>>;
+  } else if (data.extensions && typeof data.extensions === 'object') {
+    const ext = data.extensions as Record<string, unknown>;
+    if (ext.chatRecords && Array.isArray(ext.chatRecords)) {
+      records = ext.chatRecords as Array<Record<string, unknown>>;
+    }
+  }
+
+  if (records && records.length > 0) {
+    parts.push(`共 ${records.length} 条消息:\n`);
+    for (const record of records) {
+      const nick = (record.senderNick ?? record.senderName ?? '未知') as string;
+      const content = (record.content ?? record.text ?? '') as string;
+      const msgtype = (record.msgtype ?? record.msgType ?? 'text') as string;
+      parts.push(`**${nick}** (${msgtype}):`);
+      parts.push(content);
+      parts.push('');
+    }
+  } else {
+    parts.push('[聊天记录 - 已保存原始数据]');
+    parts.push('', '```json', JSON.stringify(rawData, null, 2), '```');
+  }
+
+  return saveRecordFile(recorderDir, 'chatRecord', parts.join('\n'));
+}
+
+async function recordRichText(
+  self: DingClaude, rawData: IRawCallbackData, recorderDir: string,
+  senderNick: string, senderStaffId: string,
+): Promise<string> {
+  const now = Date.now();
+  const parts: string[] = [ buildFrontmatter('richText', senderNick, senderStaffId, now) ];
+  const paragraphs = rawData.content?.richText;
+
+  if (paragraphs && Array.isArray(paragraphs)) {
+    const typedParas = paragraphs as IRichTextParagraph[];
+
+    const downloadResults = await Promise.all(
+      typedParas.map(async (para) => {
+        if (para.type !== 'picture') return null;
+        const code = para.downloadCode || para.pictureDownloadCode;
+        if (!code) return null;
+        return downloadAttachment(self, code, rawData.robotCode, recorderDir);
+      }),
+    );
+
+    for (let i = 0; i < typedParas.length; i++) {
+      const para = typedParas[i];
+      if (para.type === 'text' && para.text) {
+        parts.push(para.text);
+      } else if (para.type === 'picture') {
+        const code = para.downloadCode || para.pictureDownloadCode;
+        if (code) {
+          const attachPath = downloadResults[i];
+          if (attachPath) {
+            parts.push(`![image](${attachPath})`);
+          } else {
+            parts.push('[内嵌图片下载失败]');
+          }
+        }
+      } else if (para.type === 'mention' && para.userId) {
+        parts.push(`@${para.userId}`);
+      }
+    }
+  } else {
+    parts.push('[富文本消息 - 已保存原始数据]');
+    parts.push('', '```json', JSON.stringify(rawData, null, 2), '```');
+  }
+
+  return saveRecordFile(recorderDir, 'richText', parts.join('\n'));
+}
+
+function recordCard(
+  rawData: IRawCallbackData, recorderDir: string,
+  senderNick: string, senderStaffId: string, msgType: string,
+): string {
+  const now = Date.now();
+  const parts: string[] = [ buildFrontmatter(msgType, senderNick, senderStaffId, now) ];
+  const data = rawData as unknown as Record<string, unknown>;
+
+  const cardData = (data.actionCard ?? data.interactiveCard ?? data.content ?? data) as Record<string, unknown>;
+
+  if (typeof cardData.text === 'string') {
+    parts.push(cardData.text);
+  } else if (typeof cardData.title === 'string') {
+    parts.push(`**${cardData.title}**`);
+    if (typeof cardData.markdown === 'string') {
+      parts.push(cardData.markdown);
+    }
+  }
+
+  parts.push('', '---', '原始数据:', '```json', JSON.stringify(rawData, null, 2), '```');
+  return saveRecordFile(recorderDir, msgType, parts.join('\n'));
+}
+
+function recordUnknown(
+  rawData: IRawCallbackData, recorderDir: string,
+  senderNick: string, senderStaffId: string, msgType: string,
+): string {
+  const now = Date.now();
+  const parts: string[] = [ buildFrontmatter(msgType, senderNick, senderStaffId, now) ];
+  parts.push(`[未知消息类型: ${msgType}]`);
+  parts.push('', '```json', JSON.stringify(rawData, null, 2), '```');
+  return saveRecordFile(recorderDir, 'unknown', parts.join('\n'));
+}
+
 export async function recordMessage(
   self: DingClaude,
-  data: IRawCallbackData,
+  rawData: IRawCallbackData,
   conversationId: string,
-): Promise<void> {
+): Promise<string> {
   const recorderDir = getRecorderDir(self, conversationId);
-  const { senderNick, senderStaffId, conversationType, richTextList } = data;
-  const msgType = conversationType === '1' ? 'single' : 'group';
+  const msgType = rawData.msgtype || 'unknown';
+  const senderNick = rawData.senderNick ?? '未知';
+  const senderStaffId = rawData.senderStaffId ?? '';
 
-  try {
-    // 处理富文本段落
-    if (richTextList && richTextList.length > 0) {
-      for (const para of richTextList) {
-        if (para.type === 'text' && para.text) {
-          const content = buildFrontmatter('text', senderNick, senderStaffId, Date.now()) + para.text;
-          saveRecordFile(recorderDir, msgType, content);
-        } else if (para.type === 'image' && para.downloadCode) {
-          const filePath = await downloadAttachment(self, para.downloadCode, self.clientId, recorderDir, '.png');
-          if (filePath) {
-            const content = buildFrontmatter('image', senderNick, senderStaffId, Date.now()) + `![image](${filePath})`;
-            saveRecordFile(recorderDir, msgType, content);
-          }
-        } else if (para.type === 'file' && para.downloadCode) {
-          const ext = para.fileName ? path.extname(para.fileName) : '';
-          const filePath = await downloadAttachment(self, para.downloadCode, self.clientId, recorderDir, ext);
-          if (filePath) {
-            const content = buildFrontmatter('file', senderNick, senderStaffId, Date.now()) + `[file](${filePath})`;
-            saveRecordFile(recorderDir, msgType, content);
-          }
-        }
-      }
-    } else if (data.text?.content) {
-      // 兼容旧版 text 字段
-      const content = buildFrontmatter('text', senderNick, senderStaffId, Date.now()) + data.text.content;
-      saveRecordFile(recorderDir, msgType, content);
-    }
-  } catch (err) {
-    console.error('记录消息失败:', err);
+  console.log(`[${timestamp()}] [recorder] 记录消息: type=${msgType}, sender=${senderNick}(${senderStaffId})`);
+
+  switch (msgType) {
+    case 'text':
+      return recordText(rawData, recorderDir, senderNick, senderStaffId);
+    case 'picture':
+      return recordPicture(self, rawData, recorderDir, senderNick, senderStaffId);
+    case 'file':
+    case 'video':
+    case 'audio':
+      return recordFileMessage(self, rawData, recorderDir, senderNick, senderStaffId, msgType);
+    case 'chatRecord':
+      return recordChatRecord(rawData, recorderDir, senderNick, senderStaffId);
+    case 'richText':
+      return recordRichText(self, rawData, recorderDir, senderNick, senderStaffId);
+    case 'actionCard':
+    case 'interactiveCard':
+      return recordCard(rawData, recorderDir, senderNick, senderStaffId, msgType);
+    default:
+      return recordUnknown(rawData, recorderDir, senderNick, senderStaffId, msgType);
   }
-}
-
-/**
- * 将消息记录到 recorder 目录，按会话和日期分目录
- * 每天一个目录，消息按时间戳文件存储
- */
-export async function recordMessageByDate(
-  self: DingClaude,
-  data: IRawCallbackData,
-  conversationId: string,
-): Promise<void> {
-  const baseDir = getRecorderDir(self, conversationId);
-  const dateStr = dateUtil.mm().format('YYYY-MM-DD');
-  const dayDir = path.join(baseDir, dateStr);
-  fs.mkdirSync(dayDir, { recursive: true });
-
-  const { senderNick, senderStaffId, richTextList } = data;
-  const msgType = data.conversationType === '1' ? 'single' : 'group';
-  const subDir = path.join(dayDir, msgType);
-  fs.mkdirSync(subDir, { recursive: true });
-
-  try {
-    if (richTextList && richTextList.length > 0) {
-      for (const para of richTextList) {
-        if (para.type === 'text' && para.text) {
-          const content = buildFrontmatter('text', senderNick, senderStaffId, Date.now()) + para.text;
-          saveRecordFile(dayDir, msgType, content);
-        } else if (para.type === 'image' && para.downloadCode) {
-          const filePath = await downloadAttachment(self, para.downloadCode, self.clientId, dayDir, '.png');
-          if (filePath) {
-            const content = buildFrontmatter('image', senderNick, senderStaffId, Date.now()) + `![image](${filePath})`;
-            saveRecordFile(dayDir, msgType, content);
-          }
-        } else if (para.type === 'file' && para.downloadCode) {
-          const ext = para.fileName ? path.extname(para.fileName) : '';
-          const filePath = await downloadAttachment(self, para.downloadCode, self.clientId, dayDir, ext);
-          if (filePath) {
-            const content = buildFrontmatter('file', senderNick, senderStaffId, Date.now()) + `[file](${filePath})`;
-            saveRecordFile(dayDir, msgType, content);
-          }
-        }
-      }
-    } else if (data.text?.content) {
-      const content = buildFrontmatter('text', senderNick, senderStaffId, Date.now()) + data.text.content;
-      saveRecordFile(dayDir, msgType, content);
-    }
-  } catch (err) {
-    console.error('记录消息失败:', err);
-  }
-}
-
-/**
- * 记录 assistant 回复到 recorder 目录
- */
-export function recordAssistantReply(
-  self: DingClaude,
-  conversationId: string,
-  reply: string,
-): void {
-  const recorderDir = getRecorderDir(self, conversationId);
-  const msgType = 'assistant';
-  const content = buildFrontmatter('assistant_reply', 'Claude', 'assistant', Date.now()) + reply;
-  saveRecordFile(recorderDir, msgType, content);
-}
-
-/**
- * 将 recorder 目录下的消息合并为单个 Markdown 文件
- */
-export function mergeRecorderFiles(recorderDir: string): string {
-  const output: string[] = [];
-  const msgTypes = ['single', 'group', 'assistant'];
-
-  for (const msgType of msgTypes) {
-    const typeDir = path.join(recorderDir, msgType);
-    if (!fs.existsSync(typeDir)) continue;
-
-    const files = fs.readdirSync(typeDir).filter(f => f.endsWith('.md')).sort();
-    if (files.length === 0) continue;
-
-    output.push(`## ${msgType}\n`);
-    for (const file of files) {
-      const filePath = path.join(typeDir, file);
-      const content = fs.readFileSync(filePath, 'utf-8');
-      output.push(content);
-      output.push('\n---\n');
-    }
-  }
-
-  return output.join('\n');
 }
