@@ -7,6 +7,7 @@ import path from 'path';
 import { DingClaude, IConfig } from '../src/biz/cc-ding-cli';
 import { acquirePidLock } from '../src/biz/lock';
 import { printDoctorResults, runDoctor } from '../src/biz/doctor';
+import { sendNotify } from '../src/biz/notify';
 import fs from 'fs';
 
 loadEnv();
@@ -129,6 +130,31 @@ program
     const clientDir = path.join(getHomeDir(), '.cc-ding', opts.clientId);
     const results = runDoctor(clientDir);
     printDoctorResults(results);
+  });
+
+program
+  .command('notify')
+  .description('通过钉钉机器人发送消息到指定群')
+  .requiredOption('-ci, --clientId <value>', 'clientId')
+  .requiredOption('-c, --conversations <value>', '目标会话ID（多个用逗号分隔）')
+  .requiredOption('-m, --message <value>', '消息内容')
+  .option('-at, --atUserIds <value>', '@ 指定用户（多个用逗号分隔）')
+  .option('-md, --markdown', '使用 Markdown 格式发送', false)
+  .action(async (opts) => {
+    const conversationIds = opts.conversations.split(',').map((s: string) => s.trim()).filter(Boolean);
+    const atUserIds = opts.atUserIds ? opts.atUserIds.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
+
+    console.log(`📤 发送消息到 ${conversationIds.length} 个会话...`);
+    const result = await sendNotify({
+      clientId: opts.clientId,
+      message: opts.message,
+      conversationIds,
+      atUserIds,
+      markdown: opts.markdown,
+    });
+
+    console.log(`\n✅ 成功: ${result.success}, ❌ 失败: ${result.fail}`);
+    process.exit(result.fail > 0 ? 1 : 0);
   });
 
 program.parse(process.argv);

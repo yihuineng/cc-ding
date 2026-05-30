@@ -61,6 +61,20 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     category: '会话',
   },
   {
+    name: '/goon',
+    description: '强制重启 Claude 进程并发送"继续"恢复执行',
+    usage: '/goon',
+    examples: [ '/goon' ],
+    category: '会话',
+  },
+  {
+    name: '/cc',
+    description: '直接透传消息给 Claude（不附加发送人信息）',
+    usage: '/cc <消息>',
+    examples: [ '/cc 继续', '/cc /compact' ],
+    category: '会话',
+  },
+  {
     name: '/task',
     description: '提交任务到队列',
     usage: '/task <任务描述>',
@@ -117,6 +131,13 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     category: '文件',
   },
   {
+    name: '/claude.md',
+    description: '查看当前工作目录的 CLAUDE.md 文件内容',
+    usage: '/claude.md',
+    examples: [ '/claude.md' ],
+    category: '文件',
+  },
+  {
     name: '/version',
     description: '查看工具版本信息',
     usage: '/version',
@@ -125,15 +146,15 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/open',
-    description: '在文件管理器或终端中打开工作目录',
-    usage: '/open [shell]',
-    examples: [ '/open', '/open shell' ],
+    description: '在文件管理器、终端或VS Code中打开工作目录',
+    usage: '/open [shell|code]',
+    examples: [ '/open', '/open shell', '/open code' ],
     category: '管理',
     ownerOnly: true,
   },
   {
     name: '/clean',
-    description: '清除历史会话和缓存(.sessions/.tasks/.images)',
+    description: '清除历史会话和缓存(.sessions/.tasks/.images/.playwright-cli)',
     usage: '/clean',
     examples: [ '/clean' ],
     category: '管理',
@@ -164,9 +185,17 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/auth',
-    description: '管理当前群白名单(add/del,默认list)',
-    usage: '/auth [add|del <手机号或userId>]',
-    examples: [ '/auth', '/auth add 13800138000', '/auth del 13800138000' ],
+    description: '管理当前群白名单(add/del/approve/reject,默认list)',
+    usage: '/auth [add|del <手机号或userId>] | /auth [approve|reject <requestId>]',
+    examples: [ '/auth', '/auth add 13800138000', '/auth del 13800138000', '/auth approve r1234', '/auth reject r1234' ],
+    category: '管理',
+    ownerOnly: true,
+  },
+  {
+    name: '/recorder',
+    description: 'Recorder 模式：记录所有消息到本地（仅 owner 单聊）',
+    usage: '/recorder [on|exit]',
+    examples: [ '/recorder on', '/recorder exit' ],
     category: '管理',
     ownerOnly: true,
   },
@@ -543,10 +572,11 @@ export function parseRmCommand(text: string): string | null {
  * - /open shell -> 'shell' (在终端中打开)
  * - 其他 -> null
  */
-export function parseOpenCommand(text: string): 'folder' | 'shell' | null {
+export function parseOpenCommand(text: string): 'folder' | 'shell' | 'code' | null {
   const trimmed = text.trim().toLowerCase();
   if (trimmed === '/open') return 'folder';
   if (trimmed === '/open shell') return 'shell';
+  if (trimmed === '/open code') return 'code';
   return null;
 }
 
@@ -694,7 +724,12 @@ export function parseMqCommand(text: string): MqCommand | null {
  * - /auth             -> { type: 'list' }
  * - 其他              -> null
  */
-export type AuthCommand = { type: 'add'; staffId: string } | { type: 'del'; staffId: string } | { type: 'list' };
+export type AuthCommand =
+  | { type: 'add'; staffId: string }
+  | { type: 'del'; staffId: string }
+  | { type: 'list' }
+  | { type: 'approve'; requestId: string }
+  | { type: 'reject'; requestId: string };
 
 export function parseAuthCommand(text: string): AuthCommand | null {
   const trimmed = text.trim();
@@ -702,6 +737,30 @@ export function parseAuthCommand(text: string): AuthCommand | null {
   if (addMatch) return { type: 'add', staffId: addMatch[1] };
   const delMatch = trimmed.match(/^\/auth\s+del(?:ete)?\s+(\S+)$/i);
   if (delMatch) return { type: 'del', staffId: delMatch[1] };
+  const approveMatch = trimmed.match(/^\/auth\s+approve\s+(\S+)$/i);
+  if (approveMatch) return { type: 'approve', requestId: approveMatch[1] };
+  const rejectMatch = trimmed.match(/^\/auth\s+reject\s+(\S+)$/i);
+  if (rejectMatch) return { type: 'reject', requestId: rejectMatch[1] };
   if (/^\/auth(?:\s+list)?$/i.test(trimmed)) return { type: 'list' };
   return null;
+}
+
+export function parseRecorderCommand(text: string): 'on' | 'exit' | null {
+  const trimmed = text.trim();
+  if (/^\/recorder\s+on$/i.test(trimmed)) return 'on';
+  if (/^\/recorder\s+exit$/i.test(trimmed)) return 'exit';
+  return null;
+}
+
+export function parseGoonCommand(text: string): boolean {
+  return /^\/goon$/i.test(text.trim());
+}
+
+export function parseCcCommand(text: string): string | null {
+  const match = text.trim().match(/^\/cc\s+(.+)$/is);
+  return match ? match[1] : null;
+}
+
+export function parseClaudeMdCommand(text: string): boolean {
+  return /^\/claude\.md$/i.test(text.trim());
 }

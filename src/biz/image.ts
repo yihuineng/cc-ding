@@ -100,7 +100,7 @@ function detectImageMediaType(buffer: Buffer): { mediaType: ImageMediaType; ext:
  * 调用钉钉 API 获取图片临时下载 URL
  * POST /v1.0/robot/messageFiles/download
  */
-async function getImageDownloadUrl(
+export async function getImageDownloadUrl(
   self: DingClaude,
   downloadCode: string,
   robotCode: string,
@@ -141,7 +141,7 @@ async function getImageDownloadUrl(
 /**
  * 下载图片 Buffer
  */
-async function downloadImageBuffer(downloadUrl: string): Promise<Buffer | null> {
+export async function downloadImageBuffer(downloadUrl: string): Promise<Buffer | null> {
   try {
     const result = await urllib.request(downloadUrl, {
       method: 'GET',

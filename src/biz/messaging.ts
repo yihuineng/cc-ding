@@ -320,3 +320,41 @@ export async function sendClaudeResponseToDing(
     }
   }
 }
+
+/**
+ * 通过钉钉机器人单聊 API 主动发消息给指定用户
+ * POST /v1.0/robot/oToMessages/batchSend
+ */
+export async function sendMessageToUser(self: DingClaude, userId: string, content: string, msgType: 'text' | 'markdown' = 'text'): Promise<boolean> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const msgKey = msgType === 'markdown' ? 'sampleMarkdown' : 'sampleText';
+    const msgParam = msgType === 'markdown'
+      ? JSON.stringify({ title: 'notification', text: content })
+      : JSON.stringify({ content });
+
+    const result = await urllib.request(`${DING_API_BASE}/v1.0/robot/oToMessages/batchSend`, {
+      method: 'POST',
+      data: { robotCode: self.clientId, userIds: [ userId ], msgKey, msgParam },
+      contentType: 'json',
+      headers: { 'x-acs-dingtalk-access-token': accessToken },
+      dataType: 'json',
+    });
+
+    if (result.status === 200) return true;
+    console.error(`sendMessageToUser API 返回非200: status=${result.status}, userId=${userId}`);
+    return false;
+  } catch (err) {
+    console.error(`sendMessageToUser 失败 (userId=${userId}):`, err);
+    return false;
+  }
+}
+
+/**
+ * 通过钉钉机器人单聊 API 主动发消息给 owner
+ */
+export async function sendOwnerMessage(self: DingClaude, content: string, msgType: 'text' | 'markdown' = 'text'): Promise<boolean> {
+  const { ownerConversationId, owner } = self.config;
+  if (!ownerConversationId || !owner) return false;
+  return sendMessageToUser(self, owner, content, msgType);
+}

@@ -7,8 +7,11 @@ export interface IConfig {
   whiteUserList: string[]; // 白名单
   owner: string; // 机器人 owner（手机号，可执行敏感操作如 /clean）
   clientSecret: string; // 钉钉 Stream Client 密钥
+  dingSecret?: string; // 搭配 dingToken 发送群消息的签名密钥
   /** 默认 dingToken，当会话无 dingToken 时使用（必填） */
   defaultDingToken: string;
+  /** owner 单聊会话ID，配置后兜底消息/通知通过该会话发送给 owner */
+  ownerConversationId?: string;
   conversations: IConversation[];
   taskQueueSize?: number; // 默认50
   taskHandlerCount?: number; // 默认1个
@@ -26,6 +29,11 @@ export interface IConfig {
   debug?: boolean;
   /** /bash 执行前的前置命令，与群级别 preBash 叠加执行，顺序为 `全局 && 群 && userCmd` */
   preBash?: string;
+  /** Recorder 模式配置（owner 单聊专用） */
+  recorderCfg?: {
+    /** 保存目录，默认为会话工作目录下的 .recorder */
+    dist?: string;
+  };
 }
 
 export interface IConversation {
@@ -86,6 +94,8 @@ export interface IActiveSession {
   conversationConfig: IConfig['conversations'][0];
   currentProcess?: ReturnType<typeof spawn>; // 当前执行的 Claude 进程
   interrupted?: boolean; // 是否被用户中断
+  goonPending?: boolean; // 是否收到 /goon 请求，待重启
+  lastActivityTime?: number; // 最近一次 Claude 进程活动时间（watchdog 用）
   /** 排队中的消息，当前查询完成后依次处理 */
   messageQueue: Array<{ message: string; senderStaffId: string; senderNick: string }>;
 }
@@ -95,6 +105,17 @@ export interface IActiveSessionPersist {
   session: ISession;
   lastSenderStaffId: string;
   conversationConfig: IConfig['conversations'][0];
+}
+
+// 待审批的授权申请
+export interface IAuthRequest {
+  id: string;
+  senderStaffId: string;
+  senderNick: string;
+  conversationId: string;
+  conversationType?: string;
+  conversationTitle?: string;
+  requestTime: number;
 }
 
 // Claude 配置项（API Key 池化管理的单个配置）
