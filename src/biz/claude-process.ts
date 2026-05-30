@@ -20,6 +20,14 @@ import {
 const MAX_FAST_FAIL = 20;
 const API_RETRY_DELAY_MS = 10_000;
 const FAST_FAIL_THRESHOLD_MS = 10_000;
+/** 最大总重试次数（含所有错误类型），超过此值视为无限重试循环 */
+const MAX_TOTAL_RETRIES = 10;
+/** 最大重试持续时间（ms），超过此值且重试 >=3 次视为无限重试循环 */
+const MAX_RETRY_DURATION_MS = 5 * 60 * 1000;
+/** Watchdog: 日志无更新超时时间（5 分钟） */
+const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000;
+/** Watchdog: 检查间隔 */
+const WATCHDOG_CHECK_INTERVAL_MS = 30 * 1000;
 
 /**
  * 解析 Claude 的 settings 文件路径
@@ -111,6 +119,29 @@ class ConversationNotFoundError extends Error {
     super('Claude conversation not found');
     this.name = 'ConversationNotFoundError';
   }
+}
+
+/** 上下文窗口超长错误：需要发送 /compact 压缩上下文后继续 */
+class ContextWindowExceededError extends Error {
+  constructor() {
+    super('Context window exceeded: prompt tokens exceed maximum context window');
+    this.name = 'ContextWindowExceededError';
+  }
+}
+
+function readLastLogLines(logPath: string, n: number): string {
+  try {
+    const content = fs.readFileSync(logPath, 'utf-8');
+    const lines = content.split('\n').filter(Boolean);
+    return lines.slice(-n).join('\n');
+  } catch {
+    return '';
+  }
+}
+
+function isContextWindowExceededError(output: string): boolean {
+  return /prompt tokens?\s*\(\s*\d+\s*\)\s*exceeds/i.test(output) ||
+    /exceeds?.*maximum context window/i.test(output);
 }
 
 /**
@@ -229,6 +260,7 @@ function runClaudeOnce(
     const activeSession = self.activeSessions.get(session.conversationId);
     if (activeSession) {
       activeSession.currentProcess = child;
+      activeSession.lastActivityTime = Date.now();
     }
 
     fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Claude 查询启动${isRetry ? ' (重试)' : ''}\n`, 'utf-8');
@@ -242,11 +274,43 @@ function runClaudeOnce(
     let stderrOutput = '';
     let stdoutOutput = ''; // 累积 stdout 原始输出，用于错误检测
     let hasSentResponse = false;
+    let settled = false;
+    let watchdogTimer: ReturnType<typeof setInterval> | null = null;
     const loggedToolUseIds = new Set<string>();
+
+    const updateActivity = () => {
+      if (activeSession) {
+        activeSession.lastActivityTime = Date.now();
+      }
+    };
+
+    // Watchdog: 定期检查是否长时间无活动
+    watchdogTimer = setInterval(() => {
+      if (settled) {
+        if (watchdogTimer) clearInterval(watchdogTimer);
+        return;
+      }
+      const lastActivity = activeSession?.lastActivityTime ?? startTime;
+      const elapsed = Date.now() - lastActivity;
+      if (elapsed >= WATCHDOG_TIMEOUT_MS) {
+        console.warn(`[${timestamp()}] Watchdog: Claude 进程 ${WATCHDOG_TIMEOUT_MS / 1000}s 无活动，通知用户`);
+        try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，${WATCHDOG_TIMEOUT_MS / 1000}s 无活动，已通知用户\n`, 'utf-8'); } catch { /* ignore */ }
+        if (watchdogTimer) clearInterval(watchdogTimer);
+        watchdogTimer = null;
+        const atUserId = activeSession?.lastSenderStaffId || session.startStaffId;
+        sendDingMessage(self, {
+          conversationId: getReplyConversationId(session),
+          sessionWebhook: getReplyWebhook(session),
+          atUserId,
+          content: `⏰ Claude 进程超过 ${WATCHDOG_TIMEOUT_MS / 1000}s 无响应，可发送 /goon 强制重启恢复，或 /end 结束会话`,
+        }).catch(err => console.error('发送 Watchdog 通知失败:', err));
+      }
+    }, WATCHDOG_CHECK_INTERVAL_MS);
 
     const rl = readline.createInterface({ input: child.stdout! });
     rl.on('line', (line) => {
       stdoutOutput += line + '\n';
+      updateActivity();
       self.debugLog(`Claude stdout: ${line.substring(0, 200)}${line.length > 200 ? '...' : ''}`);
       if (self.config.debug) {
         try { fs.appendFileSync(sessionLog, `[${timestamp()}] [RAW]: ${line}\n`, 'utf-8'); } catch { /* ignore */ }
@@ -323,6 +387,7 @@ function runClaudeOnce(
     child.stderr?.on('data', (data) => {
       const str = data.toString();
       stderrOutput += str;
+      updateActivity();
       if (isQuotaExhaustedError(str)) {
         console.log(`[${timestamp()}] [Claude stderr] 配额耗尽错误(429): ${str.trim()}`);
         try { fs.appendFileSync(sessionLog, `[${timestamp()}] [WARN]: ${str}`, 'utf-8'); } catch { /* ignore */ }
@@ -336,6 +401,8 @@ function runClaudeOnce(
     });
 
     child.on('close', (code) => {
+      settled = true;
+      if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
       console.log(`[${timestamp()}] Claude 进程退出，代码: ${code}`);
       try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Claude 查询结束，退出码: ${code}\n`, 'utf-8'); } catch { /* ignore */ }
 
@@ -434,10 +501,20 @@ function runClaudeOnce(
         return;
       }
 
+      // 上下文窗口超长（400 错误），抛出特殊错误让外层自动 /compact
+      if (isContextWindowExceededError(combinedOutput)) {
+        console.log(`[${timestamp()}] 检测到上下文窗口超长错误(400)，将自动发送 /compact 压缩上下文`);
+        try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 上下文窗口超长，将自动 /compact\n`, 'utf-8'); } catch { /* ignore */ }
+        reject(new ContextWindowExceededError());
+        return;
+      }
+
       reject(new Error(`Claude 进程退出，代码: ${code}`));
     });
 
     child.on('error', (err) => {
+      settled = true;
+      if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
       console.error('Claude 进程错误:', err);
       fs.appendFileSync(sessionLog, `[${timestamp()}] [ERROR]: 进程错误: ${err.message}\n`, 'utf-8');
       reject(err);
@@ -505,8 +582,31 @@ export async function executeClaudeQuery(
   const actualMessage = skill ? `/${skill} ${messageWithPrefix}` : messageWithPrefix;
 
   let consecutiveFastFail = 0;
+  let totalRetries = 0;
+  let retryStartTime = 0;
+  const retryHistory: string[] = [];
   while (true) {
     const isRetry = consecutiveFastFail > 0;
+
+    // 无限重试循环检测
+    if (totalRetries >= MAX_TOTAL_RETRIES || (totalRetries >= 3 && retryStartTime > 0 && Date.now() - retryStartTime > MAX_RETRY_DURATION_MS)) {
+      const reason = totalRetries >= MAX_TOTAL_RETRIES
+        ? `总重试次数已达 ${MAX_TOTAL_RETRIES} 次`
+        : `重试持续时间超过 ${MAX_RETRY_DURATION_MS / 1000}s（已重试 ${totalRetries} 次）`;
+      console.error(`[${timestamp()}] 检测到无限重试循环: ${reason}`);
+      fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 检测到无限重试循环，${reason}，终止重试\n`, 'utf-8');
+
+      const recentLogs = readLastLogLines(sessionLog, 1);
+      const errorSummary = retryHistory.slice(-1)[0] || '';
+      const atUserId = senderStaffId || session.startStaffId;
+      await sendDingMessage(self, {
+        conversationId: getReplyConversationId(session),
+        sessionWebhook: getReplyWebhook(session),
+        atUserId,
+        content: `🔄 检测到 Claude 陷入无限重试，已终止（${reason}）\n\n📋 最近重试记录：\n${errorSummary}\n\n📝 最近日志：\n\`\`\`\n${recentLogs}\n\`\`\`\n\n💡 可尝试发送 /new 开始新会话，或 /end 结束当前会话`,
+      });
+      return;
+    }
 
     // 每次循环动态构建命令参数（settings 和 resume 可能在重试时变化）
     const cmdArgs = [ ...fixedCmdArgs ];
@@ -543,8 +643,10 @@ export async function executeClaudeQuery(
       sessionLog = `${sessionDir}/session.log`;
 
       if (err instanceof RetryableApiError) {
+        totalRetries++; retryStartTime = retryStartTime || Date.now();
         // 配额耗尽 (429): 尝试切换/轮换 Key
         if (isQuotaExhaustedError(err.output) && self.config.apiKeyCfg) {
+          retryHistory.push(`[${timestamp()}] 429 配额耗尽，尝试轮换 Key`);
           if (currentSetting) {
             // API Key 配额耗尽/不稳定 → 轮换 Key
             const newSetting = rotateApiKey(self, currentSetting.apiKey);
@@ -592,16 +694,58 @@ export async function executeClaudeQuery(
           console.log(`[${timestamp()}] 检测到 TPM 限流(进程已运行一段时间)，重置快速失败计数，${API_RETRY_DELAY_MS / 1000}s 后重试`);
         }
         fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: TPM 限流，${API_RETRY_DELAY_MS / 1000}s 后重试\n`, 'utf-8');
+        retryHistory.push(`[${timestamp()}] TPM 限流，${API_RETRY_DELAY_MS / 1000}s 后重试`);
         await sleep(API_RETRY_DELAY_MS);
         continue;
       }
       if (err instanceof ConversationNotFoundError) {
+        totalRetries++; retryStartTime = retryStartTime || Date.now();
+        retryHistory.push(`[${timestamp()}] 会话失效，清除旧会话`);
         // Claude 会话已失效，清除 claudeSessionId 后重新发起新会话
         console.log(`[${timestamp()}] Claude 会话失效，清除 claudeSessionId 并重新发起`);
         fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Claude 会话已失效，清除旧会话并重新发起\n`, 'utf-8');
         if (session.claudeSessionId) {
           session.claudeSessionId = undefined;
           self.updateSessionFile(session, {});
+        }
+        consecutiveFastFail = 0;
+        continue;
+      }
+      // 上下文窗口超长：自动发送 /compact 压缩上下文后继续
+      if (err instanceof ContextWindowExceededError) {
+        totalRetries++; retryStartTime = retryStartTime || Date.now();
+        retryHistory.push(`[${timestamp()}] 上下文窗口超长，自动 /compact`);
+        console.log(`[${timestamp()}] 上下文窗口超长，自动发送 /compact 压缩上下文`);
+        fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 上下文窗口超长，自动发送 /compact 压缩上下文\n`, 'utf-8');
+        const atUserId = senderStaffId || session.startStaffId;
+        await sendDingMessage(self, {
+          conversationId: getReplyConversationId(session),
+          sessionWebhook: getReplyWebhook(session),
+          atUserId,
+          content: '📦 上下文超长，正在自动压缩上下文(/compact)后继续...',
+        });
+        const compactCmdArgs = [ ...fixedCmdArgs ];
+        if (session.claudeSessionId) {
+          compactCmdArgs.push('--resume', session.claudeSessionId);
+        }
+        const compactSettingsPath = resolveClaudeSettingsPath(self, dingGroupDir, opts?.settings);
+        if (compactSettingsPath) {
+          compactCmdArgs.push('--settings', compactSettingsPath);
+        }
+        try {
+          await runClaudeOnce(self, session, compactCmdArgs, entryCmd, dingGroupDir, '/compact', false);
+          console.log(`[${timestamp()}] /compact 执行成功，发送"继续"恢复执行`);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: /compact 执行成功，发送"继续"恢复执行\n`, 'utf-8');
+        } catch (compactErr) {
+          console.error(`[${timestamp()}] /compact 执行失败:`, compactErr);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: /compact 执行失败: ${compactErr instanceof Error ? compactErr.message : String(compactErr)}\n`, 'utf-8');
+          await sendDingMessage(self, {
+            conversationId: getReplyConversationId(session),
+            sessionWebhook: getReplyWebhook(session),
+            atUserId,
+            content: '❌ 自动压缩上下文(/compact)失败，请手动发送 /compact 或 /new 开始新会话',
+          });
+          throw new Error(`上下文超长且 /compact 失败: ${compactErr instanceof Error ? compactErr.message : String(compactErr)}`);
         }
         consecutiveFastFail = 0;
         continue;

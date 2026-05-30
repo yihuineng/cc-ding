@@ -3,9 +3,9 @@ import { DingStreamClient, DWClientDownStream, dateUtil } from 'utils-ok';
 import fs from 'fs';
 import path from 'path';
 import { projUtil } from '../common';
-import { IConfig, IActiveSession, ISession, IRawCallbackData } from './types';
+import { IConfig, IActiveSession, ISession, IRawCallbackData, IAuthRequest } from './types';
 import { extractQuoteInfo, formatPromptWithQuote } from './quote';
-import { fetchQuotedMessage } from './messaging';
+import { fetchQuotedMessage, sendMessageToUser, sendOwnerMessage } from './messaging';
 import { processPictureMessage, processRichTextMessage } from './image';
 import {
   parseInfoCommand, formatConversationInfo, formatGlobalConfig, parseLogCommand,
@@ -14,10 +14,12 @@ import {
   getCommandByName, formatHelpOverview, formatCommandHelp,
   parseCronCommand, parsePwdCommand, parseMkdirCommand, parseTouchCommand, parseRmCommand,
   parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
-  parseBashCommand, parseMqCommand,
+  parseBashCommand, parseMqCommand, parseRecorderCommand,
+  parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery } from './claude-process';
+import { recordMessage, getRecorderDir } from './recorder';
 import {
   getClientDir, getClientConfig, authCheck, isOwner, debugLog,
   hashConversationId, getConversationConfig,
@@ -55,6 +57,12 @@ export class DingClaude {
 
   /** 活跃会话管理 (session模式) */
   activeSessions = new Map<string, IActiveSession>();
+
+  /** 待审批的授权申请 */
+  pendingAuthRequests = new Map<string, IAuthRequest>();
+
+  /** Recorder 模式已开启的会话 ID 集合（运行时状态，不持久化） */
+  recorderModeConversations = new Set<string>();
 
   /** 定时任务引擎 */
   cronEngine!: CronEngine;
@@ -168,6 +176,108 @@ export class DingClaude {
       return false;
     }
     return true;
+  }
+
+  /**
+   * Owner 或单聊模式权限检查
+   * 单聊已注册时允许非 owner 操作（仅限当前单聊）
+   */
+  private async requireOwnerOrSingleChat(
+    conversationId: string,
+    sessionWebhook: string,
+    senderStaffId: string,
+    conversationConfig: IConfig['conversations'][0],
+  ): Promise<boolean> {
+    if (this.isOwner(senderStaffId)) return true;
+    if (conversationConfig?.conversationType === '1') return true;
+    await this.sendDingMessage({
+      conversationId,
+      sessionWebhook,
+      content: '❌ 只有机器人 owner 才能执行此操作',
+      msgType: 'markdown',
+    });
+    return false;
+  }
+
+  /**
+   * 处理未授权用户的授权申请
+   */
+  private async handleAuthRequest(opts: {
+    senderStaffId: string;
+    senderNick: string;
+    conversationId: string;
+    conversationType?: string;
+    conversationTitle?: string;
+    sessionWebhook: string;
+  }): Promise<void> {
+    const { senderStaffId, senderNick, conversationId, conversationType, conversationTitle, sessionWebhook } = opts;
+
+    if (!this.config.ownerConversationId) {
+      await this.sendDingMessage({
+        conversationId, sessionWebhook,
+        content: [
+          '抱歉,您暂无使用权限',
+          '请将以下信息发送给机器人管理员,由管理员通过命令注册:',
+          `- **会话ID:** \`${conversationId}\``,
+          `- **注册命令:** \`/cfg --conversationId ${conversationId}\``,
+        ].join('\n'),
+        msgType: 'markdown',
+      });
+      return;
+    }
+
+    for (const req of this.pendingAuthRequests.values()) {
+      if (req.senderStaffId === senderStaffId && req.conversationId === conversationId) {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '⏳ 授权申请已发送，请等待管理员审批...',
+          msgType: 'markdown',
+        });
+        return;
+      }
+    }
+
+    const requestId = `r${Date.now().toString(36)}`;
+    const request: IAuthRequest = {
+      id: requestId,
+      senderStaffId,
+      senderNick,
+      conversationId,
+      conversationType,
+      conversationTitle,
+      requestTime: Date.now(),
+    };
+    this.pendingAuthRequests.set(requestId, request);
+    console.log(`[${timestamp()}] 新授权申请: id=${requestId}, userId=${senderStaffId}, 昵称=${senderNick}, 会话=${conversationId}`);
+
+    const ownerMsg = [
+      '📋 **收到授权申请**',
+      `- **用户ID:** ${senderStaffId}`,
+      `- **昵称:** ${senderNick}`,
+      `- **会话ID:** ${conversationId}`,
+      conversationTitle ? `- **会话标题:** ${conversationTitle}` : '',
+      `- **会话类型:** ${conversationType === '1' ? '单聊' : conversationType === '2' ? '群聊' : conversationType || '-'}`,
+      '',
+      `回复 \`/auth approve ${requestId}\` 通过`,
+      `回复 \`/auth reject ${requestId}\` 拒绝`,
+    ].filter(Boolean).join('\n');
+
+    const sent = await sendOwnerMessage(this, ownerMsg, 'markdown');
+
+    if (sent) {
+      await this.sendDingMessage({
+        conversationId, sessionWebhook,
+        content: '✅ 已向管理员发送授权申请，请等待审批...',
+        msgType: 'markdown',
+      });
+    } else {
+      this.pendingAuthRequests.delete(requestId);
+      await this.sendDingMessage({
+        conversationId, sessionWebhook,
+        content: '❌ 授权申请发送失败，请联系管理员手动授权',
+        msgType: 'markdown',
+      });
+    }
   }
 
   // ==================== 消息处理入口 ====================
@@ -614,23 +724,76 @@ export class DingClaude {
     this.dingStreamClient.socketCallBackResponse(res.headers.messageId, '');
     const rawData = JSON.parse(res.data) as IRawCallbackData;
     // console.log('rawData', rawData);
-    const { senderNick, senderStaffId, conversationId, conversationTitle, sessionWebhook, msgtype } = rawData;
+    const { senderNick, senderStaffId, conversationId, conversationTitle, sessionWebhook, msgtype, conversationType } = rawData;
     const textContent = rawData.text?.content?.trim() ?? '';
 
     this.debugLog(`收到消息: 群=${conversationTitle}(${conversationId}), 发送者=${senderNick}(${senderStaffId}), 类型=${msgtype}, 内容=${textContent.substring(0, 50)}`);
 
     // 权限校验
     if (!this.authCheck(senderStaffId, conversationId)) {
-      await this.sendDingMessage({
+      await this.handleAuthRequest({
+        senderStaffId,
+        senderNick,
         conversationId,
+        conversationType,
+        conversationTitle: rawData.conversationTitle,
         sessionWebhook,
-        atUserId: senderStaffId,
-        content: '抱歉,您暂无使用权限,请联系应用机器人owner授权...',
       });
       return;
     }
 
     const conversationConfig = this.getConversationConfig(conversationId);
+
+    // ==================== Recorder 模式处理 ====================
+    const recorderCmd = parseRecorderCommand(textContent);
+    if (recorderCmd !== null) {
+      if (!this.isOwner(senderStaffId) || conversationType !== '1') {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '❌ Recorder 模式仅限 owner 单聊使用',
+          msgType: 'markdown',
+        });
+        return;
+      }
+
+      if (recorderCmd === 'on') {
+        this.recorderModeConversations.add(conversationId);
+        const dir = getRecorderDir(this, conversationId);
+        console.log(`[${timestamp()}] [recorder] 开启 recorder 模式: conversationId=${conversationId}, dir=${dir}`);
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: `🔴 Recorder 模式已开启\n- 所有消息将被分类记录到本地\n- 保存目录: \`${dir}\`\n- 发送 \`/recorder exit\` 关闭`,
+          msgType: 'markdown',
+        });
+      } else {
+        this.recorderModeConversations.delete(conversationId);
+        console.log(`[${timestamp()}] [recorder] 关闭 recorder 模式: conversationId=${conversationId}`);
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '⬜ Recorder 模式已关闭，恢复正常处理',
+          msgType: 'markdown',
+        });
+      }
+      return;
+    }
+
+    // Recorder 模式拦截：开启时所有消息都记录，不执行正常处理
+    if (this.recorderModeConversations.has(conversationId)) {
+      try {
+        await recordMessage(this, rawData, conversationId);
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: `✅ 已记录 ${msgtype}`,
+        });
+      } catch (err) {
+        console.error(`[${timestamp()}] [recorder] 记录消息失败:`, err);
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: `❌ 记录失败: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+      return;
+    }
 
     // 根据 msgtype 处理不同消息类型
     let prompt: string;
@@ -678,13 +841,30 @@ export class DingClaude {
       }
     }
 
-    // /cfg 命令：注册当前群到配置（仅 owner 可用）
+    // /cfg 命令：注册当前群到配置（仅 owner 可用，单聊模式也允许操作）
     // 未注册群：创建新配置；已注册群：刷新指定字段
+    // 支持 --conversationId <id> 指定目标群（仅 owner，单聊模式不允许指定）
     const cfgOpts = parseCfgCommand(prompt);
     if (cfgOpts !== null) {
-      if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+      // 指定 --conversationId 无条件要求 owner
+      if (cfgOpts.conversationId && !this.isOwner(senderStaffId)) {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '❌ 只有机器人 owner 才能操作其他群的配置',
+          msgType: 'markdown',
+        });
+        return;
+      }
+      if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
 
-      const existingConv = conversationConfig;
+      // 确定目标 conversationId
+      const targetConvId = cfgOpts.conversationId || conversationId;
+      const isTargetOther = targetConvId !== conversationId;
+
+      // 查找目标群配置
+      const existingConv = isTargetOther
+        ? this.config.conversations.find(c => c.conversationId === targetConvId)
+        : conversationConfig;
 
       // 如果传入了任何字段，执行更新
       const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
@@ -694,6 +874,7 @@ export class DingClaude {
       if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
         if (cfgOpts.conversationTitle) existingConv.conversationTitle = cfgOpts.conversationTitle;
+        if (conversationType && !isTargetOther) existingConv.conversationType = conversationType;
         if (cfgOpts.dingToken) existingConv.dingToken = cfgOpts.dingToken;
         if (cfgOpts.linkConversationId) existingConv.linkConversationId = cfgOpts.linkConversationId;
         if (cfgOpts.atSender !== undefined) existingConv.atSender = cfgOpts.atSender;
@@ -701,7 +882,6 @@ export class DingClaude {
         if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
         if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
           existingConv.whiteUserList = cfgOpts.whiteUserList;
-          // 预解析手机号到缓存
           for (const item of cfgOpts.whiteUserList) {
             if (isMobile(item)) {
               await resolveUserId(this, item);
@@ -709,12 +889,13 @@ export class DingClaude {
           }
         }
         saveClientConfig(this);
-        console.log(`[${timestamp()}] 刷新群配置: ${existingConv.conversationTitle || conversationTitle}(${conversationId})`);
+        console.log(`[${timestamp()}] 刷新群配置: ${existingConv.conversationTitle || targetConvId}(${targetConvId})`);
       } else if (!existingConv) {
         // 未注册群，创建新配置
         const newConv: IConfig['conversations'][0] = {
-          conversationId,
-          conversationTitle: cfgOpts.conversationTitle || conversationTitle,
+          conversationId: targetConvId,
+          conversationType: isTargetOther ? '1' : conversationType,
+          conversationTitle: cfgOpts.conversationTitle || (isTargetOther ? '' : conversationTitle),
         };
         if (cfgOpts.dingToken) newConv.dingToken = cfgOpts.dingToken;
         if (cfgOpts.linkConversationId) newConv.linkConversationId = cfgOpts.linkConversationId;
@@ -723,7 +904,6 @@ export class DingClaude {
         if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
         if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
           newConv.whiteUserList = cfgOpts.whiteUserList;
-          // 预解析手机号到缓存
           for (const item of cfgOpts.whiteUserList) {
             if (isMobile(item)) {
               await resolveUserId(this, item);
@@ -732,23 +912,24 @@ export class DingClaude {
         }
         this.config.conversations.push(newConv);
         saveClientConfig(this);
-        console.log(`[${timestamp()}] 注册新群: ${newConv.conversationTitle || conversationTitle}(${conversationId})`);
+        console.log(`[${timestamp()}] 注册新群: ${newConv.conversationTitle || targetConvId}(${targetConvId}) 类型=${newConv.conversationType || '-'}`);
       }
 
       // 确保工作目录已创建
-      const workDir = this.getConversationDir(conversationId);
+      const workDir = this.getConversationDir(targetConvId);
       if (!fs.existsSync(workDir)) {
         fs.mkdirSync(workDir, { recursive: true });
         console.log(`[${timestamp()}] 创建工作目录: ${workDir}`);
       }
 
       // 统一返回当前群配置信息
-      const convToShow = existingConv || this.getConversationConfig(conversationId);
+      const convToShow = existingConv || this.getConversationConfig(targetConvId);
       const info: string[] = [
         existingConv ? `✅ 群配置已刷新` : `✅ 群已注册`,
-        `- **群名称:** ${convToShow?.conversationTitle || conversationTitle || '-'}`,
-        `- **群ID:** ${conversationId}`,
+        `- **群名称:** ${convToShow?.conversationTitle || targetConvId}`,
+        `- **群ID:** ${targetConvId}`,
       ];
+      if (convToShow?.conversationType) info.push(`- **会话类型:** ${convToShow.conversationType === '1' ? '单聊' : convToShow.conversationType === '2' ? '群聊' : convToShow.conversationType}`);
       if (convToShow?.dingToken) info.push(`- **dingToken:** ${convToShow.dingToken.substring(0, 8)}...`);
       else info.push('- **dingToken:** (未指定, 使用 defaultDingToken)');
       if (convToShow?.linkConversationId) info.push(`- **linkConversationId:** ${convToShow.linkConversationId}`);
@@ -761,9 +942,8 @@ export class DingClaude {
         }).join(', ');
         info.push(`- **whiteUserList:** ${display}`);
       }
+      info.push(`- **工作目录:** ${workDir}`);
       info.push('\n💡 可编辑 config.json 补充更多配置');
-      info.push(`📂 工作目录: \`${workDir}\``);
-
       await this.sendDingMessage({
         conversationId,
         sessionWebhook,
@@ -839,10 +1019,19 @@ export class DingClaude {
       return;
     }
 
-    // /clean 命令：清除历史会话和缓存（仅 owner 可用）
+    // /clean 命令：清除历史会话和缓存（单聊模式也允许操作）
     const cleanType = parseCleanCommand(prompt);
     if (cleanType !== null) {
-      if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+      // 单聊模式仅限 clean 当前群
+      if (cleanType === 'all' && conversationConfig?.conversationType !== '1' && !this.isOwner(senderStaffId)) {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '❌ 只有机器人 owner 才能清除所有群缓存',
+          msgType: 'markdown',
+        });
+        return;
+      }
+      if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
 
       const targetConvId = cleanType === 'all' ? null : conversationId;
       const result = this.cleanCache(targetConvId, true);
@@ -899,6 +1088,58 @@ export class DingClaude {
     const authCmd = parseAuthCommand(prompt);
     if (authCmd) {
       if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+
+      // /auth approve|reject <requestId>
+      if (authCmd.type === 'approve' || authCmd.type === 'reject') {
+        const request = this.pendingAuthRequests.get(authCmd.requestId);
+        if (!request) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: `❌ 未找到授权申请: ${authCmd.requestId}`,
+            msgType: 'markdown',
+          });
+          return;
+        }
+
+        this.pendingAuthRequests.delete(authCmd.requestId);
+
+        if (authCmd.type === 'approve') {
+          let targetConv = this.config.conversations.find(c => c.conversationId === request.conversationId);
+          if (!targetConv) {
+            targetConv = {
+              conversationId: request.conversationId,
+              conversationType: request.conversationType || '1',
+              conversationTitle: request.conversationTitle,
+            };
+            this.config.conversations.push(targetConv);
+          }
+          if (!targetConv.whiteUserList) {
+            targetConv.whiteUserList = [];
+          }
+          if (!targetConv.whiteUserList.includes(request.senderStaffId)) {
+            targetConv.whiteUserList.push(request.senderStaffId);
+          }
+          saveClientConfig(this);
+          console.log(`[${timestamp()}] 授权申请通过: id=${authCmd.requestId}, userId=${request.senderStaffId}`);
+          await sendMessageToUser(this, request.senderStaffId,
+            '✅ 您的授权申请已通过，现在可以开始使用了', 'markdown');
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: `✅ 已通过授权申请\n- **用户ID:** ${request.senderStaffId}\n- **昵称:** ${request.senderNick}\n- **会话ID:** ${request.conversationId}`,
+            msgType: 'markdown',
+          });
+        } else {
+          console.log(`[${timestamp()}] 授权申请拒绝: id=${authCmd.requestId}, userId=${request.senderStaffId}`);
+          await sendMessageToUser(this, request.senderStaffId,
+            '❌ 您的授权申请已被拒绝', 'markdown');
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: `✅ 已拒绝授权申请\n- **用户ID:** ${request.senderStaffId}\n- **昵称:** ${request.senderNick}`,
+            msgType: 'markdown',
+          });
+        }
+        return;
+      }
 
       const convWhiteList = conversationConfig.whiteUserList;
 
@@ -1038,6 +1279,23 @@ export class DingClaude {
             content: `📂 已在文件管理器中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
             msgType: 'markdown',
           });
+        } else if (openTarget === 'code') {
+          exec('which code', (err) => {
+            if (err) {
+              this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: '❌ 未检测到 VS Code `code` 命令\n请安装 VS Code 并通过 Command Palette 安装 Shell Command',
+                msgType: 'markdown',
+              });
+              return;
+            }
+            exec(`code "${conversationDir}"`);
+            this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: `💻 已在 VS Code 中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
+              msgType: 'markdown',
+            });
+          });
         } else {
           if (platform === 'darwin') {
             exec(`open -a Terminal "${conversationDir}"`);
@@ -1107,7 +1365,7 @@ export class DingClaude {
       const preBashParts: string[] = [];
       if (this.config.preBash) preBashParts.push(this.config.preBash);
       if (conversationConfig?.preBash) preBashParts.push(conversationConfig.preBash);
-      const finalCmd = preBashParts.length > 0 ? `${preBashParts.join(' && ')} && ${bashCmd}` : bashCmd;
+      const finalCmd = preBashParts.length > 0 ? `${preBashParts.join(' ; ')} ; ${bashCmd}` : bashCmd;
       const self = this;
 
       childExec(finalCmd, {
@@ -1403,6 +1661,102 @@ export class DingClaude {
           return;
         }
       }
+    }
+
+    // /goon 命令：强制重启 Claude 进程
+    if (parseGoonCommand(prompt)) {
+      const activeSession = this.activeSessions.get(conversationId);
+      if (!activeSession) {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '⚠️ 当前没有活跃会话',
+        });
+        return;
+      }
+      if (activeSession.currentProcess) {
+        console.log(`[${timestamp()}] /goon: 终止当前 Claude 进程`);
+        activeSession.interrupted = true;
+        activeSession.currentProcess.kill('SIGINT');
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '🔄 正在重启 Claude 进程...',
+        });
+        // 直接在当前处理 goonPending，避免依赖 processMessageQueue（队列为空时会跳过 goonPending 检查）
+        activeSession.goonPending = false;
+        activeSession.isProcessing = true;
+        try {
+          await executeClaudeQuery(this, activeSession.session, '继续', {
+            senderNick: activeSession.session.startNickName,
+            senderStaffId: activeSession.lastSenderStaffId,
+          });
+        } finally {
+          activeSession.isProcessing = false;
+        }
+      } else {
+        console.log(`[${timestamp()}] /goon: 无运行中进程，直接发送"继续"`);
+        activeSession.isProcessing = true;
+        try {
+          await executeClaudeQuery(this, activeSession.session, '继续', {
+            senderNick,
+            senderStaffId,
+          });
+        } finally {
+          activeSession.isProcessing = false;
+        }
+      }
+      return;
+    }
+
+    // /cc 命令：直接透传消息给 Claude（不附加发送人信息）
+    const ccMessage = parseCcCommand(prompt);
+    if (ccMessage !== null) {
+      const activeSession = this.activeSessions.get(conversationId);
+      if (!activeSession) {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '⚠️ 当前没有活跃会话，请先发送消息开始会话',
+        });
+        return;
+      }
+      if (activeSession.isProcessing) {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '⏳ 正在处理中，请稍等...',
+        });
+        return;
+      }
+      activeSession.isProcessing = true;
+      try {
+        await executeClaudeQuery(this, activeSession.session, ccMessage, {
+          senderNick,
+          senderStaffId,
+        });
+      } finally {
+        activeSession.isProcessing = false;
+      }
+      return;
+    }
+
+    // /claude.md 命令：查看 CLAUDE.md 内容
+    if (parseClaudeMdCommand(prompt)) {
+      const conversationDir = this.getConversationDir(conversationId);
+      const claudeMdPath = path.join(conversationDir, '.claude', 'CLAUDE.md');
+      if (fs.existsSync(claudeMdPath)) {
+        const content = fs.readFileSync(claudeMdPath, 'utf-8');
+        const truncated = content.length > 8000 ? content.substring(0, 8000) + '\n...(内容过长已截断)' : content;
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: `📄 **CLAUDE.md**\n\`\`\`\n${truncated}\n\`\`\``,
+          msgType: 'markdown',
+        });
+      } else {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: `⚠️ 未找到 CLAUDE.md\n路径: \`${claudeMdPath}\``,
+          msgType: 'markdown',
+        });
+      }
+      return;
     }
 
     // 处理普通 session 消息

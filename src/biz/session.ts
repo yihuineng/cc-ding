@@ -703,6 +703,22 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
     activeSession.isProcessing = false;
   }
 
+  // goonPending: /goon 命令触发的强制重启，发送"继续"恢复执行
+  if (activeSession.goonPending) {
+    activeSession.goonPending = false;
+    activeSession.isProcessing = true;
+    try {
+      await executeClaudeQuery(self, activeSession.session, '继续', {
+        senderNick: activeSession.session.startNickName,
+        senderStaffId: activeSession.lastSenderStaffId,
+      });
+    } catch (err) {
+      console.error('goonPending 恢复执行失败:', err);
+    } finally {
+      activeSession.isProcessing = false;
+    }
+  }
+
   // 如果队列还有消息，继续处理
   if (activeSession.messageQueue.length > 0) {
     await processMessageQueue(self, conversationId);
@@ -915,6 +931,16 @@ export function cleanCache(self: DingClaude, conversationId: string | null, keep
         }
       } catch (e) {
         result.errors.push(`读取images目录失败: ${imagesDir}`);
+      }
+    }
+
+    // 清除 .playwright-cli
+    const playwrightDir = path.join(getConversationDir(self, convId), '.playwright-cli');
+    if (fs.existsSync(playwrightDir)) {
+      try {
+        fs.rmSync(playwrightDir, { recursive: true, force: true });
+      } catch (e) {
+        result.errors.push(`删除 playwright-cli 缓存失败: ${playwrightDir}`);
       }
     }
 

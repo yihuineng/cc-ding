@@ -202,9 +202,9 @@ export async function sendDingMessage(self: DingClaude, opts: ISendMsgOpts): Pro
   const { conversationId, sessionWebhook, atUserId, content, msgType = 'text' } = opts;
   const conversation = self.config.conversations.find(it => it.conversationId === conversationId);
 
-  // 会话级 atSender 为 false 时，不 at 发送人
+  // 会话级 atSender 为 false 或单聊时，不 at 发送人
   let effectiveAtUserId = atUserId;
-  if (conversation?.atSender === false) {
+  if (conversation?.atSender === false || conversation?.conversationType === '1') {
     effectiveAtUserId = undefined;
   }
 
@@ -319,4 +319,48 @@ export async function sendClaudeResponseToDing(
       }
     }
   }
+}
+
+/**
+ * 通过钉钉机器人单聊 API 主动发消息给指定用户
+ * POST /v1.0/robot/oToMessages/batchSend
+ */
+export async function sendMessageToUser(self: DingClaude, userId: string, content: string, msgType: 'text' | 'markdown' = 'text'): Promise<boolean> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const msgKey = msgType === 'markdown' ? 'sampleMarkdown' : 'sampleText';
+    const msgParam = msgType === 'markdown'
+      ? JSON.stringify({ title: 'notification', text: content })
+      : JSON.stringify({ content });
+
+    const result = await urllib.request(`${DING_API_BASE}/v1.0/robot/oToMessages/batchSend`, {
+      method: 'POST',
+      data: { robotCode: self.clientId, userIds: [ userId ], msgKey, msgParam },
+      contentType: 'json',
+      headers: { 'x-acs-dingtalk-access-token': accessToken },
+      dataType: 'json',
+    });
+
+    if (result.status === 200) return true;
+    console.error(`sendMessageToUser API 返回非200: status=${result.status}, userId=${userId}`);
+    return false;
+  } catch (err) {
+    console.error(`sendMessageToUser 失败 (userId=${userId}):`, err);
+    return false;
+  }
+}
+
+/**
+ * 通过钉钉机器人单聊 API 主动发消息给 owner
+ */
+export async function sendOwnerMessage(self: DingClaude, content: string, msgType: 'text' | 'markdown' = 'text'): Promise<boolean> {
+  const { ownerConversationId, owner } = self.config;
+  if (!ownerConversationId || !owner) return false;
+  // owner 是手机号，需要先解析成 Ding userId
+  const userId = await queryUserIdByMobile(self, owner);
+  if (!userId) {
+    console.error(`sendOwnerMessage: 无法将手机号 ${owner} 解析为 Ding userId`);
+    return false;
+  }
+  return sendMessageToUser(self, userId, content, msgType);
 }

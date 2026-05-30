@@ -1,7 +1,7 @@
 {
   "name": "cc-ding",
-  "version": "0.0.4",
-  "description": "钉钉机器人对接本地Claude工具",
+  "version": "0.1.0",
+  "description": "本地Claude对接钉钉机器人工具套件",
   "keywords": [
     "cli",
     "claude",
@@ -26,7 +26,7 @@
     "eslint-config-egg": "^14.1.0",
     "globals": "^17.6.0",
     "husky": "^8.0.3",
-    "javascript-obfuscator": "^5.4.2",
+    "esbuild": "^0.28.0",
     "mocha": "^8.4.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
@@ -48,11 +48,13 @@
     "prepublishOnly": "npm run build"
   },
   "files": [
-    "dist"
+    "dist",
+    "resource"
   ],
   "husky": {
     "hooks": {
       "pre-commit": "npm run lint"
     }
-  }
+  },
+  "repository": "https://github.com/yihuineng/cc-ding.git"
 }
