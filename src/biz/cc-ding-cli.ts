@@ -6,7 +6,7 @@ import { projUtil } from '../common';
 import { IConfig, IActiveSession, ISession, IRawCallbackData, IAuthRequest } from './types';
 import { extractQuoteInfo, formatPromptWithQuote } from './quote';
 import { fetchQuotedMessage, sendMessageToUser, sendOwnerMessage } from './messaging';
-import { processPictureMessage, processRichTextMessage } from './image';
+import { processPictureMessage, processRichTextMessage, processFileMessage, extractDownloadCode } from './image';
 import {
   parseInfoCommand, formatConversationInfo, formatGlobalConfig, parseLogCommand,
   parseLsCommand, findSubdirByName, getDirectoryStructure,
@@ -819,6 +819,29 @@ export class DingClaude {
       prompt = await processRichTextMessage(
         this, rawData.content.richText, rawData.robotCode, conversationDir, useLocalOcr,
       );
+    } else if (msgtype === 'file') {
+      const downloadCode = extractDownloadCode(rawData);
+      if (downloadCode) {
+        const conversationDir = this.getConversationDir(conversationId);
+        const result = await processFileMessage(
+          this, downloadCode, rawData.robotCode, conversationDir,
+          textContent || undefined,
+        );
+        if (!result) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook, atUserId: senderStaffId,
+            content: '⚠️ 文件下载失败，请重试',
+          });
+          return;
+        }
+        prompt = result;
+      } else {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook, atUserId: senderStaffId,
+          content: '⚠️ 无法获取文件下载链接，请重新发送',
+        });
+        return;
+      }
     } else {
       prompt = textContent;
       if (!prompt) return;
@@ -1120,7 +1143,7 @@ export class DingClaude {
             targetConv.whiteUserList.push(request.senderStaffId);
           }
           saveClientConfig(this);
-          console.log(`[${timestamp()}] 授权申请通过: id=${authCmd.requestId}, userId=${request.senderStaffId}`);
+          console.log(`[${timestamp()}] 授权申请通过将: id=${authCmd.requestId}, userId=${request.senderStaffId}`);
           await sendMessageToUser(this, request.senderStaffId,
             '✅ 您的授权申请已通过，现在可以开始使用了', 'markdown');
           await this.sendDingMessage({
