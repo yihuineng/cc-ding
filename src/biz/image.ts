@@ -3,11 +3,12 @@ import fs from 'fs';
 import path from 'path';
 import urllib from 'urllib';
 import { DingClaude } from './cc-ding-cli';
-import { IDownloadedImage, ImageMediaType, IRichTextParagraph } from './types';
+import { IDownloadedImage, ImageMediaType, IRichTextParagraph, IRawCallbackData } from './types';
 import { timestamp } from './session';
 import { projUtil } from '../common';
 
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 
 /** 钉钉开放平台 API 基地址（与 messaging.ts 共用，如需修改请同步） */
 const DING_API_BASE = 'https://api.dingtalk.com';
@@ -141,7 +142,7 @@ export async function getImageDownloadUrl(
 /**
  * 下载图片 Buffer
  */
-export async function downloadImageBuffer(downloadUrl: string): Promise<Buffer | null> {
+export async function downloadImageBuffer(downloadUrl: string, maxSize: number = MAX_IMAGE_SIZE): Promise<Buffer | null> {
   try {
     const result = await urllib.request(downloadUrl, {
       method: 'GET',
@@ -160,8 +161,8 @@ export async function downloadImageBuffer(downloadUrl: string): Promise<Buffer |
       return null;
     }
 
-    if (buffer.length > MAX_IMAGE_SIZE) {
-      console.warn(`[${timestamp()}] 图片大小 ${buffer.length} 超过限制 ${MAX_IMAGE_SIZE}`);
+    if (buffer.length > maxSize) {
+      console.warn(`[${timestamp()}] 文件大小 ${buffer.length} 超过限制 ${maxSize}`);
       return null;
     }
 
@@ -337,7 +338,7 @@ export async function processRichTextMessage(
       } else {
         const code = para.downloadCode || para.pictureDownloadCode;
         if (code) {
-          parts.push('[��片下载失败]');
+          parts.push('[图片下载失败]');
         }
       }
     }
@@ -350,4 +351,112 @@ export async function processRichTextMessage(
     return `${OCR_PREAMBLE}\n${result}`;
   }
   return result;
+}
+
+/** 魔数 → 文件扩展名映射（图片已在 MAGIC_NUMBERS 中定义，此处补充非图片类型） */
+const FILE_MAGIC_BYTES: Array<{ bytes: number[]; mask?: number[]; ext: string }> = [
+  // PDF: %PDF
+  { bytes: [ 0x25, 0x50, 0x44, 0x46 ], ext: 'pdf' },
+  // ZIP-based: docx/xlsx/pptx (PK\x03\x04)
+  { bytes: [ 0x50, 0x4B, 0x03, 0x04 ], ext: 'zip' },
+  // ZIP-based: docx/xlsx/pptx (PK\x05\x06 empty archive)
+  { bytes: [ 0x50, 0x4B, 0x05, 0x06 ], ext: 'zip' },
+];
+
+/**
+ * 通过魔数检测文件扩展名
+ */
+export function detectExtFromBuffer(buffer: Buffer): string {
+  // 先检查图片类型（已在 MAGIC_NUMBERS 中定义）
+  const imgResult = detectImageMediaType(buffer);
+  if (imgResult.mediaType !== 'image/jpeg' || buffer.length < 2 ||
+      buffer[0] === 0xFF && buffer[1] === 0xD8) {
+    if (buffer.length >= 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+      return '.jpg';
+    }
+  }
+
+  for (const { bytes, ext } of FILE_MAGIC_BYTES) {
+    if (buffer.length >= bytes.length && bytes.every((b, i) => buffer[i] === b)) {
+      // ZIP 文件需进一步检测内容判断具体类型
+      if (ext === 'zip' && buffer.length >= 30) {
+        // 查找 [Content_Types].xml 中的标识
+        const content = buffer.toString('latin1', 0, Math.min(buffer.length, 2000));
+        if (content.includes('word/')) return '.docx';
+        if (content.includes('xl/')) return '.xlsx';
+        if (content.includes('ppt/')) return '.pptx';
+      }
+      return `.${ext}`;
+    }
+  }
+  return '';
+}
+
+/**
+ * 从钉钉回调原始数据中提取 downloadCode
+ * 适用于 file/picture/video/audio 等消息类型
+ */
+export function extractDownloadCode(rawData: IRawCallbackData): string | null {
+  const data = rawData as unknown as Record<string, unknown>;
+
+  if (data.pictureDownloadCode) return data.pictureDownloadCode as string;
+
+  if (data.extensions && typeof data.extensions === 'object') {
+    const ext = data.extensions as Record<string, unknown>;
+    if (ext.downloadCode) return ext.downloadCode as string;
+  }
+
+  const contentKeys = [ 'image_content', 'file_content', 'video_content', 'audio_content' ];
+  for (const key of contentKeys) {
+    const c = data[key];
+    if (c && typeof c === 'object') {
+      const content = c as Record<string, unknown>;
+      if (content.download_code) return content.download_code as string;
+      if (content.downloadCode) return content.downloadCode as string;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * 处理 file 消息，下载文件并返回拼接到 prompt 中的内容
+ * 返回 prompt 字符串，失败返回 null
+ */
+export async function processFileMessage(
+  self: DingClaude,
+  downloadCode: string,
+  robotCode: string,
+  conversationDir: string,
+  userText?: string,
+): Promise<string | null> {
+  const downloadUrl = await getImageDownloadUrl(self, downloadCode, robotCode);
+  if (!downloadUrl) return null;
+
+  const buffer = await downloadImageBuffer(downloadUrl, MAX_FILE_SIZE);
+  if (!buffer) return null;
+
+  const ext = detectExtFromBuffer(buffer);
+  const filesDir = path.join(conversationDir, '.files');
+  const codeSuffix = downloadCode.slice(-8);
+  const fileName = `${Date.now()}-${codeSuffix}${ext}`;
+  const filePath = path.join(filesDir, fileName);
+
+  try {
+    fs.mkdirSync(filesDir, { recursive: true });
+    fs.writeFileSync(filePath, buffer);
+  } catch (err) {
+    console.warn(`[${timestamp()}] 文件保存失败: ${filePath}`, err);
+    return null;
+  }
+
+  const sizeKB = (buffer.length / 1024).toFixed(1);
+  console.log(`[${timestamp()}] 文件已保存: ${filePath} (${sizeKB}KB${ext ? `, ${ext}` : ''})`);
+
+  const parts: string[] = [];
+  parts.push(`[文件] 收到一个文件${ext ? `（${ext}）` : ''}，大小 ${sizeKB}KB`);
+  if (userText) parts.push(userText);
+  parts.push(`文件路径: ${filePath}`);
+  parts.push('你可以使用 Read 工具查看文件内容。');
+  return parts.join('\n');
 }
