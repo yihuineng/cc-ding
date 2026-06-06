@@ -578,6 +578,9 @@ export async function executeClaudeQuery(
     '--output-format', 'stream-json',
     '--verbose',
   ];
+  if (self.config.skipSandbox) {
+    fixedCmdArgs.push('--dangerous-skip-sandbox');
+  }
   if (agent) {
     fixedCmdArgs.push('--agent', agent);
   }

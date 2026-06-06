@@ -38,6 +38,8 @@ export interface IConfig {
     /** 保存目录，默认为会话工作目录下的 .recorder */
     dist?: string;
   };
+  /** 是否为 Claude 进程添加 --dangerous-skip-sandbox 参数，默认 false */
+  skipSandbox?: boolean;
 }
 
 export interface IConversation {

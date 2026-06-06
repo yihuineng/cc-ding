@@ -73,6 +73,7 @@ program
       taskQueueSize: 10,
       taskHandlerCount: 1,
       sessionMaxConcurrency: 20,
+      skipSandbox: false,
     };
 
     initClientDir(opts.clientId, config);
