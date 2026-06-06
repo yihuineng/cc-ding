@@ -83,9 +83,9 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/mq',
-    description: '查看和管理当前会话消息队列(排队中的消息)',
-    usage: '/mq | /mq -n <数量> | /mq -all',
-    examples: [ '/mq', '/mq -n 1', '/mq -n 3', '/mq -all' ],
+    description: '查看和管理当前会话消息队列',
+    usage: '/mq | /mq front | /mq rm <序号> | /mq rm <1-3> | /mq -n <数量> | /mq -all',
+    examples: [ '/mq', '/mq front', '/mq rm 1', '/mq rm 1-3', '/mq rm 1 3 5', '/mq -n 1', '/mq -all' ],
     category: '任务',
   },
   {
@@ -185,17 +185,47 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/auth',
-    description: '管理当前群白名单(add/del/approve/reject,默认list)',
-    usage: '/auth [add|del <手机号或userId>] | /auth [approve|reject <requestId>]',
-    examples: [ '/auth', '/auth add 13800138000', '/auth del 13800138000', '/auth approve r1234', '/auth reject r1234' ],
+    description: '管理白名单和管理员(add/del/rm/admin,默认list)',
+    usage: '/auth [add|del|rm <手机号或userId>] | /auth admin [add|rm <手机号或userId>] | /auth [approve|reject <requestId>]',
+    examples: [ '/auth', '/auth add 13800138000', '/auth rm 13800138000', '/auth admin add 13800138000', '/auth admin rm 13800138000', '/auth admin', '/auth approve r1234' ],
     category: '管理',
     ownerOnly: true,
   },
   {
     name: '/recorder',
+    aliases: [ '/r' ],
     description: 'Recorder 模式：记录所有消息到本地（仅 owner 单聊）',
     usage: '/recorder [on|exit]',
-    examples: [ '/recorder on', '/recorder exit' ],
+    examples: [ '/recorder on', '/recorder exit', '/r on', '/r exit' ],
+    category: '管理',
+    ownerOnly: true,
+  },
+  {
+    name: '/todo',
+    description: '待办管理：添加/完成/删除/列表/提醒',
+    usage: '/todo <内容> [@人] [ddl 截止时间] | /todo done <序号> | /todo rm <序号|all> | /todo list | /todo remind <0-23>',
+    examples: [ '/todo 完成报告 ddl 明天', '/todo 修复bug @张三 ddl 下周五', '/todo done 1', '/todo rm 2', '/todo rm all', '/todo list', '/todo remind 9', '/todo remind -1' ],
+    category: '任务',
+  },
+  {
+    name: '/menu',
+    description: '快捷指令菜单：自定义常用指令，回复序号执行',
+    usage: '/menu add <指令> | /menu del <序号> | /menu list | /menu trigger <词> | /menu -g add/del/list',
+    examples: [ '/menu add /help', '/menu add /cron 每天早上9点查看dima', '/menu del 1', '/menu list', '/menu trigger go', '/menu -g add /info robot', '/menu -g del 1' ],
+    category: '系统',
+  },
+  {
+    name: '/!',
+    description: '中断当前任务并立即处理新消息',
+    usage: '/!',
+    examples: [ '/!' ],
+    category: '会话',
+  },
+  {
+    name: '/reboot',
+    description: '重启 cc-ding 应用（需 pm2 部署）',
+    usage: '/reboot [--update [tag]]',
+    examples: [ '/reboot', '/reboot --update', '/reboot --update beta' ],
     category: '管理',
     ownerOnly: true,
   },
@@ -693,11 +723,20 @@ export function parseBashCommand(text: string): string | null {
 /**
  * 解析 /mq 命令
  * - /mq           -> { type: 'list' }
- * - /mq -n 3      -> { type: 'cancel', count: 3 }
- * - /mq -all      -> { type: 'cancelAll' }
+ * - /mq front      -> { type: 'front' } (插队到队列头部)
+ * - /mq rm <n>     -> { type: 'rm', indices: [n] } (按序号删除)
+ * - /mq rm <1-3>   -> { type: 'rm', indices: [1,2,3] } (范围删除)
+ * - /mq rm 1 3 5   -> { type: 'rm', indices: [1,3,5] } (多序号删除)
+ * - /mq -n 3        -> { type: 'cancel', count: 3 } (取消前N条)
+ * - /mq -all        -> { type: 'cancelAll' }
  * - 其他 -> null
  */
-export type MqCommand = { type: 'list' } | { type: 'cancel'; count: number } | { type: 'cancelAll' };
+export type MqCommand =
+  | { type: 'list' }
+  | { type: 'front' }
+  | { type: 'rm'; indices: number[] }
+  | { type: 'cancel'; count: number }
+  | { type: 'cancelAll' };
 
 export function parseMqCommand(text: string): MqCommand | null {
   const trimmed = text.trim();
@@ -705,6 +744,35 @@ export function parseMqCommand(text: string): MqCommand | null {
 
   const rest = trimmed.substring(3).trim();
   if (!rest) return { type: 'list' };
+
+  // /mq front
+  if (/^front$/i.test(rest)) return { type: 'front' };
+
+  // /mq rm <序号列表> (支持: rm 1 / rm 1-3 / rm 1 3 5 / rm all)
+  const rmMatch = rest.match(/^rm\s+(.+)$/i);
+  if (rmMatch) {
+    const rmArg = rmMatch[1].trim();
+    if (/^all$/i.test(rmArg)) return { type: 'cancelAll' };
+
+    const indices: number[] = [];
+    // 先检查是否有范围格式 (如 1-3)
+    const rangeMatch = rmArg.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (rangeMatch) {
+      const start = parseInt(rangeMatch[1], 10);
+      const end = parseInt(rangeMatch[2], 10);
+      if (start > 0 && end >= start) {
+        for (let i = start; i <= end; i++) indices.push(i);
+        return { type: 'rm', indices };
+      }
+    }
+    // 多个独立序号 (如 1 3 5)
+    const parts = rmArg.split(/\s+/);
+    for (const p of parts) {
+      const n = parseInt(p, 10);
+      if (n > 0) indices.push(n);
+    }
+    if (indices.length > 0) return { type: 'rm', indices };
+  }
 
   const match = rest.match(/^-n\s+(\d+)$/i);
   if (match) {
@@ -729,13 +797,26 @@ export type AuthCommand =
   | { type: 'del'; staffId: string }
   | { type: 'list' }
   | { type: 'approve'; requestId: string }
-  | { type: 'reject'; requestId: string };
+  | { type: 'reject'; requestId: string }
+  | { type: 'adminAdd'; staffId: string }
+  | { type: 'adminRm'; staffId: string }
+  | { type: 'adminList' };
 
 export function parseAuthCommand(text: string): AuthCommand | null {
   const trimmed = text.trim();
+  // /auth admin add <userId>
+  const adminAddMatch = trimmed.match(/^\/auth\s+admin\s+add\s+(\S+)$/i);
+  if (adminAddMatch) return { type: 'adminAdd', staffId: adminAddMatch[1] };
+  // /auth admin rm <userId>
+  const adminRmMatch = trimmed.match(/^\/auth\s+admin\s+(?:rm|del)\s+(\S+)$/i);
+  if (adminRmMatch) return { type: 'adminRm', staffId: adminRmMatch[1] };
+  // /auth admin (list)
+  if (/^\/auth\s+admin(?:\s+list)?$/i.test(trimmed)) return { type: 'adminList' };
+
   const addMatch = trimmed.match(/^\/auth\s+add\s+(\S+)$/i);
   if (addMatch) return { type: 'add', staffId: addMatch[1] };
-  const delMatch = trimmed.match(/^\/auth\s+del(?:ete)?\s+(\S+)$/i);
+  // /auth del/delete/rm <userId>
+  const delMatch = trimmed.match(/^\/auth\s+(?:del(?:ete)?|rm)\s+(\S+)$/i);
   if (delMatch) return { type: 'del', staffId: delMatch[1] };
   const approveMatch = trimmed.match(/^\/auth\s+approve\s+(\S+)$/i);
   if (approveMatch) return { type: 'approve', requestId: approveMatch[1] };
@@ -757,10 +838,185 @@ export function parseGoonCommand(text: string): boolean {
 }
 
 export function parseCcCommand(text: string): string | null {
-  const match = text.trim().match(/^\/cc\s+(.+)$/is);
-  return match ? match[1] : null;
+  const trimmed = text.trim();
+  const match = trimmed.match(/^\/cc\s+(.+)$/i);
+  if (!match) return null;
+  const cmd = match[1].trim();
+  // 自动补全 / 前缀（例如 /cc compact → /compact）
+  return cmd.startsWith('/') ? cmd : `/${cmd}`;
 }
 
 export function parseClaudeMdCommand(text: string): boolean {
   return /^\/claude\.md$/i.test(text.trim());
+}
+
+/**
+ * 解析 /! 中断命令
+ */
+export function parseInterruptCommand(text: string): boolean {
+  return text.trim() === '/!';
+}
+
+/**
+ * 解析 /todo 命令
+ * - /todo <内容> [@人] [ddl 截止]  -> add
+ * - /todo done <序号>              -> done
+ * - /todo rm <序号|all>            -> remove
+ * - /todo list                     -> list
+ * - /todo remind <0-23|-1>         -> remind
+ */
+export type TodoCommand =
+  | { type: 'add'; content: string; assigneeStaffId?: string; deadline?: string }
+  | { type: 'done'; index: number }
+  | { type: 'remove'; index: number | 'all' }
+  | { type: 'list' }
+  | { type: 'remind'; hour: number | null }; // null = 关闭提醒
+
+export function parseTodoCommand(text: string): TodoCommand | null {
+  const trimmed = text.trim();
+  if (!/^\/todo(?:\s|$)/i.test(trimmed) && trimmed.toLowerCase() !== '/todo') return null;
+
+  const rest = trimmed.substring(5).trim();
+
+  // /todo list
+  if (/^list$/i.test(rest)) return { type: 'list' };
+
+  // /todo list (无参数也等同于 list)
+  if (!rest) return { type: 'list' };
+
+  // /todo done <序号>
+  const doneMatch = rest.match(/^done\s+(\d+)$/i);
+  if (doneMatch) return { type: 'done', index: parseInt(doneMatch[1], 10) };
+
+  // /todo rm all
+  if (/^rm\s+all$/i.test(rest)) return { type: 'remove', index: 'all' };
+
+  // /todo rm <序号>
+  const rmMatch = rest.match(/^rm\s+(\d+)$/i);
+  if (rmMatch) return { type: 'remove', index: parseInt(rmMatch[1], 10) };
+
+  // /todo remind -1 (关闭)
+  if (/^remind\s+-1$/i.test(rest)) return { type: 'remind', hour: null };
+
+  // /todo remind <0-23>
+  const remindMatch = rest.match(/^remind\s+(\d+)$/i);
+  if (remindMatch) {
+    const h = parseInt(remindMatch[1], 10);
+    if (h >= 0 && h <= 23) return { type: 'remind', hour: h };
+    return null;
+  }
+
+  // /todo <内容> [@人] [ddl 截止时间]
+  let content = rest;
+  let assigneeStaffId: string | undefined;
+  let deadline: string | undefined;
+
+  // 提取 @人
+  const atMatch = content.match(/@(\S+)/);
+  if (atMatch) {
+    assigneeStaffId = atMatch[1];
+    content = content.replace(/@\S+/, '').trim();
+  }
+
+  // 提取 ddl
+  const ddlMatch = content.match(/\bddl\s+(.+)$/i);
+  if (ddlMatch) {
+    deadline = ddlMatch[1].trim();
+    content = content.replace(/\bddl\s+.+$/i, '').trim();
+  }
+
+  if (!content) return null;
+
+  return { type: 'add', content, assigneeStaffId, deadline };
+}
+
+/**
+ * 解析 /menu 命令
+ * - /menu add <指令>            -> add (个人)
+ * - /menu del <序号>            -> del (个人)
+ * - /menu list                  -> list (个人)
+ * - /menu trigger <词>          -> trigger
+ * - /menu -g add <指令>         -> addGlobal
+ * - /menu -g del <序号>         -> delGlobal
+ * - /menu -g list               -> listGlobal
+ * - /menu                       -> show (显示菜单)
+ */
+export type MenuCommand =
+  | { type: 'add'; command: string; isGlobal: boolean }
+  | { type: 'del'; index: number; isGlobal: boolean }
+  | { type: 'list'; isGlobal: boolean }
+  | { type: 'trigger'; word: string }
+  | { type: 'show' };
+
+export function parseMenuCommand(text: string): MenuCommand | null {
+  const trimmed = text.trim();
+  if (!/^\/menu(?:\s|$)/i.test(trimmed) && trimmed.toLowerCase() !== '/menu') return null;
+
+  const rest = trimmed.substring(5).trim();
+  const isGlobal = rest.startsWith('-g ');
+  const cmd = isGlobal ? rest.substring(3).trim() : rest;
+
+  // /menu (无参数) -> show
+  if (!rest) return { type: 'show' };
+
+  // /menu -g (无后续参数) -> listGlobal
+  if (isGlobal && !cmd) return { type: 'list', isGlobal: true };
+
+  // /menu trigger <词>
+  const triggerMatch = cmd.match(/^trigger\s+(\S+)$/i);
+  if (triggerMatch && !isGlobal) return { type: 'trigger', word: triggerMatch[1] };
+
+  // /menu add <指令>
+  const addMatch = cmd.match(/^add\s+(.+)$/i);
+  if (addMatch) return { type: 'add', command: addMatch[1].trim(), isGlobal };
+
+  // /menu del <序号>
+  const delMatch = cmd.match(/^del(?:ete)?\s+(\d+)$/i);
+  if (delMatch) return { type: 'del', index: parseInt(delMatch[1], 10), isGlobal };
+
+  // /menu list
+  if (/^list$/i.test(cmd)) return { type: 'list', isGlobal };
+
+  // /menu (仅 -g 无后续) 或 其他无匹配时 → show
+  if (!isGlobal) return { type: 'show' };
+
+  return null;
+}
+
+/**
+ * 解析 /reboot 命令
+ * - /reboot              -> { update: false }
+ * - /reboot --update     -> { update: true, tag: undefined }
+ * - /reboot --update tag -> { update: true, tag: 'tag' }
+ */
+export interface IRebootCommand {
+  update: boolean;
+  tag?: string;
+}
+
+export function parseRebootCommand(text: string): IRebootCommand | null {
+  const trimmed = text.trim();
+  if (!/^\/reboot(?:\s|$)/i.test(trimmed)) return null;
+
+  const rest = trimmed.substring(7).trim();
+  if (!rest) return { update: false };
+
+  const updateMatch = rest.match(/^--update(?:\s+(\S+))?$/i);
+  if (updateMatch) {
+    return { update: true, tag: updateMatch[1] };
+  }
+
+  return null;
+}
+
+/**
+ * 解析 /recorder 或 /r 快捷命令（增强版，支持 /exit /e 退出别名）
+ */
+export function parseRecorderCommandEnhanced(text: string): 'on' | 'exit' | null {
+  const trimmed = text.trim().toLowerCase();
+  // /recorder on / /r on
+  if (/^\/(?:recorder|r)\s+on$/i.test(trimmed)) return 'on';
+  // /recorder exit / /r exit / /recorder e / /r e / /exit / /e
+  if (/^\/(?:recorder|r)\s+(?:exit|e)$/i.test(trimmed) || /^\/(?:exit|e)$/i.test(trimmed)) return 'exit';
+  return null;
 }

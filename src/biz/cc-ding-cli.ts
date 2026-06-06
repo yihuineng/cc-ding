@@ -844,11 +844,25 @@ export class DingClaude {
       }
     } else {
       prompt = textContent;
+      // 引用消息只 @机器人（无额外文本）时 textContent 为空，但仍有引用内容需要处理
+      if (!prompt) {
+        const quoteInfo = extractQuoteInfo(rawData);
+        if (quoteInfo) {
+          this.debugLog(`检测到引用消息(无正文): quoteMessageId=${quoteInfo.quoteMessageId}`);
+          if (quoteInfo.quoteMessageId && !quoteInfo.quoteText) {
+            const fetched = await fetchQuotedMessage(this, quoteInfo.quoteMessageId);
+            if (fetched) quoteInfo.quoteText = fetched;
+          }
+          if (quoteInfo.quoteText) {
+            prompt = formatPromptWithQuote('', quoteInfo);
+          }
+        }
+      }
       if (!prompt) return;
     }
 
     // 提取引用消息（命令消息忽略引用）
-    if (!prompt.startsWith('/') && msgtype === 'text') {
+    if (!prompt.startsWith('/') && msgtype === 'text' && textContent) {
       const quoteInfo = extractQuoteInfo(rawData);
       if (quoteInfo) {
         this.debugLog(`检测到引用消息: quoteMessageId=${quoteInfo.quoteMessageId}`);

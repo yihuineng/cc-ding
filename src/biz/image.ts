@@ -196,7 +196,7 @@ async function downloadAndProcessImage(
 
   // 4. 保存到本地
   const imagesDir = path.join(saveDir, '.images');
-  const codeSuffix = downloadCode.slice(-8);
+  const codeSuffix = downloadCode.slice(-8).replace(/[/\\:*?"<>|+= ]/g, '_');
   const fileName = `${Date.now()}-${codeSuffix}.${ext}`;
   const filePath = path.join(imagesDir, fileName);
 
@@ -399,6 +399,8 @@ export function detectExtFromBuffer(buffer: Buffer): string {
 export function extractDownloadCode(rawData: IRawCallbackData): string | null {
   const data = rawData as unknown as Record<string, unknown>;
 
+  // 优先 downloadCode（API 标准字段），其次 pictureDownloadCode
+  if (rawData.downloadCode) return rawData.downloadCode;
   if (data.pictureDownloadCode) return data.pictureDownloadCode as string;
 
   if (data.extensions && typeof data.extensions === 'object') {
@@ -420,6 +422,77 @@ export function extractDownloadCode(rawData: IRawCallbackData): string | null {
 }
 
 /**
+ * 从 rawData 中提取文件名
+ */
+export function extractFileName(rawData: IRawCallbackData): string | null {
+  const data = rawData as unknown as Record<string, unknown>;
+  // rawData 本身的 fileName
+  if (rawData.fileName && typeof rawData.fileName === 'string') return rawData.fileName;
+  // 从 content 字段中提取
+  for (const key of [ 'content', 'file_content', 'image_content' ]) {
+    const c = data[key];
+    if (c && typeof c === 'object') {
+      const content = c as Record<string, unknown>;
+      if (content.fileName && typeof content.fileName === 'string') return content.fileName;
+      if (content.file_name && typeof content.file_name === 'string') return content.file_name;
+      if (content.name && typeof content.name === 'string') return content.name;
+    }
+  }
+  return null;
+}
+
+/**
+ * 下载文件到 .files/{type}/ 目录
+ * @param type 子目录名（如 picture, file, video, audio）
+ * @returns 保存的文件路径，失败返回 null
+ */
+export async function downloadToFilesDir(
+  self: DingClaude,
+  downloadCode: string,
+  robotCode: string,
+  conversationDir: string,
+  type: string,
+  fileNameHint?: string,
+): Promise<string | null> {
+  const downloadUrl = await getImageDownloadUrl(self, downloadCode, robotCode);
+  if (!downloadUrl) return null;
+
+  const buffer = await downloadImageBuffer(downloadUrl);
+  if (!buffer) return null;
+
+  const targetDir = path.join(conversationDir, '.files', type);
+  fs.mkdirSync(targetDir, { recursive: true });
+
+  let fileName: string;
+  if (fileNameHint) {
+    fileName = fileNameHint;
+  } else {
+    const { ext } = detectImageMediaType(buffer);
+    fileName = `file.${ext}`;
+  }
+  // 同名文件已存在时追加序号避免覆盖
+  if (fs.existsSync(path.join(targetDir, fileName))) {
+    const dotIdx = fileName.lastIndexOf('.');
+    const base = dotIdx > 0 ? fileName.substring(0, dotIdx) : fileName;
+    const extPart = dotIdx > 0 ? fileName.substring(dotIdx) : '';
+    let seq = 1;
+    while (fs.existsSync(path.join(targetDir, `${base}_${seq}${extPart}`))) seq++;
+    fileName = `${base}_${seq}${extPart}`;
+  }
+  const filePath = path.join(targetDir, fileName);
+
+  try {
+    fs.writeFileSync(filePath, buffer);
+  } catch (err) {
+    console.warn(`[${timestamp()}] 文件保存失败: ${filePath}`, err);
+    return null;
+  }
+
+  console.log(`[${timestamp()}] 文件已保存: ${filePath} (${buffer.length} bytes)`);
+  return filePath;
+}
+
+/**
  * 处理 file 消息，下载文件并返回拼接到 prompt 中的内容
  * 返回 prompt 字符串，失败返回 null
  */
@@ -438,7 +511,7 @@ export async function processFileMessage(
 
   const ext = detectExtFromBuffer(buffer);
   const filesDir = path.join(conversationDir, '.files');
-  const codeSuffix = downloadCode.slice(-8);
+  const codeSuffix = downloadCode.slice(-8).replace(/[/\\:*?"<>|+= ]/g, '_');
   const fileName = `${Date.now()}-${codeSuffix}${ext}`;
   const filePath = path.join(filesDir, fileName);
 

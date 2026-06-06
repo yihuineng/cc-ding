@@ -369,7 +369,7 @@ function runClaudeOnce(
             ? (resultContent || bufferContent)
             : bufferContent;
 
-          if (fullResponse) {
+          if (fullResponse && !activeSession?.interrupted) {
             try { self.appendSessionLog(sessionDir, 'assistant', fullResponse); } catch { /* 日志写入失败不阻断消息发送 */ }
             const activeSessionRef = self.activeSessions.get(session.conversationId);
             const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
@@ -411,6 +411,15 @@ function runClaudeOnce(
         activeSessionRef.currentProcess = undefined;
       }
 
+      // 被中断时（/end、/new 等），丢弃未发送的 responseBuffer，不再发送残余消息
+      if (activeSessionRef?.interrupted) {
+        console.log(`[${timestamp()}] 用户主动中断，丢弃 responseBuffer (${responseBuffer.length} 段)`);
+        activeSessionRef.interrupted = false;
+        responseBuffer = [];
+        resolve(0);
+        return;
+      }
+
       if (responseBuffer.length > 0) {
         const fullResponse = responseBuffer.join('\n').trim();
         if (fullResponse) {
@@ -436,13 +445,6 @@ function runClaudeOnce(
       }
 
       if (code === 0) {
-        resolve(0);
-        return;
-      }
-
-      if (activeSessionRef?.interrupted) {
-        console.log(`[${timestamp()}] 用户主动中断，忽略错误`);
-        activeSessionRef.interrupted = false;
         resolve(0);
         return;
       }
@@ -586,7 +588,25 @@ export async function executeClaudeQuery(
   let totalRetries = 0;
   let retryStartTime = 0;
   const retryHistory: string[] = [];
+  const originalActiveSession = self.activeSessions.get(session.conversationId);
+
+  /** 检查会话是否仍在活跃状态（未被 /end 终止或 /goon 请求重启） */
+  const isSessionStillActive = (reason: string): boolean => {
+    const current = self.activeSessions.get(session.conversationId);
+    if (!current || current !== originalActiveSession) {
+      console.log(`[${timestamp()}] 会话已被终止，${reason}`);
+      return false;
+    }
+    if (current.goonPending) {
+      console.log(`[${timestamp()}] 收到 /goon 请求，${reason}`);
+      return false;
+    }
+    return true;
+  };
+
   while (true) {
+    if (!isSessionStillActive('停止重试')) return;
+
     const isRetry = consecutiveFastFail > 0;
 
     // 无限重试循环检测
@@ -697,6 +717,7 @@ export async function executeClaudeQuery(
         fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: TPM 限流，${API_RETRY_DELAY_MS / 1000}s 后重试\n`, 'utf-8');
         retryHistory.push(`[${timestamp()}] TPM 限流，${API_RETRY_DELAY_MS / 1000}s 后重试`);
         await sleep(API_RETRY_DELAY_MS);
+        if (!isSessionStillActive('停止当前重试')) return;
         continue;
       }
       if (err instanceof ConversationNotFoundError) {

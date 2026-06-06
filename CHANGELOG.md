@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.2.0 (2026-06-06)
+
+### 新功能
+
+#### `/todo` 待办管理
+- `/todo <内容> [@人] [ddl 截止时间]` 添加待办（默认 7 天到期）
+- `/todo done <序号>` 标记完成
+- `/todo rm <序号>` 删除单条，`/todo rm all` 清空全部
+- `/todo list` 查看列表（含 DDL 逾期标记和提醒时间）
+- `/todo remind <0-23>` 设置每日提醒整点时间，`/todo remind -1` 关闭提醒
+- DDL 支持自然语言：`明天`、`后天`、`大后天`、`下周一`~`下周日`、`这周五`、`2025-06-10`、`6/10`、`0610`
+- 已完成待办 1 天后自动清理
+- 数据持久化到 `.cc-ding/{clientId}/todo.json`
+
+#### `/menu` 快捷指令菜单
+- `/menu add <指令>` 添加个人菜单（名称自动截取指令前 20 字符）
+- `/menu del <序号>` 删除个人菜单
+- `/menu list` 查看个人菜单列表
+- `/menu trigger <词>` 自定义触发词（默认 `cc`）
+- `/menu -g add/del/list` owner 管理全局菜单（所有群可见）
+- 菜单持久化到 `.cc-ding/{clientId}/menu.json`
+
+#### 新命令
+- **`/!` 中断命令**: 中断当前 Claude 执行并立即处理新消息
+- **`/mq front` 插队**: 将消息插入队列头部优先处理
+- **`/mq rm` 增强**: 支持按序号精确删除（`/mq rm 2`、`/mq rm 1-3`、`/mq rm 1 3 5`）
+- **`/reboot`**: 重启 cc-ding 应用，支持 `--update [tag]` 更新后重启
+- **`/recorder` 快捷方式**: `/r` 作为 `/recorder` 别名，`/exit` 作为退出别名
+- **`/auth rm`**: 作为 `/auth del` 的别名
+
+#### 多类型引用消息
+- 支持引用 picture/richText/chatRecord/file/video/audio/actionCard/interactiveCard 等消息类型
+- 引用图片消息时自动下载并处理 OCR
+- 引用文件消息时自动下载到 `.files/{type}/` 目录
+- 引用消息格式化增强：显示引用类型和发送者信息
+
+#### 文件消息增强
+- 新增 `downloadToFilesDir` 通用文件下载函数，支持同名文件自动追加序号
+- 新增 `extractFileName` 从 rawData 提取文件名
+- 新增 `detectExtFromBuffer` 通过魔数检测文件类型（PDF/DOCX/XLSX 等）
+- `extractDownloadCode` 优先级修正：`downloadCode` 优先于 `pictureDownloadCode`
+
+#### 管理员体系
+- 新增 `adminUserList` 配置，管理员除 `/reboot`、`/open`、`/cfg` 注册外与 owner 同权
+- `/auth admin add <userId>` 添加管理员
+- `/auth admin rm <userId>` 移除管理员
+- `/auth admin` 查看管理员列表
+- owner/admin 始终放行白名单检查
+
+#### 私聊消息能力
+- 新增 `enableMsgToUser` 配置，开启后支持通过钉钉 oToMessages API 向用户发送私聊消息
+- `sendMessageToUser` 增加开关检查，未配置时跳过发送
+
+### 修复
+- **`/end` 后仍收到 AI 回复**: close 事件和 result 流增加 `interrupted` 标志检查，中断后丢弃残余消息
+- **消息队列未自动执行**: `/new` 结束当前会话后 finally 中补充队列 drain 逻辑
+- **图片下载 ENOENT**: downloadCode 中含 `/`、`+` 等 Base64 特殊字符时文件名清理
+- **引用消息无响应**: 引用消息只 @机器人（无额外文本）时不再提前 return，改为检查引用内容后继续处理
+- **`/cc` 命令自动补全 `/`**: `/cc compact` 自动转换为 `/compact`
+- **会话重试循环不停**: 新增 `isSessionStillActive` 检查，`/end` 后停止重试
+
+### 优化
+- `endSession` 时清空消息队列，避免残留消息干扰
+- `goonPending` 处理时重置 `interrupted` 标志
+- `/cc` 命令描述更新为"透传命令给 Claude（无需 / 前缀）"
+
 ## 0.1.0 (2026-05-30)
 
 ### 新功能

@@ -85,8 +85,8 @@ export function resolveToUserId(self: DingClaude, value: string): string {
 }
 
 export function authCheck(self: DingClaude, userId: string, conversationId?: string): boolean {
-  // owner 拥有所有权限，无需检查白名单
-  if (isOwner(self, userId)) return true;
+  // owner/admin 拥有所有权限，无需检查白名单
+  if (isOwnerOrAdmin(self, userId)) return true;
 
   if (conversationId) {
     const conv = self.config.conversations.find(it => it.conversationId === conversationId);
@@ -105,6 +105,21 @@ export function isOwner(self: DingClaude, userId: string): boolean {
   if (!owner || !isMobile(owner)) return false;
   const ownerUserId = self.resolvedPhones[owner];
   return !!ownerUserId && ownerUserId === userId;
+}
+
+/**
+ * 检查用户是否为管理员
+ */
+export function isAdmin(self: DingClaude, userId: string): boolean {
+  if (!self.config.adminUserList?.length) return false;
+  return self.config.adminUserList.some(item => resolveToUserId(self, item) === userId);
+}
+
+/**
+ * 检查用户是否为 owner 或管理员（统一权限判断）
+ */
+export function isOwnerOrAdmin(self: DingClaude, userId: string): boolean {
+  return isOwner(self, userId) || isAdmin(self, userId);
 }
 
 export function debugLog(self: DingClaude, message: string, ...args: unknown[]): void {
@@ -511,11 +526,18 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
     );
   }
 
+  // 清空消息队列
+  const queueLen = activeSession.messageQueue?.length ?? 0;
+  if (queueLen > 0) {
+    activeSession.messageQueue = [];
+    console.log(`[${timestamp()}] 结束会话时清空消息队列: 群=${conversationId}, 清空${queueLen}条消息`);
+  }
+
   await sendDingMessage(self, {
     conversationId,
     sessionWebhook,
     atUserId: session.startStaffId,
-    content: `💬 会话已结束\n📋 会话ID: ${sessionId}`,
+    content: `💬 会话已结束\n📋 会话ID: ${sessionId}${queueLen > 0 ? `\n🗑️ 已清空消息队列，丢弃${queueLen}条待处理消息` : ''}`,
   });
 
   self.activeSessions.delete(sessionKey);
@@ -658,8 +680,11 @@ export async function startNewSession(self: DingClaude, opts: {
       activeSession.isProcessing = false;
     }
   }
-  // 检查并处理排队消息
-  await processMessageQueue(self, conversationId);
+  // 检查并处理排队消息（含 /new 后的 drain）
+  const finalSession = self.activeSessions.get(conversationId);
+  if (finalSession && finalSession.messageQueue.length > 0) {
+    await processMessageQueue(self, conversationId);
+  }
 }
 
 /**
@@ -706,6 +731,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   // goonPending: /goon 命令触发的强制重启，发送"继续"恢复执行
   if (activeSession.goonPending) {
     activeSession.goonPending = false;
+    activeSession.interrupted = false;
     activeSession.isProcessing = true;
     try {
       await executeClaudeQuery(self, activeSession.session, '继续', {
