@@ -3,7 +3,7 @@ import path from 'path';
 import { dateUtil } from 'utils-ok';
 import { DingClaude } from './cc-ding-cli';
 import { IRawCallbackData, IRichTextParagraph } from './types';
-import { getImageDownloadUrl, downloadImageBuffer } from './image';
+import { getImageDownloadUrl, downloadImageBuffer, detectExtFromBuffer, extractDownloadCode } from './image';
 import { getConversationDir, timestamp } from './session';
 
 export function getRecorderDir(self: DingClaude, conversationId: string): string {
@@ -64,39 +64,6 @@ async function downloadAttachment(
     console.warn(`[${timestamp()}] [recorder] 附件下载失败:`, err);
     return null;
   }
-}
-
-function detectExtFromBuffer(buffer: Buffer): string {
-  if (buffer.length < 4) return '';
-  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) return '.png';
-  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) return '.jpg';
-  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) return '.gif';
-  if (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46) return '.webp';
-  if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) return '.pdf';
-  return '';
-}
-
-function extractDownloadCode(rawData: IRawCallbackData): string | null {
-  const data = rawData as unknown as Record<string, unknown>;
-
-  if (data.pictureDownloadCode) return data.pictureDownloadCode as string;
-
-  if (data.extensions && typeof data.extensions === 'object') {
-    const ext = data.extensions as Record<string, unknown>;
-    if (ext.downloadCode) return ext.downloadCode as string;
-  }
-
-  const contentKeys = [ 'image_content', 'file_content', 'video_content', 'audio_content' ];
-  for (const key of contentKeys) {
-    const c = data[key];
-    if (c && typeof c === 'object') {
-      const content = c as Record<string, unknown>;
-      if (content.download_code) return content.download_code as string;
-      if (content.downloadCode) return content.downloadCode as string;
-    }
-  }
-
-  return null;
 }
 
 function recordText(

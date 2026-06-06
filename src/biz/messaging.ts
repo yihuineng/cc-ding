@@ -326,6 +326,10 @@ export async function sendClaudeResponseToDing(
  * POST /v1.0/robot/oToMessages/batchSend
  */
 export async function sendMessageToUser(self: DingClaude, userId: string, content: string, msgType: 'text' | 'markdown' = 'text'): Promise<boolean> {
+  if (!self.config.enableMsgToUser) {
+    console.log(`[sendMessageToUser] enableMsgToUser 未开启，跳过发送 (userId=${userId})`);
+    return false;
+  }
   try {
     const accessToken = await self.dingStreamClient.getAccessToken();
     const msgKey = msgType === 'markdown' ? 'sampleMarkdown' : 'sampleText';

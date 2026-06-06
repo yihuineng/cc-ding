@@ -6,12 +6,16 @@ export interface IConfig {
   clientName?: string;
   whiteUserList: string[]; // 白名单
   owner: string; // 机器人 owner（手机号，可执行敏感操作如 /clean）
+  /** 管理员列表（手机号或userId），除 /reboot、/open、/cfg 注册外与 owner 同权 */
+  adminUserList?: string[];
   clientSecret: string; // 钉钉 Stream Client 密钥
   dingSecret?: string; // 搭配 dingToken 发送群消息的签名密钥
   /** 默认 dingToken，当会话无 dingToken 时使用（必填） */
   defaultDingToken: string;
   /** owner 单聊会话ID，配置后兜底消息/通知通过该会话发送给 owner */
   ownerConversationId?: string;
+  /** 是否开启单聊消息能力（通过 oToMessages API 向用户发私聊消息），默认 false */
+  enableMsgToUser?: boolean;
   conversations: IConversation[];
   taskQueueSize?: number; // 默认50
   taskHandlerCount?: number; // 默认1个
@@ -34,6 +38,8 @@ export interface IConfig {
     /** 保存目录，默认为会话工作目录下的 .recorder */
     dist?: string;
   };
+  /** 是否为 Claude 进程添加 --dangerous-skip-sandbox 参数，默认 false */
+  skipSandbox?: boolean;
 }
 
 export interface IConversation {
@@ -138,8 +144,26 @@ export interface IRepliedMsg {
   msgId?: string;
   content?: {
     text?: string;
+    richText?: IRichTextParagraph[];
+    chatRecords?: IChatRecordItem[];
+    fileName?: string;
+    fileSize?: string;
+    downloadCode?: string;
+    title?: string;
+    markdown?: string;
     [key: string]: unknown;
   };
+  [key: string]: unknown;
+}
+
+/** 聊天记录中的单条消息 */
+export interface IChatRecordItem {
+  senderNick?: string;
+  senderName?: string;
+  content?: string;
+  text?: string;
+  msgtype?: string;
+  msgType?: string;
   [key: string]: unknown;
 }
 
@@ -175,6 +199,9 @@ export interface IRawCallbackData extends Omit<RobotTextMessage, 'text' | 'msgty
   text?: ITextWithReply;
   content?: { richText: IRichTextParagraph[] };  // richText 消息内容(msgtype=richText 时)
   pictureDownloadCode?: string;                  // 独立图片消息的下载码(msgtype=picture 时)
+  fileDownloadCode?: string;                     // 文件下载码(msgtype=file 时)
+  fileName?: string;                             // 文件名(msgtype=file 时)
+  downloadCode?: string;                         // 通用下载码(多种消息类型)
   originalMsgId?: string;   // 原始消息ID(钉钉回调可选字段)
 }
 
@@ -183,6 +210,10 @@ export interface IQuoteInfo {
   quoteText: string;           // 引用消息的文本内容
   quoteMessageId?: string;     // 引用消息ID(调试用)
   quoteSenderNick?: string;    // 引用消息的发送者昵称(如可获取)
+  quoteMsgType?: string;       // 被引用消息类型(picture/richText/file等)
+  quoteDownloadCode?: string;  // 引用消息中的下载码(图片/文件)
+  quoteFileName?: string;      // 引用消息中的文件名(文件消息)
+  quoteRichText?: IRichTextParagraph[]; // 引用的富文本段落(用于下载内嵌图片)
 }
 
 export interface ISendMsgOpts {
