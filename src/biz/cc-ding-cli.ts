@@ -16,6 +16,7 @@ import {
   parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
   parseBashCommand, parseMqCommand, parseRecorderCommand,
   parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
+  parseRebootCommand,
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery } from './claude-process';
@@ -1035,6 +1036,52 @@ export class DingClaude {
       return;
     }
 
+    // /reboot 命令：重启 cc-ding 进程（仅 owner 可用，未注册群也可用）
+    const rebootCmd = parseRebootCommand(prompt);
+    if (rebootCmd) {
+      if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+
+      if (rebootCmd.update) {
+        const tag = rebootCmd.tag ? `@${rebootCmd.tag}` : '';
+        await this.sendDingMessage({
+          conversationId,
+          sessionWebhook,
+          content: `✅ ${senderNick} 触发了重启并更新，正在执行 pnpm add -g cc-ding${tag}...`,
+          msgType: 'markdown',
+        });
+
+        setTimeout(() => {
+          const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
+          fs.writeFileSync(rebootFlagFile, JSON.stringify({ conversationId, senderStaffId }), 'utf-8');
+
+          const processName = `cc-ding-${this.clientId}`;
+          console.log(`[${timestamp()}] 执行 pnpm add -g cc-ding${tag} && pm2 restart ${processName}`);
+          childExec(`pnpm add -g cc-ding${tag} && pm2 restart ${processName}`, { timeout: 60_000 }, (err) => {
+            if (err) console.error(`[${timestamp()}] pnpm add -g + pm2 restart 失败:`, err);
+          });
+        }, 1000);
+      } else {
+        await this.sendDingMessage({
+          conversationId,
+          sessionWebhook,
+          content: `✅ ${senderNick} 触发了重启，cc-ding 正在重启中...`,
+          msgType: 'markdown',
+        });
+
+        setTimeout(() => {
+          const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
+          fs.writeFileSync(rebootFlagFile, JSON.stringify({ conversationId, senderStaffId }), 'utf-8');
+
+          const processName = `cc-ding-${this.clientId}`;
+          console.log(`[${timestamp()}] 执行 pm2 restart ${processName}`);
+          childExec(`pm2 restart ${processName}`, { timeout: 10_000 }, (err) => {
+            if (err) console.error(`[${timestamp()}] pm2 restart 失败:`, err);
+          });
+        }, 1000);
+      }
+      return;
+    }
+
     if (!conversationConfig) {
       console.log(`未注册的机器人,群:${conversationTitle},${conversationId}`);
       if (this.isOwner(senderStaffId)) {
@@ -1808,6 +1855,37 @@ export class DingClaude {
   }
 
   /**
+   * 启动时检查是否有重启后待通知的消息
+   */
+  private async notifyPendingReboot(): Promise<void> {
+    const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
+    if (!fs.existsSync(rebootFlagFile)) return;
+
+    try {
+      const content = JSON.parse(fs.readFileSync(rebootFlagFile, 'utf-8')) as { conversationId: string; senderStaffId: string };
+      fs.unlinkSync(rebootFlagFile);
+
+      const activeSession = this.activeSessions.get(content.conversationId);
+      if (!activeSession) {
+        console.log(`[${timestamp()}] 重启后未找到活跃会话，跳过通知`);
+        return;
+      }
+
+      await this.sendDingMessage({
+        conversationId: content.conversationId,
+        sessionWebhook: activeSession.session.sessionWebhook,
+        content: `✅ cc-ding 已重启完成`,
+        msgType: 'markdown',
+        atUserId: content.senderStaffId,
+      });
+      console.log(`[${timestamp()}] 重启完成通知已发送`);
+    } catch (err) {
+      console.error(`[${timestamp()}] 处理重启通知失败:`, err);
+      try { fs.unlinkSync(rebootFlagFile); } catch { /* ignore */ }
+    }
+  }
+
+  /**
    * 启动服务
    */
   async run(): Promise<void> {
@@ -1833,6 +1911,9 @@ export class DingClaude {
     }
 
     this.loadActiveSessions();
+
+    // 检查是否有重启后待通知的消息
+    await this.notifyPendingReboot();
 
     // 启动 Cron 引擎
     this.cronEngine.start();
