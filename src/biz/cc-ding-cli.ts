@@ -1041,44 +1041,41 @@ export class DingClaude {
     if (rebootCmd) {
       if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
 
-      if (rebootCmd.update) {
-        const tag = rebootCmd.tag ? `@${rebootCmd.tag}` : '';
+      // 校验 tag 参数，防止 shell 注入
+      if (rebootCmd.tag && !/^[\w.\-]+$/.test(rebootCmd.tag)) {
         await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: `✅ ${senderNick} 触发了重启并更新，正在执行 pnpm add -g cc-ding${tag}...`,
+          conversationId, sessionWebhook,
+          content: '❌ 无效的 tag，仅允许字母、数字、点、横线和下划线',
           msgType: 'markdown',
         });
-
-        setTimeout(() => {
-          const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
-          fs.writeFileSync(rebootFlagFile, JSON.stringify({ conversationId, senderStaffId }), 'utf-8');
-
-          const processName = `cc-ding-${this.clientId}`;
-          console.log(`[${timestamp()}] 执行 pnpm add -g cc-ding${tag} && pm2 restart ${processName}`);
-          childExec(`pnpm add -g cc-ding${tag} && pm2 restart ${processName}`, { timeout: 60_000 }, (err) => {
-            if (err) console.error(`[${timestamp()}] pnpm add -g + pm2 restart 失败:`, err);
-          });
-        }, 1000);
-      } else {
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: `✅ ${senderNick} 触发了重启，cc-ding 正在重启中...`,
-          msgType: 'markdown',
-        });
-
-        setTimeout(() => {
-          const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
-          fs.writeFileSync(rebootFlagFile, JSON.stringify({ conversationId, senderStaffId }), 'utf-8');
-
-          const processName = `cc-ding-${this.clientId}`;
-          console.log(`[${timestamp()}] 执行 pm2 restart ${processName}`);
-          childExec(`pm2 restart ${processName}`, { timeout: 10_000 }, (err) => {
-            if (err) console.error(`[${timestamp()}] pm2 restart 失败:`, err);
-          });
-        }, 1000);
+        return;
       }
+
+      const tag = rebootCmd.tag ? `@${rebootCmd.tag}` : '';
+      const cmd = rebootCmd.update
+        ? `pnpm add -g cc-ding${tag}`
+        : null;
+      const processName = `cc-ding-${this.clientId}`;
+
+      await this.sendDingMessage({
+        conversationId,
+        sessionWebhook,
+        content: cmd
+          ? `✅ ${senderNick} 触发了重启并更新，正在执行 ${cmd}...`
+          : `✅ ${senderNick} 触发了重启，cc-ding 正在重启中...`,
+        msgType: 'markdown',
+      });
+
+      // 先写 flag 文件，避免进程 crash 丢失
+      const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
+      fs.writeFileSync(rebootFlagFile, JSON.stringify({ conversationId, senderStaffId }), 'utf-8');
+
+      setTimeout(() => {
+        console.log(`[${timestamp()}] 执行 pm2 restart ${processName}${cmd ? ' (含更新)' : ''}`);
+        childExec(`${cmd ? `${cmd} && ` : ''}pm2 restart "${processName}"`, { timeout: 60_000 }, (err) => {
+          if (err) console.error(`[${timestamp()}] pm2 restart 失败:`, err);
+        });
+      }, 1000);
       return;
     }
 
@@ -1880,6 +1877,10 @@ export class DingClaude {
       });
       console.log(`[${timestamp()}] 重启完成通知已发送`);
     } catch (err) {
+      try {
+        const raw = fs.readFileSync(rebootFlagFile, 'utf-8');
+        console.error(`[${timestamp()}] .reboot_pending 内容:`, raw);
+      } catch { /* file may already be deleted */ }
       console.error(`[${timestamp()}] 处理重启通知失败:`, err);
       try { fs.unlinkSync(rebootFlagFile); } catch { /* ignore */ }
     }
