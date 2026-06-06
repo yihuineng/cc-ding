@@ -531,7 +531,7 @@ export async function executeClaudeQuery(
   self: DingClaude,
   session: ISession,
   message: string,
-  opts?: { skill?: string; agent?: string; settings?: string; senderNick?: string; senderStaffId?: string },
+  opts?: { skill?: string; agent?: string; settings?: string; senderNick?: string; senderStaffId?: string; permissionMode?: string },
 ): Promise<void> {
   const { skill, agent, senderNick, senderStaffId } = opts || {};
   let sessionDir = self.getSessionDir(session);
@@ -572,15 +572,13 @@ export async function executeClaudeQuery(
   self.appendSessionLog(sessionDir, 'user', messageWithPrefix);
 
   const entryCmd = 'claude';
+  const permissionMode = opts?.permissionMode ?? 'bypassPermissions';
   const fixedCmdArgs = [
-    '--permission-mode', 'bypassPermissions',
+    '--permission-mode', permissionMode,
     '--print',
     '--output-format', 'stream-json',
     '--verbose',
   ];
-  if (self.config.skipSandbox) {
-    fixedCmdArgs.push('--dangerous-skip-sandbox');
-  }
   if (agent) {
     fixedCmdArgs.push('--agent', agent);
   }

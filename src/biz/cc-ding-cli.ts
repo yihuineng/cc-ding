@@ -12,8 +12,7 @@ import {
   parseLsCommand, findSubdirByName, getDirectoryStructure,
   parseContinueSessionCommand, parseHelpCommand, parseCommandHelp,
   getCommandByName, formatHelpOverview, formatCommandHelp,
-  parseCronCommand, parsePwdCommand, parseMkdirCommand, parseTouchCommand, parseRmCommand,
-  parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
+  parseCronCommand, parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
   parseBashCommand, parseMqCommand, parseRecorderCommand,
   parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
   parseRebootCommand,
@@ -104,7 +103,7 @@ export class DingClaude {
   parseClaudeStreamLine = parseClaudeStreamLine;
   interruptClaudeProcess = (activeSession: import('./types').IActiveSession, logReason: string) =>
     interruptClaudeProcess(activeSession, logReason);
-  executeClaudeQuery = (session: ISession, message: string, opts?: { skill?: string; agent?: string; senderNick?: string; senderStaffId?: string }) =>
+  executeClaudeQuery = (session: ISession, message: string, opts?: { skill?: string; agent?: string; senderNick?: string; senderStaffId?: string; permissionMode?: string }) =>
     executeClaudeQuery(this, session, message, opts);
 
   // session - config & auth
@@ -529,196 +528,6 @@ export class DingClaude {
   }
 
   /**
-   * 解析并验证相对路径，确保不超出工作目录范围
-   * @returns 解析后的绝对路径，验证失败返回 null
-   */
-  private resolveAndValidatePath(conversationId: string, relativePath: string): { absolutePath: string; error?: string } {
-    const conversationDir = this.getConversationDir(conversationId);
-
-    // 拒绝绝对路径
-    if (relativePath.startsWith('/')) {
-      return { absolutePath: '', error: '❌ 路径不能使用绝对路径（不能以 / 开头）' };
-    }
-
-    // 解析路径
-    const resolvedPath = path.resolve(conversationDir, relativePath);
-
-    // 确保解析后的路径在工作目录内
-    if (!resolvedPath.startsWith(conversationDir)) {
-      return { absolutePath: '', error: '❌ 路径超出工作目录范围' };
-    }
-
-    return { absolutePath: resolvedPath };
-  }
-
-  /**
-   * 处理 /mkdir 命令
-   */
-  private async handleMkdirCommand(
-    conversationId: string,
-    sessionWebhook: string,
-    relativePath: string,
-  ): Promise<void> {
-    const { absolutePath, error } = this.resolveAndValidatePath(conversationId, relativePath);
-    if (error) {
-      await this.sendDingMessage({
-        conversationId, sessionWebhook,
-        content: error,
-        msgType: 'markdown',
-      });
-      return;
-    }
-
-    // 检查是否已存在
-    try {
-      const stat = fs.statSync(absolutePath);
-      if (stat.isDirectory()) {
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: `⚠️ 目录已存在: \`${relativePath}\``,
-          msgType: 'markdown',
-        });
-      } else {
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: `❌ 路径已存在但不是目录: \`${relativePath}\``,
-          msgType: 'markdown',
-        });
-      }
-      return;
-    } catch {
-      // 路径不存在，继续创建
-    }
-
-    try {
-      fs.mkdirSync(absolutePath, { recursive: true });
-      await this.sendDingMessage({
-        conversationId, sessionWebhook,
-        content: `✅ 目录创建成功: \`${relativePath}\``,
-        msgType: 'markdown',
-      });
-    } catch (err) {
-      await this.sendDingMessage({
-        conversationId, sessionWebhook,
-        content: `❌ 目录创建失败: \`${relativePath}\`\n原因: ${err instanceof Error ? err.message : String(err)}`,
-        msgType: 'markdown',
-      });
-    }
-  }
-
-  /**
-   * 处理 /rm 命令
-   */
-  private async handleRmCommand(
-    conversationId: string,
-    sessionWebhook: string,
-    relativePath: string,
-  ): Promise<void> {
-    const { absolutePath, error } = this.resolveAndValidatePath(conversationId, relativePath);
-    if (error) {
-      await this.sendDingMessage({
-        conversationId, sessionWebhook,
-        content: error,
-        msgType: 'markdown',
-      });
-      return;
-    }
-
-    // 检查是否存在
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(absolutePath);
-    } catch {
-      await this.sendDingMessage({
-        conversationId, sessionWebhook,
-        content: `❌ 路径不存在: \`${relativePath}\``,
-        msgType: 'markdown',
-      });
-      return;
-    }
-
-    const isDir = stat.isDirectory();
-
-    try {
-      if (isDir) {
-        fs.rmSync(absolutePath, { recursive: true, force: true });
-      } else {
-        fs.unlinkSync(absolutePath);
-      }
-      await this.sendDingMessage({
-        conversationId, sessionWebhook,
-        content: `✅ 已删除${isDir ? '目录' : '文件'}: \`${relativePath}\``,
-        msgType: 'markdown',
-      });
-    } catch (err) {
-      await this.sendDingMessage({
-        conversationId, sessionWebhook,
-        content: `❌ 删除失败: \`${relativePath}\`\n原因: ${err instanceof Error ? err.message : String(err)}`,
-        msgType: 'markdown',
-      });
-    }
-  }
-
-  /**
-   * 处理 /touch 命令
-   */
-  private async handleTouchCommand(
-    conversationId: string,
-    sessionWebhook: string,
-    relativePath: string,
-  ): Promise<void> {
-    const { absolutePath, error } = this.resolveAndValidatePath(conversationId, relativePath);
-    if (error) {
-      await this.sendDingMessage({
-        conversationId, sessionWebhook,
-        content: error,
-        msgType: 'markdown',
-      });
-      return;
-    }
-
-    // 检查是否已存在
-    try {
-      const stat = fs.statSync(absolutePath);
-      if (stat.isFile()) {
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: `⚠️ 文件已存在: \`${relativePath}\`\n最后修改时间: ${dateUtil.mm(stat.mtime).format('YYYY-MM-DD HH:mm:ss')}`,
-          msgType: 'markdown',
-        });
-      } else {
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: `❌ 路径已存在但不是文件: \`${relativePath}\``,
-          msgType: 'markdown',
-        });
-      }
-      return;
-    } catch {
-      // 路径不存在，继续创建
-    }
-
-    try {
-      // 确保父目录存在（recursive: true 已处理已存在的情况）
-      const parentDir = path.dirname(absolutePath);
-      fs.mkdirSync(parentDir, { recursive: true });
-      // 创建空文件
-      fs.writeFileSync(absolutePath, '', 'utf-8');
-      await this.sendDingMessage({
-        conversationId, sessionWebhook,
-        content: `✅ 文件创建成功: \`${relativePath}\``,
-        msgType: 'markdown',
-      });
-    } catch (err) {
-      await this.sendDingMessage({
-        conversationId, sessionWebhook,
-        content: `❌ 文件创建失败: \`${relativePath}\`\n原因: ${err instanceof Error ? err.message : String(err)}`,
-        msgType: 'markdown',
-      });
-    }
-  }
-
-  /**
    * 处理机器人消息回调
    */
   private async botMsgGetCallback(res: DWClientDownStream): Promise<void> {
@@ -907,7 +716,8 @@ export class DingClaude {
       // 如果传入了任何字段，执行更新
       const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
-        cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined);
+        cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
+        cfgOpts.permissionMode !== undefined);
 
       if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
@@ -918,6 +728,7 @@ export class DingClaude {
         if (cfgOpts.atSender !== undefined) existingConv.atSender = cfgOpts.atSender;
         if (cfgOpts.receiveReply !== undefined) existingConv.receiveReply = cfgOpts.receiveReply;
         if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
+        if (cfgOpts.permissionMode !== undefined) existingConv.permissionMode = cfgOpts.permissionMode;
         if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
           existingConv.whiteUserList = cfgOpts.whiteUserList;
           for (const item of cfgOpts.whiteUserList) {
@@ -940,6 +751,7 @@ export class DingClaude {
         if (cfgOpts.atSender !== undefined) newConv.atSender = cfgOpts.atSender;
         if (cfgOpts.receiveReply !== undefined) newConv.receiveReply = cfgOpts.receiveReply;
         if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
+        if (cfgOpts.permissionMode !== undefined) newConv.permissionMode = cfgOpts.permissionMode;
         if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
           newConv.whiteUserList = cfgOpts.whiteUserList;
           for (const item of cfgOpts.whiteUserList) {
@@ -973,6 +785,7 @@ export class DingClaude {
       if (convToShow?.linkConversationId) info.push(`- **linkConversationId:** ${convToShow.linkConversationId}`);
       if (convToShow?.atSender === false) info.push('- **atSender:** false (不 @ 发送人)');
       if (convToShow?.receiveReply === false) info.push('- **receiveReply:** false (不回复确认消息)');
+      if (convToShow?.permissionMode) info.push(`- **permissionMode:** ${convToShow.permissionMode}`);
       if (convToShow?.whiteUserList?.length) {
         const display = convToShow.whiteUserList.map(item => {
           if (isMobile(item)) return item;
@@ -1406,38 +1219,6 @@ export class DingClaude {
       return;
     }
 
-    // /pwd 命令：显示当前工作目录
-    if (parsePwdCommand(prompt)) {
-      const conversationDir = this.getConversationDir(conversationId);
-      await this.sendDingMessage({
-        conversationId, sessionWebhook,
-        content: `📂 当前工作目录:\n\`\`\`\n${conversationDir}\n\`\`\``,
-        msgType: 'markdown',
-      });
-      return;
-    }
-
-    // /mkdir 命令：创建目录
-    const mkdirPath = parseMkdirCommand(prompt);
-    if (mkdirPath !== null) {
-      await this.handleMkdirCommand(conversationId, sessionWebhook, mkdirPath);
-      return;
-    }
-
-    // /touch 命令：创建文件
-    const touchPath = parseTouchCommand(prompt);
-    if (touchPath !== null) {
-      await this.handleTouchCommand(conversationId, sessionWebhook, touchPath);
-      return;
-    }
-
-    // /rm 命令：删除文件或目录
-    const rmPath = parseRmCommand(prompt);
-    if (rmPath !== null) {
-      await this.handleRmCommand(conversationId, sessionWebhook, rmPath);
-      return;
-    }
-
     // /bash 命令：在工作目录执行 bash 命令
     const bashCmd = parseBashCommand(prompt);
     if (bashCmd !== null) {
@@ -1769,6 +1550,7 @@ export class DingClaude {
           await executeClaudeQuery(this, activeSession.session, '继续', {
             senderNick: activeSession.session.startNickName,
             senderStaffId: activeSession.lastSenderStaffId,
+            permissionMode: activeSession.conversationConfig.permissionMode,
           });
         } finally {
           activeSession.isProcessing = false;
@@ -1780,6 +1562,7 @@ export class DingClaude {
           await executeClaudeQuery(this, activeSession.session, '继续', {
             senderNick,
             senderStaffId,
+            permissionMode: activeSession.conversationConfig.permissionMode,
           });
         } finally {
           activeSession.isProcessing = false;
@@ -1811,6 +1594,7 @@ export class DingClaude {
         await executeClaudeQuery(this, activeSession.session, ccMessage, {
           senderNick,
           senderStaffId,
+          permissionMode: activeSession.conversationConfig.permissionMode,
         });
       } finally {
         activeSession.isProcessing = false;

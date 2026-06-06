@@ -667,6 +667,7 @@ export async function startNewSession(self: DingClaude, opts: {
       agent: conversationConfig.agent,
       senderNick,
       senderStaffId,
+      permissionMode: conversationConfig.permissionMode,
     });
   } catch (err) {
     console.error('执行 Claude 查询失败:', err);
@@ -717,6 +718,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
       agent: activeSession.conversationConfig.agent,
       senderNick,
       senderStaffId,
+      permissionMode: activeSession.conversationConfig.permissionMode,
     });
   } catch (err) {
     console.error('执行队列 Claude 查询失败:', err);
@@ -737,6 +739,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
       await executeClaudeQuery(self, activeSession.session, '继续', {
         senderNick: activeSession.session.startNickName,
         senderStaffId: activeSession.lastSenderStaffId,
+        permissionMode: activeSession.conversationConfig.permissionMode,
       });
     } catch (err) {
       console.error('goonPending 恢复执行失败:', err);
@@ -820,6 +823,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         agent: conversationConfig.agent,
         senderNick,
         senderStaffId,
+        permissionMode: conversationConfig.permissionMode,
       });
     } catch (err) {
       // 恢复会话失败（可能会话已失效），清除 claudeSessionId 重新发起一次
@@ -833,6 +837,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
             agent: conversationConfig.agent,
             senderNick,
             senderStaffId,
+            permissionMode: conversationConfig.permissionMode,
           });
           return;
         } catch (retryErr) {

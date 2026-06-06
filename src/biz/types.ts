@@ -38,8 +38,6 @@ export interface IConfig {
     /** 保存目录，默认为会话工作目录下的 .recorder */
     dist?: string;
   };
-  /** 是否为 Claude 进程添加 --dangerous-skip-sandbox 参数，默认 false */
-  skipSandbox?: boolean;
 }
 
 export interface IConversation {
@@ -56,6 +54,8 @@ export interface IConversation {
   receiveReply?: boolean;
   /** /bash 执行前的前置命令（群级别，与全局 preBash 叠加执行） */
   preBash?: string;
+  /** Claude 进程权限模式，默认 bypassPermissions。可选值: default | acceptEdits | plan | auto | bypassPermissions | dontAsk */
+  permissionMode?: string;
   sessionCfg?: {
     // task 功能默认开启，无需配置开关
   }; // 群维度session相关配置

@@ -505,6 +505,7 @@ export class CronEngine {
           agent: convCfg.agent,
           senderNick: job.senderNick,
           senderStaffId: job.senderStaffId,
+          permissionMode: convCfg.permissionMode,
         });
       } catch (err) {
         console.error(`[${timestamp()}] Cron执行Claude查询失败: ${job.id}`, err);
