@@ -874,8 +874,8 @@ export class DingClaude {
         conversationId,
         sessionWebhook,
         content: cmd
-          ? `✅ ${senderNick} 触发了重启并更新，正在执行 ${cmd}...`
-          : `✅ ${senderNick} 触发了重启，cc-ding 正在重启中...`,
+          ? `✅ 更新并重启，正在执行 ${cmd}...`
+          : `✅ cc-ding 正在重启中...`,
         msgType: 'markdown',
       });
 
@@ -884,6 +884,7 @@ export class DingClaude {
       fs.writeFileSync(rebootFlagFile, JSON.stringify({
         conversationId,
         senderStaffId,
+        sessionWebhook,
         update: rebootCmd.update,
       }), 'utf-8');
 
@@ -1650,24 +1651,32 @@ export class DingClaude {
       const rebootData = JSON.parse(fs.readFileSync(rebootFlagFile, 'utf-8')) as {
         conversationId: string;
         senderStaffId: string;
+        sessionWebhook?: string;
         update?: boolean;
       };
       fs.unlinkSync(rebootFlagFile);
-
-      const activeSession = this.activeSessions.get(rebootData.conversationId);
-      if (!activeSession) {
-        console.log(`[${timestamp()}] 重启后未找到活跃会话，跳过通知`);
-        return;
-      }
 
       let content = '✅ cc-ding 已重启完成';
       if (rebootData.update) {
         content += `\n**版本:** ${TOOL_VERSION}`;
       }
 
+      // 优先使用 activeSession 的 webhook（关联群场景可能不同），回退到 flag 文件保存的 webhook
+      let sessionWebhook: string | undefined;
+      const activeSession = this.activeSessions.get(rebootData.conversationId);
+      if (activeSession) {
+        sessionWebhook = activeSession.session.sessionWebhook;
+      } else if (rebootData.sessionWebhook) {
+        sessionWebhook = rebootData.sessionWebhook;
+        console.log(`[${timestamp()}] 重启后未找到活跃会话，使用保存的 sessionWebhook 发送通知`);
+      } else {
+        console.log(`[${timestamp()}] 重启后未找到活跃会话且无保存的 webhook，跳过通知`);
+        return;
+      }
+
       await this.sendDingMessage({
         conversationId: rebootData.conversationId,
-        sessionWebhook: activeSession.session.sessionWebhook,
+        sessionWebhook,
         content,
         msgType: 'markdown',
         atUserId: rebootData.senderStaffId,
