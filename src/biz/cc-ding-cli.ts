@@ -37,6 +37,13 @@ import {
   handleTask, runTaskHandlerLoop, saveTask, formatTaskInfo,
   cancelTask, parseTaskCancelCommand,
 } from './task';
+import {
+  addTodoItem, doneTodoItem, deleteTodoItem, clearAllTodoItems,
+  getSortedTodoItems, formatTodoList, formatTodoItemCreated,
+  setReminderHour, getReminderHour, getIdMode, setIdMode,
+  parseDeadline, getDefaultDeadline,
+} from './todo';
+import { parseTodoCommand } from './commands';
 import { resetApiKeyCfg, scheduleApiKeyCfgDailyReset, startupCheck, saveClientConfig } from './api-key-manager';
 import { CronEngine, formatCronJobList, formatCronJobInfo, isValidCronExpression } from './cron';
 
@@ -435,6 +442,109 @@ export class DingClaude {
         }
         return;
       }
+    }
+  }
+
+  // ==================== /todo 命令处理 ====================
+
+  private async handleTodoCommand(
+    cmd: import('./commands').TodoCommand,
+    ctx: { conversationId: string; sessionWebhook: string; senderStaffId: string; senderNick: string },
+  ): Promise<void> {
+    const { conversationId, sessionWebhook, senderStaffId, senderNick } = ctx;
+
+    if (cmd.type === 'mode') {
+      setIdMode(this, conversationId, cmd.mode);
+      const modeLabel = cmd.mode === 'staffId' ? '工号(staffId)' : '钉钉ID(dingtalkId)';
+      await this.sendDingMessage({
+        conversationId, sessionWebhook,
+        content: `✅ 用户标识模式已切换为: **${modeLabel}**\n\n新添加的待办将使用此模式记录负责人`,
+        msgType: 'markdown',
+      });
+      return;
+    }
+
+    if (cmd.type === 'list') {
+      const items = getSortedTodoItems(this, conversationId);
+      const remindHour = getReminderHour(this, conversationId);
+      const idMode = getIdMode(this, conversationId);
+      const modeLabel = idMode === 'staffId' ? '工号模式' : '钉钉ID模式';
+      const listText = formatTodoList(items, remindHour);
+      const content = `📌 当前标识模式: **${modeLabel}**\n\n${listText}`;
+      await this.sendDingMessage({
+        conversationId, sessionWebhook,
+        content, msgType: 'markdown',
+      });
+      return;
+    }
+
+    if (cmd.type === 'remind') {
+      setReminderHour(this, conversationId, cmd.hour);
+      const text = cmd.hour === null ? '⏰ 每日提醒已关闭' : `⏰ 每日提醒已设置为 ${cmd.hour}:00`;
+      await this.sendDingMessage({ conversationId, sessionWebhook, content: text });
+      return;
+    }
+
+    if (cmd.type === 'done') {
+      const result = doneTodoItem(this, conversationId, cmd.index);
+      if (result.success && result.item) {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: `✅ 已完成: ~~${result.item.content}~~ _@${result.item.assigneeNick}_`,
+          msgType: 'markdown',
+        });
+      } else {
+        await this.sendDingMessage({ conversationId, sessionWebhook, content: `❌ ${result.error}` });
+      }
+      return;
+    }
+
+    if (cmd.type === 'remove') {
+      if (cmd.index === 'all') {
+        const result = clearAllTodoItems(this, conversationId);
+        if (result.success) {
+          await this.sendDingMessage({ conversationId, sessionWebhook, content: `🗑️ 已清空 ${result.count} 条待办` });
+        } else {
+          await this.sendDingMessage({ conversationId, sessionWebhook, content: `❌ ${result.error}` });
+        }
+      } else {
+        const result = deleteTodoItem(this, conversationId, cmd.index);
+        if (result.success && result.item) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: `🗑️ 已删除: ~~${result.item.content}~~`,
+            msgType: 'markdown',
+          });
+        } else {
+          await this.sendDingMessage({ conversationId, sessionWebhook, content: `❌ ${result.error}` });
+        }
+      }
+      return;
+    }
+
+    if (cmd.type === 'add') {
+      const idMode = getIdMode(this, conversationId);
+      const assigneeId = cmd.assigneeId || senderStaffId;
+      const assigneeNick = cmd.assigneeNick || senderNick;
+
+      const deadline = cmd.deadline ? parseDeadline(cmd.deadline) || getDefaultDeadline() : getDefaultDeadline();
+
+      const item = addTodoItem(this, conversationId, {
+        content: cmd.content,
+        assigneeStaffId: assigneeId,
+        assigneeNick,
+        deadline,
+        assigneeIdType: idMode,
+      });
+
+      const items = getSortedTodoItems(this, conversationId);
+      const index = items.findIndex(i => i.content === item.content && i.createdAt === item.createdAt) + 1;
+      const replyText = formatTodoItemCreated(item, index);
+      await this.sendDingMessage({
+        conversationId, sessionWebhook,
+        content: replyText, msgType: 'markdown',
+      });
+      return;
     }
   }
 
@@ -1224,6 +1334,13 @@ export class DingClaude {
       return;
     }
 
+    // /todo 命令：待办管理
+    const todoCmd = parseTodoCommand(prompt, rawData.atUsers);
+    if (todoCmd !== null) {
+      await this.handleTodoCommand(todoCmd, { conversationId, sessionWebhook, senderStaffId, senderNick });
+      return;
+    }
+
     // /bash 命令：在工作目录执行 bash 命令
     const bashCmd = parseBashCommand(prompt);
     if (bashCmd !== null) {
@@ -1634,8 +1751,9 @@ export class DingClaude {
     let finalPrompt = prompt;
     if (rawData.atUsers && rawData.atUsers.length > 0) {
       const atInfo = rawData.atUsers
-        .filter(u => u.staffId !== senderStaffId)  // 排除 @自己（通常是 @机器人）
-        .map(u => `@${u.staffId}`)
+        .map(u => u.staffId || u.dingtalkId)  // staffId 非企业场景为空，降级到 dingtalkId
+        .filter(id => id && id !== senderStaffId)  // 排除 @自己（通常是 @机器人）
+        .map(id => `@${id}`)
         .join(', ');
       if (atInfo) {
         finalPrompt = `[提及用户: ${atInfo}]\n${finalPrompt}`;

@@ -174,9 +174,9 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/todo',
-    description: '待办管理：添加/完成/删除/列表/提醒',
-    usage: '/todo <内容> [@人] [ddl 截止时间] | /todo done <序号> | /todo rm <序号|all> | /todo list | /todo remind <0-23>',
-    examples: [ '/todo 完成报告 ddl 明天', '/todo 修复bug @张三 ddl 下周五', '/todo done 1', '/todo rm 2', '/todo rm all', '/todo list', '/todo remind 9', '/todo remind -1' ],
+    description: '待办管理：添加/完成/删除/列表/提醒/模式切换',
+    usage: '/todo <内容> [@人] [ddl 截止时间] | /todo done <序号> | /todo rm <序号|all> | /todo list | /todo remind <0-23> | /todo mode <staffId|dingtalkId>',
+    examples: [ '/todo 完成报告 ddl 明天', '/todo 修复bug @张三 ddl 下周五', '/todo done 1', '/todo rm 2', '/todo rm all', '/todo list', '/todo remind 9', '/todo remind -1', '/todo mode dingtalkId' ],
     category: '任务',
   },
   {
@@ -797,15 +797,17 @@ export function parseInterruptCommand(text: string): boolean {
  * - /todo rm <序号|all>            -> remove
  * - /todo list                     -> list
  * - /todo remind <0-23|-1>         -> remind
+ * - /todo mode <staffId|dingtalkId> -> mode
  */
 export type TodoCommand =
-  | { type: 'add'; content: string; assigneeStaffId?: string; deadline?: string }
+  | { type: 'add'; content: string; assigneeId?: string; assigneeNick?: string; deadline?: string }
   | { type: 'done'; index: number }
   | { type: 'remove'; index: number | 'all' }
   | { type: 'list' }
-  | { type: 'remind'; hour: number | null }; // null = 关闭提醒
+  | { type: 'remind'; hour: number | null } // null = 关闭提醒
+  | { type: 'mode'; mode: 'staffId' | 'dingtalkId' };
 
-export function parseTodoCommand(text: string): TodoCommand | null {
+export function parseTodoCommand(text: string, atUsers?: Array<{ staffId?: string; dingtalkId?: string }>): TodoCommand | null {
   const trimmed = text.trim();
   if (!/^\/todo(?:\s|$)/i.test(trimmed) && trimmed.toLowerCase() !== '/todo') return null;
 
@@ -816,6 +818,10 @@ export function parseTodoCommand(text: string): TodoCommand | null {
 
   // /todo list (无参数也等同于 list)
   if (!rest) return { type: 'list' };
+
+  // /todo mode <staffId|dingtalkId>
+  const modeMatch = rest.match(/^mode\s+(staffId|dingtalkId)$/i);
+  if (modeMatch) return { type: 'mode', mode: modeMatch[1] as 'staffId' | 'dingtalkId' };
 
   // /todo done <序号>
   const doneMatch = rest.match(/^done\s+(\d+)$/i);
@@ -841,14 +847,19 @@ export function parseTodoCommand(text: string): TodoCommand | null {
 
   // /todo <内容> [@人] [ddl 截止时间]
   let content = rest;
-  let assigneeStaffId: string | undefined;
+  let assigneeId: string | undefined;
+  let assigneeNick: string | undefined;
   let deadline: string | undefined;
 
-  // 提取 @人
+  // 提取 @人：优先从 atUsers 中解析（自动匹配），回退到文本提取
   const atMatch = content.match(/@(\S+)/);
   if (atMatch) {
-    assigneeStaffId = atMatch[1];
+    const atText = atMatch[1];
     content = content.replace(/@\S+/, '').trim();
+    // atUsers 参数预留：未来可实现自动将 @昵称 匹配为 staffId/dingtalkId
+    void atUsers;
+    assigneeId = atText;
+    assigneeNick = atText;
   }
 
   // 提取 ddl
@@ -860,7 +871,7 @@ export function parseTodoCommand(text: string): TodoCommand | null {
 
   if (!content) return null;
 
-  return { type: 'add', content, assigneeStaffId, deadline };
+  return { type: 'add', content, assigneeId, assigneeNick, deadline };
 }
 
 /**

@@ -6,11 +6,16 @@ import { sendDingMessage } from './messaging';
 
 // ==================== 数据结构 ====================
 
+/** ID 类型：工号(staffId) 或 钉钉用户ID(dingtalkId) */
+export type IdMode = 'staffId' | 'dingtalkId';
+
 /** 单条待办项 */
 export interface ITodoItem {
   content: string;            // 待办内容
-  assigneeStaffId: string;   // 负责人ID
+  assigneeStaffId: string;   // 负责人ID（根据 idMode 可能是 staffId 或 dingtalkId）
   assigneeNick: string;       // 负责人昵称
+  /** 该条待办使用的 ID 类型，历史数据默认 'staffId' */
+  assigneeIdType?: IdMode;
   deadline: string;           // "YYYY-MM-DD"
   createdAt: string;          // "YYYY-MM-DD HH:mm:ss"
   completed: boolean;
@@ -23,6 +28,8 @@ export interface ITodoData {
   conversations: Record<string, ITodoItem[]>;
   /** 按会话ID存储提醒配置 */
   reminders: Record<string, boolean | number>; // true=默认10点, false=关闭, number=整点小时(0-23)
+  /** 按会话ID存储用户选择的 ID 模式 */
+  idModes: Record<string, IdMode>;
 }
 
 // ==================== 持久化 ====================
@@ -39,9 +46,10 @@ export function loadTodoData(dc: DingClaude): ITodoData {
     return {
       conversations: data.conversations && typeof data.conversations === 'object' ? data.conversations : {},
       reminders: data.reminders && typeof data.reminders === 'object' ? data.reminders : {},
+      idModes: data.idModes && typeof data.idModes === 'object' ? data.idModes : {},
     };
   } catch {
-    return { conversations: {}, reminders: {} };
+    return { conversations: {}, reminders: {}, idModes: {} };
   }
 }
 
@@ -85,6 +93,7 @@ export function addTodoItem(
     assigneeStaffId: string;
     assigneeNick: string;
     deadline: string;
+    assigneeIdType?: IdMode;
   },
 ): ITodoItem {
   const data = loadTodoData(dc);
@@ -96,6 +105,7 @@ export function addTodoItem(
     deadline: opts.deadline,
     createdAt: dateUtil.mm(Date.now()).format('YYYY-MM-DD HH:mm:ss'),
     completed: false,
+    assigneeIdType: opts.assigneeIdType || 'staffId',
   };
   data.conversations[conversationId].push(item);
   saveTodoData(dc, data);
@@ -189,6 +199,20 @@ export function setReminderHour(dc: DingClaude, conversationId: string, hour: nu
   } else {
     data.reminders[conversationId] = hour;
   }
+  saveTodoData(dc, data);
+}
+
+/** 获取某会话的 ID 模式，默认 'staffId' */
+export function getIdMode(dc: DingClaude, conversationId: string): IdMode {
+  const data = loadTodoData(dc);
+  return data.idModes?.[conversationId] || 'staffId';
+}
+
+/** 设置某会话的 ID 模式 */
+export function setIdMode(dc: DingClaude, conversationId: string, mode: IdMode): void {
+  const data = loadTodoData(dc);
+  if (!data.idModes) data.idModes = {};
+  data.idModes[conversationId] = mode;
   saveTodoData(dc, data);
 }
 
@@ -491,13 +515,18 @@ export class TodoEngine {
       if (overdue.length === 0 && upcoming.length === 0) continue;
 
       const parts: string[] = [ '### ⏰ 每日待办提醒', '' ];
-      const mentionIds = new Set<string>();
+      const mentionStaffIds: string[] = [];  // 仅 staffId 类型可被 at
+      let hasNonStaffIdMention = false;
 
       if (overdue.length > 0) {
         parts.push('🔴 **已逾期:**');
         for (const item of overdue) {
           parts.push(`- ${item.content} _@${item.assigneeNick}_ 📅${formatDeadlineDisplay(item.deadline)}`);
-          mentionIds.add(item.assigneeStaffId);
+          if (item.assigneeIdType === 'dingtalkId') {
+            hasNonStaffIdMention = true;
+          } else {
+            mentionStaffIds.push(item.assigneeStaffId);
+          }
         }
         parts.push('');
       }
@@ -506,8 +535,21 @@ export class TodoEngine {
         parts.push('🟡 **即将到期 (3天内):**');
         for (const item of upcoming) {
           parts.push(`- ${item.content} _@${item.assigneeNick}_ 📅${formatDeadlineDisplay(item.deadline)}`);
-          mentionIds.add(item.assigneeStaffId);
+          if (item.assigneeIdType === 'dingtalkId') {
+            hasNonStaffIdMention = true;
+          } else {
+            mentionStaffIds.push(item.assigneeStaffId);
+          }
         }
+        parts.push('');
+      }
+
+      // dingtalkId 类型的 ID 无法通过 atUserIds 字段 @ 提及，在文本中追加
+      if (hasNonStaffIdMention) {
+        const dingtalkIdMentions = overdue.concat(upcoming)
+          .filter(i => i.assigneeIdType === 'dingtalkId')
+          .map(i => `@${i.assigneeStaffId}`);
+        parts.push(dingtalkIdMentions.join(' '));
         parts.push('');
       }
 
@@ -520,8 +562,8 @@ export class TodoEngine {
           sessionWebhook: '',
           content: parts.join('\n'),
           msgType: 'markdown',
+          atUserId: mentionStaffIds.length > 0 ? mentionStaffIds[0] : '',  // 仅 at 第一个 staffId 用户
         });
-        console.log(`[${timestamp()}] [todo] 已发送提醒到 ${conversationId}, 涉及 ${mentionIds.size} 人`);
       } catch (err) {
         console.error(`[${timestamp()}] [todo] 发送提醒失败 ${conversationId}:`, err);
       }
