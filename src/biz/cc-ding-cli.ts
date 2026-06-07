@@ -1630,12 +1630,24 @@ export class DingClaude {
     }
 
     // 处理普通 session 消息
+    // 注入 @提及上下文（从钉钉回调的 atUsers 字段提取）
+    let finalPrompt = prompt;
+    if (rawData.atUsers && rawData.atUsers.length > 0) {
+      const atInfo = rawData.atUsers
+        .filter(u => u.staffId !== senderStaffId)  // 排除 @自己（通常是 @机器人）
+        .map(u => `@${u.staffId}`)
+        .join(', ');
+      if (atInfo) {
+        finalPrompt = `[提及用户: ${atInfo}]\n${finalPrompt}`;
+      }
+    }
+
     await this.handleSessionMessage({
       conversationId,
       sessionWebhook,
       senderStaffId,
       senderNick,
-      message: prompt,
+      message: finalPrompt,
       conversationConfig,
     });
   }

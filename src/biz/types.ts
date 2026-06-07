@@ -191,6 +191,14 @@ export interface IRichTextParagraph {
   downloadCode?: string;           // 图片下载码(用于 /v1.0/robot/messageFiles/download API)
   pictureDownloadCode?: string;    // 图片下载码(备用字段)
   userId?: string;
+  displayName?: string;            // @提及用户的显示名
+}
+
+/** 钉钉回调中被 @ 的用户信息 */
+export interface IAtUser {
+  dingtalkId: string;
+  staffId: string;
+  userId: string;
 }
 
 /** 钉钉回调原始数据(扩展 RobotTextMessage,包含引用相关字段) */
@@ -203,6 +211,7 @@ export interface IRawCallbackData extends Omit<RobotTextMessage, 'text' | 'msgty
   fileName?: string;                             // 文件名(msgtype=file 时)
   downloadCode?: string;                         // 通用下载码(多种消息类型)
   originalMsgId?: string;   // 原始消息ID(钉钉回调可选字段)
+  atUsers?: IAtUser[];      // 被 @ 的用户列表(钉钉回调可选字段)
 }
 
 /** 解析后的引用信息 */

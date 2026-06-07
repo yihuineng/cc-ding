@@ -320,7 +320,8 @@ export async function processRichTextMessage(
       if (/^@\S+$/.test(para.text.trim())) continue;
       parts.push(para.text);
     } else if (para.type === 'mention' && para.userId) {
-      parts.push(`@${para.userId}`);
+      const mentionLabel = para.displayName ? `${para.displayName}(${para.userId})` : para.userId;
+      parts.push(`[@提及: ${mentionLabel}]`);
     } else if (para.type === 'picture') {
       const image = imageMap.get(i);
       if (image) {
