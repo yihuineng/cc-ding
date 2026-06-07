@@ -525,6 +525,80 @@ function runClaudeOnce(
 }
 
 /**
+ * 在会话工作目录写入 .claude/CLAUDE.md，将当前 client 和 conversation
+ * 配置信息注入 Claude Code 的系统上下文。
+ *
+ * 策略：
+ * - 首次会话：创建 CLAUDE.md（如用户已有则在其上方追加 cc-ding 段）
+ * - 后续会话：用 START/END 标记精准替换 cc-ding 段，保留用户内容不变
+ * - 不产生重复信息，配置变更时自动刷新
+ */
+function injectSessionContext(self: DingClaude, session: ISession): void {
+  const dingGroupDir = self.getConversationDir(session.conversationId);
+  const claudeDir = path.join(dingGroupDir, '.claude');
+  if (!fs.existsSync(claudeDir)) fs.mkdirSync(claudeDir, { recursive: true });
+
+  const convCfg = self.getConversationConfig(session.conversationId);
+  const config = self.config;
+
+  const START_MARK = '<!-- cc-ding:session-context-start (DO NOT EDIT) -->';
+  const END_MARK = '<!-- cc-ding:session-context-end (DO NOT EDIT) -->';
+
+  const lines: string[] = [
+    START_MARK,
+    '# cc-ding Session Context',
+    '',
+    '## Client',
+    `- clientId: \`${self.clientId}\``,
+    config.clientName ? `- clientName: ${config.clientName}` : '',
+    `- owner: ${config.owner}`,
+    '',
+    '## Conversation',
+    `- conversationId: \`${session.conversationId}\``,
+    convCfg?.conversationType ? `- conversationType: ${convCfg.conversationType === '1' ? '单聊' : '群聊'}` : '',
+    convCfg?.conversationTitle ? `- conversationTitle: ${convCfg.conversationTitle}` : '',
+    convCfg?.linkConversationId ? `- linkConversationId: \`${convCfg.linkConversationId}\` (关联群，共享工作目录)` : '',
+    '',
+    '## Settings',
+    convCfg?.permissionMode ? `- permissionMode: ${convCfg.permissionMode}` : '',
+    convCfg?.agent ? `- agent: ${convCfg.agent}` : '',
+    convCfg?.taskCfg?.skill ? `- taskCfg.skill: ${convCfg.taskCfg.skill}` : '',
+    config.resultOnly !== undefined ? `- resultOnly: ${config.resultOnly}` : '',
+    config.includeThinking !== undefined ? `- includeThinking: ${config.includeThinking}` : '',
+    config.preBash ? `- preBash(全局): \`${config.preBash}\`` : '',
+    convCfg?.preBash ? `- preBash(群): \`${convCfg.preBash}\`` : '',
+    END_MARK,
+  ].filter(Boolean);
+
+  const newSection = lines.join('\n') + '\n';
+  const claudeMdPath = path.join(claudeDir, 'CLAUDE.md');
+
+  if (!fs.existsSync(claudeMdPath)) {
+    // 文件不存在，直接创建
+    fs.writeFileSync(claudeMdPath, newSection, 'utf-8');
+    console.log(`[${timestamp()}] cc-ding 上下文已写入 CLAUDE.md: ${claudeMdPath}`);
+    return;
+  }
+
+  const existing = fs.readFileSync(claudeMdPath, 'utf-8');
+  const startIdx = existing.indexOf(START_MARK);
+  const endIdx = existing.indexOf(END_MARK);
+
+  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+    // 已有 cc-ding 段，精准替换该段（保留用户自定义的其他内容）
+    const before = existing.substring(0, startIdx);
+    const after = existing.substring(endIdx + END_MARK.length);
+    const updated = before + newSection + after;
+    fs.writeFileSync(claudeMdPath, updated, 'utf-8');
+    console.log(`[${timestamp()}] cc-ding 上下文已更新: ${claudeMdPath}`);
+  } else {
+    // 有用户内容但无 cc-ding 标记，追加到顶部
+    fs.writeFileSync(claudeMdPath, newSection + '\n' + existing, 'utf-8');
+    console.log(`[${timestamp()}] cc-ding 上下文已追加到现有 CLAUDE.md: ${claudeMdPath}`);
+  }
+}
+
+/**
  * 执行 Claude 查询（session 模式），支持 TPM 额度超限自动重试和 API Key 配额管理
  */
 export async function executeClaudeQuery(
@@ -537,6 +611,9 @@ export async function executeClaudeQuery(
   let sessionDir = self.getSessionDir(session);
   let sessionLog = `${sessionDir}/session.log`;
   const dingGroupDir = self.getConversationDir(session.conversationId);
+
+  // 会话开始时，将 client 和 conversation 配置信息写入 CLAUDE.md 注入 Claude 上下文
+  injectSessionContext(self, session);
 
   fs.mkdirSync(sessionDir, { recursive: true });
   // 从 settings-ding.json 恢复上次使用的 Claude Setting

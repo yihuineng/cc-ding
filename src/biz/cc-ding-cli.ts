@@ -881,7 +881,11 @@ export class DingClaude {
 
       // 先写 flag 文件，避免进程 crash 丢失
       const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
-      fs.writeFileSync(rebootFlagFile, JSON.stringify({ conversationId, senderStaffId }), 'utf-8');
+      fs.writeFileSync(rebootFlagFile, JSON.stringify({
+        conversationId,
+        senderStaffId,
+        update: rebootCmd.update,
+      }), 'utf-8');
 
       setTimeout(() => {
         console.log(`[${timestamp()}] 执行 pm2 restart ${processName}${cmd ? ' (含更新)' : ''}`);
@@ -1643,21 +1647,30 @@ export class DingClaude {
     if (!fs.existsSync(rebootFlagFile)) return;
 
     try {
-      const content = JSON.parse(fs.readFileSync(rebootFlagFile, 'utf-8')) as { conversationId: string; senderStaffId: string };
+      const rebootData = JSON.parse(fs.readFileSync(rebootFlagFile, 'utf-8')) as {
+        conversationId: string;
+        senderStaffId: string;
+        update?: boolean;
+      };
       fs.unlinkSync(rebootFlagFile);
 
-      const activeSession = this.activeSessions.get(content.conversationId);
+      const activeSession = this.activeSessions.get(rebootData.conversationId);
       if (!activeSession) {
         console.log(`[${timestamp()}] 重启后未找到活跃会话，跳过通知`);
         return;
       }
 
+      let content = '✅ cc-ding 已重启完成';
+      if (rebootData.update) {
+        content += `\n**版本:** ${TOOL_VERSION}`;
+      }
+
       await this.sendDingMessage({
-        conversationId: content.conversationId,
+        conversationId: rebootData.conversationId,
         sessionWebhook: activeSession.session.sessionWebhook,
-        content: `✅ cc-ding 已重启完成`,
+        content,
         msgType: 'markdown',
-        atUserId: content.senderStaffId,
+        atUserId: rebootData.senderStaffId,
       });
       console.log(`[${timestamp()}] 重启完成通知已发送`);
     } catch (err) {
