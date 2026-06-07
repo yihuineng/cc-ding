@@ -21,7 +21,7 @@ import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery } from './claude-process';
 import { recordMessage, getRecorderDir } from './recorder';
 import {
-  getClientDir, getClientConfig, authCheck, isOwner, debugLog,
+  getClientDir, getClientConfig, authCheck, isOwner, isAdmin, debugLog,
   hashConversationId, getConversationConfig,
   getConversationDir, getSessionsDir, getTasksDir,
   getSessionDir, getSessionId, formatSessionInfo, readSessionLogTail,
@@ -31,6 +31,7 @@ import {
   findActiveSession, cleanCache,
   timestamp,
   resolveAllPhonesInConfig, resolveUserId, resolveToUserId, userIdToPhone, isMobile,
+  resolveUserIdName,
 } from './session';
 import {
   countTodoTask, getOneTodoTask, finishTask,
@@ -118,6 +119,7 @@ export class DingClaude {
   getClientConfig = () => getClientConfig(this);
   authCheck = (userId: string, conversationId?: string) => authCheck(this, userId, conversationId);
   isOwner = (userId: string) => isOwner(this, userId);
+  isAdmin = (userId: string) => isAdmin(this, userId);
   debugLog = (message: string, ...args: unknown[]) => debugLog(this, message, ...args);
   hashConversationId = (conversationId: string) => hashConversationId(this, conversationId);
   getConversationConfig = (conversationId: string) => getConversationConfig(this, conversationId);
@@ -168,6 +170,20 @@ export class DingClaude {
   runTaskHandlerLoop = () => runTaskHandlerLoop(this);
   saveTask = (opts: { conversationId: string; prompt: string; senderStaffId: string; senderNickName?: string; sessionWebhook: string }) =>
     saveTask(this, opts);
+
+  /**
+   * Owner 或管理员权限检查
+   */
+  private async requireOwnerOrAdmin(conversationId: string, sessionWebhook: string, senderStaffId: string): Promise<boolean> {
+    if (this.isOwner(senderStaffId) || this.isAdmin(senderStaffId)) return true;
+    await this.sendDingMessage({
+      conversationId,
+      sessionWebhook,
+      content: '❌ 只有机器人 owner 或管理员才能执行此操作',
+      msgType: 'markdown',
+    });
+    return false;
+  }
 
   /**
    * Owner 权限检查，非 owner 时发送提示消息并返回 false
@@ -959,10 +975,10 @@ export class DingClaude {
       return;
     }
 
-    // /reboot 命令：重启 cc-ding 进程（仅 owner 可用，未注册群也可用）
+    // /reboot 命令：重启 cc-ding 进程（owner/管理员可用，未注册群也可用）
     const rebootCmd = parseRebootCommand(prompt);
     if (rebootCmd) {
-      if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+      if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
       // 校验 tag 参数，防止 shell 注入
       if (rebootCmd.tag && !/^[\w.\-]+$/.test(rebootCmd.tag)) {
@@ -1163,6 +1179,106 @@ export class DingClaude {
           conversationId,
           sessionWebhook,
           content: `📋 **当前群白名单**\n${list}`,
+          msgType: 'markdown',
+        });
+        return;
+      }
+
+      // /auth admin 命令：管理全局管理员列表
+      if (authCmd.type === 'adminList') {
+        const adminList = this.config.adminUserList && this.config.adminUserList.length > 0
+          ? this.config.adminUserList.map(id => {
+            const phone = userIdToPhone(this, id);
+            return `- ${phone || id}`;
+          }).join('\n')
+          : '(未配置管理员)';
+        await this.sendDingMessage({
+          conversationId,
+          sessionWebhook,
+          content: `👑 **管理员列表**\n${adminList}`,
+          msgType: 'markdown',
+        });
+        return;
+      }
+
+      if (authCmd.type === 'adminAdd') {
+        let targetUserId = authCmd.staffId;
+        if (isMobile(authCmd.staffId)) {
+          targetUserId = await resolveUserId(this, authCmd.staffId);
+          if (!targetUserId) {
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              content: `⚠️ 无法解析手机号: ${authCmd.staffId}`,
+              msgType: 'markdown',
+            });
+            return;
+          }
+        }
+
+        const alreadyExists = this.config.adminUserList?.some(item => resolveToUserId(this, item) === targetUserId);
+        if (alreadyExists) {
+          const display = userIdToPhone(this, targetUserId) || targetUserId;
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            content: `⚠️ ${display} 已在管理员列表中`,
+            msgType: 'markdown',
+          });
+          return;
+        }
+        if (!this.config.adminUserList) {
+          this.config.adminUserList = [];
+        }
+        this.config.adminUserList.push(authCmd.staffId);
+        saveClientConfig(this);
+        const addedDisplay = isMobile(authCmd.staffId) ? authCmd.staffId : (userIdToPhone(this, authCmd.staffId) || authCmd.staffId);
+        await this.sendDingMessage({
+          conversationId,
+          sessionWebhook,
+          content: `✅ 已添加 ${addedDisplay} 到管理员列表`,
+          msgType: 'markdown',
+        });
+        return;
+      }
+
+      if (authCmd.type === 'adminRm') {
+        let targetUserId = authCmd.staffId;
+        if (isMobile(authCmd.staffId)) {
+          targetUserId = await resolveUserId(this, authCmd.staffId);
+          if (!targetUserId) {
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              content: `⚠️ 无法解析手机号: ${authCmd.staffId}`,
+              msgType: 'markdown',
+            });
+            return;
+          }
+        }
+
+        const foundIndex = this.config.adminUserList?.findIndex(item => resolveToUserId(this, item) === targetUserId) ?? -1;
+        if (foundIndex < 0) {
+          const display = userIdToPhone(this, targetUserId) || targetUserId;
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            content: `⚠️ ${display} 不在管理员列表中`,
+            msgType: 'markdown',
+          });
+          return;
+        }
+        const removedItem = this.config.adminUserList![foundIndex];
+        this.config.adminUserList.splice(foundIndex, 1);
+        if (this.config.adminUserList.length === 0) {
+          delete this.config.adminUserList;
+        }
+        saveClientConfig(this);
+        const removedDisplay = userIdToPhone(this, targetUserId) || removedItem;
+        await this.sendDingMessage({
+          conversationId,
+          sessionWebhook,
+          content: `✅ 已移除 ${removedDisplay}`,
           msgType: 'markdown',
         });
         return;
@@ -1747,16 +1863,26 @@ export class DingClaude {
     }
 
     // 处理普通 session 消息
-    // 注入 @提及上下文（从钉钉回调的 atUsers 字段提取）
+    // 将 atUsers 中的 @提及 userId 替换为 昵称(userId)，写入日志
     let finalPrompt = prompt;
+    const mentionedIds: string[] = [];
+
+    // 从 atUsers 提取（排除机器人自身、发送者、空值）
     if (rawData.atUsers && rawData.atUsers.length > 0) {
-      const atInfo = rawData.atUsers
-        .map(u => u.staffId || u.dingtalkId)  // staffId 非企业场景为空，降级到 dingtalkId
-        .filter(id => id && id !== senderStaffId)  // 排除 @自己（通常是 @机器人）
-        .map(id => `@${id}`)
-        .join(', ');
-      if (atInfo) {
-        finalPrompt = `[提及用户: ${atInfo}]\n${finalPrompt}`;
+      const botId = rawData.chatbotUserId;
+      for (const u of rawData.atUsers) {
+        const id = u.staffId || u.dingtalkId;
+        if (!id || id === senderStaffId || id === botId || id.startsWith('$:LWCP_v1:')) continue;
+        mentionedIds.push(id);
+      }
+    }
+
+    if (mentionedIds.length > 0) {
+      // 逐个替换消息中的零宽空格占位符 (U+200B)
+      for (const id of mentionedIds) {
+        const name = await resolveUserIdName(this, id);
+        const replacement = name ? `${name}(${id})` : id;
+        finalPrompt = finalPrompt.replace(/\u200b/g, replacement);
       }
     }
 

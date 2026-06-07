@@ -46,6 +46,8 @@ export interface IConversation {
   linkConversationId?: string; // 关联会话ID, 指定时共用该id的工作目录(多个群机器人记忆共享场景, 同时也需要注意并发控制避免文件操作冲突)
   conversationTitle?: string;
   dingToken?: string; // 机器人单聊时, 不存在
+  /** 单聊目标用户手机号（通过 phone-map.json 缓存解析为 userId） */
+  mobile?: string;
   whiteUserList?: string[]; // 机器人实例维度白名单, 定义时优先级高于Client维度
   agent?: string; // 指定agent
   useLocalOcr?: boolean; // 本地 OCR 降级（用于不支持图片识别的模型），默认 true

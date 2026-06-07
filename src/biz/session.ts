@@ -7,7 +7,7 @@ import path from 'path';
 import { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IActiveSessionPersist, IConfig, ISession } from './types';
 import { parseEndCommand } from './commands';
-import { sendDingMessage, queryUserIdByMobile } from './messaging';
+import { sendDingMessage, queryUserIdByMobile, queryDingUser } from './messaging';
 import { interruptClaudeProcess, executeClaudeQuery } from './claude-process';
 
 /**
@@ -164,6 +164,46 @@ export function savePhoneMap(self: DingClaude, map: Record<string, string>): voi
 export function userIdToPhone(self: DingClaude, userId: string): string | null {
   for (const [ phone, uid ] of Object.entries(self.resolvedPhones)) {
     if (uid === userId) return phone;
+  }
+  return null;
+}
+
+// ==================== userId 到昵称缓存 ====================
+
+export function getUserIdNameMapFile(self: DingClaude): string {
+  return path.join(getClientDir(self), 'user-id-name-map.json');
+}
+
+export function loadUserIdNameMap(self: DingClaude): Record<string, string> {
+  const file = getUserIdNameMapFile(self);
+  if (!fs.existsSync(file)) return {};
+  try {
+    const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    if (typeof data === 'object' && data !== null) return data as Record<string, string>;
+  } catch { /* ignore */ }
+  return {};
+}
+
+export function saveUserIdNameMap(self: DingClaude, map: Record<string, string>): void {
+  const file = getUserIdNameMapFile(self);
+  try {
+    fs.writeFileSync(file, JSON.stringify(map, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('保存 user-id-name-map.json 失败:', err);
+  }
+}
+
+/** 解析 userId 为昵称：优先查缓存，查不到走 API 并缓存 */
+export async function resolveUserIdName(self: DingClaude, userId: string): Promise<string | null> {
+  if (!userId) return null;
+  const cache = loadUserIdNameMap(self);
+  if (cache[userId]) return cache[userId];
+
+  const userDetail = await queryDingUser(self, userId);
+  if (userDetail && userDetail.name) {
+    cache[userId] = userDetail.name;
+    saveUserIdNameMap(self, cache);
+    return userDetail.name;
   }
   return null;
 }
@@ -764,7 +804,10 @@ export async function handleSessionMessage(self: DingClaude, opts: {
 }): Promise<void> {
   const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig } = opts;
 
-  if (parseEndCommand(message)) {
+  // 剥离可能存在的 [提及用户: ...] 前缀，确保命令精确匹配
+  const rawMessage = message.replace(/^\[提及用户: .+\]\n/, '');
+
+  if (parseEndCommand(rawMessage)) {
     await endSession(self, conversationId, sessionWebhook);
     return;
   }

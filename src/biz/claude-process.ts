@@ -567,6 +567,12 @@ function injectSessionContext(self: DingClaude, session: ISession): void {
     config.includeThinking !== undefined ? `- includeThinking: ${config.includeThinking}` : '',
     config.preBash ? `- preBash(全局): \`${config.preBash}\`` : '',
     convCfg?.preBash ? `- preBash(群): \`${convCfg.preBash}\`` : '',
+    '',
+    '## DingTalk Context',
+    '当 prompt 中包含 "消息来自: xxx(用户ID)" 时，说明消息来自钉钉用户。',
+    '- 回答时要考虑用户的使用场景（钉钉聊天界面，非终端环境）',
+    '- 用户一般情况下只能通过 cc-ding 进行操作',
+    '- cc-ding 文档: https://github.com/yihuineng/cc-ding',
     END_MARK,
   ].filter(Boolean);
 
