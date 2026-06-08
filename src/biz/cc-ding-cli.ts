@@ -1949,6 +1949,39 @@ export class DingClaude {
   }
 
   /**
+   * 连接健康监控：定期检查 dingStreamClient 是否已连接，
+   * 如果长时间 disconnected 且未自动重连，强制重新 connect
+   */
+  private startConnectionWatchdog(): void {
+    const CHECK_INTERVAL_MS = 30 * 1000;  // 每 30 秒检查一次
+    const DISCONNECT_THRESHOLD_MS = 60 * 1000;  // 超过 60 秒未连接则强制重连
+    let lastConnectedTime = Date.now();
+
+    setInterval(() => {
+      const client = this.dingStreamClient;
+      if (client.connected) {
+        lastConnectedTime = Date.now();
+        return;
+      }
+
+      const elapsed = Date.now() - lastConnectedTime;
+      if (elapsed >= DISCONNECT_THRESHOLD_MS) {
+        console.log(`[${timestamp()}] 连接监控: 已断开 ${elapsed / 1000}s，强制重新连接`);
+        lastConnectedTime = Date.now();
+        // 强制清理并重新连接
+        try {
+          client.disconnect();
+        } catch { /* ignore */ }
+        client.connect().catch(err => {
+          console.error(`[${timestamp()}] 强制重连失败:`, err);
+        });
+      } else {
+        this.debugLog(`连接监控: 已断开 ${elapsed / 1000}s，等待自动重连...`);
+      }
+    }, CHECK_INTERVAL_MS);
+  }
+
+  /**
    * 启动服务
    */
   async run(): Promise<void> {
@@ -1980,6 +2013,9 @@ export class DingClaude {
 
     // 启动 Cron 引擎
     this.cronEngine.start();
+
+    // 启动连接健康监控
+    this.startConnectionWatchdog();
 
     if (hasTaskEnabled) {
       console.log(`[${timestamp()}] 任务处理器数量: ${taskHandlerCount}`);
