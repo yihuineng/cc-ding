@@ -2,7 +2,7 @@ import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import urllib from 'urllib';
-import { DingClaude } from './cc-ding-cli';
+import type { DingClaude } from './cc-ding-cli';
 import { IDownloadedImage, ImageMediaType, IRichTextParagraph, IRawCallbackData } from './types';
 import { timestamp } from './session';
 import { projUtil } from '../common';

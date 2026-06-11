@@ -13,13 +13,18 @@ import {
   parseContinueSessionCommand, parseHelpCommand, parseCommandHelp,
   getCommandByName, formatHelpOverview, formatCommandHelp,
   parseCronCommand, parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
-  parseBashCommand, parseMqCommand, parseRecorderCommand,
+  parseBashCommand, parseMqCommand, parseRecorderCommandEnhanced,
   parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
-  parseRebootCommand,
+  parseRebootCommand, parseInterruptCommand, parseMenuCommand,
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts } from './claude-process';
 import { recordMessage, getRecorderDir } from './recorder';
+import {
+  getMergedMenu, addMenuItem, deleteMenuItem, formatMenuDisplay, formatMenuList,
+  setPendingSelection, hasPendingSelection, getPendingSelection, clearPendingSelection,
+  getUserTrigger, setUserTrigger, loadMenuData, startSelectionCleanupTimer,
+} from './menu';
 import {
   getClientDir, getClientConfig, authCheck, isOwner, isAdmin, debugLog,
   hashConversationId, getConversationConfig,
@@ -46,6 +51,8 @@ import {
 } from './todo';
 import { parseTodoCommand } from './commands';
 import { resetApiKeyCfg, scheduleApiKeyCfgDailyReset, startupCheck, saveClientConfig } from './api-key-manager';
+import { resolveSecret } from './secrets';
+import { ICommandRoute, route } from './command-route';
 import { CronEngine, formatCronJobList, formatCronJobInfo, isValidCronExpression } from './cron';
 
 /** 工具版本号 */
@@ -88,7 +95,7 @@ export class DingClaude {
     try {
       this.dingStreamClient = new DingStreamClient({
         clientId,
-        clientSecret: this.config.clientSecret,
+        clientSecret: resolveSecret(this.config.clientSecret),
         keepAlive: true,
         debug: this.config.debug ?? false,
       });
@@ -183,6 +190,19 @@ export class DingClaude {
       msgType: 'markdown',
     });
     return false;
+  }
+
+  /**
+   * 记录 /bash 命令审计日志（追加到客户端目录 bash-audit.log）
+   */
+  private appendBashAudit(conversationId: string, senderStaffId: string, cmd: string): void {
+    try {
+      const auditFile = path.join(this.getClientDir(), 'bash-audit.log');
+      const line = `[${timestamp()}] conversation=${conversationId} user=${senderStaffId} cmd=${JSON.stringify(cmd)}\n`;
+      fs.appendFileSync(auditFile, line, { encoding: 'utf-8', mode: 0o600 });
+    } catch (err) {
+      console.error('写入 bash 审计日志失败:', err);
+    }
   }
 
   /**
@@ -461,6 +481,81 @@ export class DingClaude {
     }
   }
 
+  // ==================== /menu 命令处理 ====================
+
+  private async handleMenuCommand(
+    cmd: import('./commands').MenuCommand,
+    ctx: { conversationId: string; sessionWebhook: string; senderStaffId: string },
+  ): Promise<void> {
+    const { conversationId, sessionWebhook, senderStaffId } = ctx;
+
+    if ((cmd.type === 'add' || cmd.type === 'del') && cmd.isGlobal && !this.isOwner(senderStaffId)) {
+      await this.sendDingMessage({
+        conversationId, sessionWebhook,
+        content: '❌ 全局菜单仅 owner 可管理',
+        msgType: 'markdown',
+      });
+      return;
+    }
+
+    switch (cmd.type) {
+      case 'show': {
+        const items = getMergedMenu(this, conversationId, senderStaffId);
+        const globalCount = loadMenuData(this).global.length;
+        if (items.length > 0) {
+          setPendingSelection(conversationId, senderStaffId, sessionWebhook, items);
+        }
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: formatMenuDisplay(items, globalCount),
+          msgType: 'markdown',
+        });
+        return;
+      }
+
+      case 'add': {
+        const item = addMenuItem(this, conversationId, senderStaffId, cmd.isGlobal, '', cmd.command);
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: `✅ 已添加${cmd.isGlobal ? '全局' : '个人'}快捷指令: **${item.label}** → \`${item.command}\``,
+          msgType: 'markdown',
+        });
+        return;
+      }
+
+      case 'del': {
+        const result = deleteMenuItem(this, conversationId, senderStaffId, cmd.isGlobal, String(cmd.index));
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: result.success
+            ? `✅ 已删除${cmd.isGlobal ? '全局' : '个人'}快捷指令: **${result.deletedItem!.label}**`
+            : `⚠️ ${result.error}`,
+          msgType: 'markdown',
+        });
+        return;
+      }
+
+      case 'list': {
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: formatMenuList(this, conversationId, senderStaffId, cmd.isGlobal),
+          msgType: 'markdown',
+        });
+        return;
+      }
+
+      case 'trigger': {
+        setUserTrigger(this, senderStaffId, cmd.word);
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: `✅ 菜单触发词已设置为 \`${cmd.word}\`，发送该词即可唤起菜单`,
+          msgType: 'markdown',
+        });
+        return;
+      }
+    }
+  }
+
   // ==================== /todo 命令处理 ====================
 
   private async handleTodoCommand(
@@ -681,7 +776,11 @@ export class DingClaude {
     const conversationConfig = this.getConversationConfig(conversationId);
 
     // ==================== Recorder 模式处理 ====================
-    const recorderCmd = parseRecorderCommand(textContent);
+    let recorderCmd = parseRecorderCommandEnhanced(textContent);
+    // 裸 /exit、/e 仅在 recorder 模式开启时作为退出快捷方式，避免拦截普通会话消息
+    if (recorderCmd === 'exit' && /^\/(?:exit|e)$/i.test(textContent) && !this.recorderModeConversations.has(conversationId)) {
+      recorderCmd = null;
+    }
     if (recorderCmd !== null) {
       if (!this.isOwner(senderStaffId) || conversationType !== '1') {
         await this.sendDingMessage({
@@ -814,213 +913,236 @@ export class DingClaude {
       }
     }
 
-    // /cfg 命令：注册当前群到配置（仅 owner 可用，单聊模式也允许操作）
-    // 未注册群：创建新配置；已注册群：刷新指定字段
-    // 支持 --conversationId <id> 指定目标群（仅 owner，单聊模式不允许指定）
-    const cfgOpts = parseCfgCommand(prompt);
-    if (cfgOpts !== null) {
-      // 指定 --conversationId 无条件要求 owner
-      if (cfgOpts.conversationId && !this.isOwner(senderStaffId)) {
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: '❌ 只有机器人 owner 才能操作其他群的配置',
-          msgType: 'markdown',
-        });
-        return;
+    // ==================== /menu 快捷指令：触发词唤起与待选序号执行 ====================
+    if (msgtype === 'text' && prompt && !prompt.startsWith('/')) {
+      if (prompt.toLowerCase() === getUserTrigger(this, senderStaffId).toLowerCase()) {
+        // 触发词唤起菜单，转为 /menu 走正常命令分发
+        prompt = '/menu';
+      } else if (/^\d+$/.test(prompt) && hasPendingSelection(conversationId, senderStaffId)) {
+        const pending = getPendingSelection(conversationId, senderStaffId)!;
+        clearPendingSelection(conversationId, senderStaffId);
+        const idx = parseInt(prompt, 10);
+        if (idx < 1 || idx > pending.mergedItems.length) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook, atUserId: senderStaffId,
+            content: `⚠️ 序号无效，菜单共 ${pending.mergedItems.length} 项`,
+          });
+          return;
+        }
+        const item = pending.mergedItems[idx - 1];
+        console.log(`[${timestamp()}] [menu] ${senderNick} 选择快捷指令: ${item.label} → ${item.command}`);
+        // 将选中的指令作为本条消息内容，走正常命令分发/会话处理
+        prompt = item.command;
       }
-      if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
+    }
 
-      // 确定目标 conversationId
-      const targetConvId = cfgOpts.conversationId || conversationId;
-      const isTargetOther = targetConvId !== conversationId;
+    // ==================== 命令分发（注册表，按注册顺序匹配） ====================
+    // 未注册群也可用的命令
+    const preRegistrationRoutes: ICommandRoute[] = [
+      // /cfg 命令：注册当前群到配置（仅 owner 可用，单聊模式也允许操作）
+      // 未注册群：创建新配置；已注册群：刷新指定字段
+      // 支持 --conversationId <id> 指定目标群（仅 owner，单聊模式不允许指定）
+      route('/cfg', () => parseCfgCommand(prompt), async cfgOpts => {
+      // 指定 --conversationId 无条件要求 owner
+        if (cfgOpts.conversationId && !this.isOwner(senderStaffId)) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '❌ 只有机器人 owner 才能操作其他群的配置',
+            msgType: 'markdown',
+          });
+          return;
+        }
+        if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
 
-      // 查找目标群配置
-      const existingConv = isTargetOther
-        ? this.config.conversations.find(c => c.conversationId === targetConvId)
-        : conversationConfig;
+        // 确定目标 conversationId
+        const targetConvId = cfgOpts.conversationId || conversationId;
+        const isTargetOther = targetConvId !== conversationId;
 
-      // 如果传入了任何字段，执行更新
-      const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
+        // 查找目标群配置
+        const existingConv = isTargetOther
+          ? this.config.conversations.find(c => c.conversationId === targetConvId)
+          : conversationConfig;
+
+        // 如果传入了任何字段，执行更新
+        const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
         cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
         cfgOpts.permissionMode !== undefined);
 
-      if (existingConv && hasUpdates) {
+        if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
-        if (cfgOpts.conversationTitle) existingConv.conversationTitle = cfgOpts.conversationTitle;
-        if (conversationType && !isTargetOther) existingConv.conversationType = conversationType;
-        if (cfgOpts.dingToken) existingConv.dingToken = cfgOpts.dingToken;
-        if (cfgOpts.linkConversationId) existingConv.linkConversationId = cfgOpts.linkConversationId;
-        if (cfgOpts.atSender !== undefined) existingConv.atSender = cfgOpts.atSender;
-        if (cfgOpts.receiveReply !== undefined) existingConv.receiveReply = cfgOpts.receiveReply;
-        if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
-        if (cfgOpts.permissionMode !== undefined) existingConv.permissionMode = cfgOpts.permissionMode;
-        if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
-          existingConv.whiteUserList = cfgOpts.whiteUserList;
-          for (const item of cfgOpts.whiteUserList) {
-            if (isMobile(item)) {
-              await resolveUserId(this, item);
+          if (cfgOpts.conversationTitle) existingConv.conversationTitle = cfgOpts.conversationTitle;
+          if (conversationType && !isTargetOther) existingConv.conversationType = conversationType;
+          if (cfgOpts.dingToken) existingConv.dingToken = cfgOpts.dingToken;
+          if (cfgOpts.linkConversationId) existingConv.linkConversationId = cfgOpts.linkConversationId;
+          if (cfgOpts.atSender !== undefined) existingConv.atSender = cfgOpts.atSender;
+          if (cfgOpts.receiveReply !== undefined) existingConv.receiveReply = cfgOpts.receiveReply;
+          if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
+          if (cfgOpts.permissionMode !== undefined) existingConv.permissionMode = cfgOpts.permissionMode;
+          if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
+            existingConv.whiteUserList = cfgOpts.whiteUserList;
+            for (const item of cfgOpts.whiteUserList) {
+              if (isMobile(item)) {
+                await resolveUserId(this, item);
+              }
             }
           }
-        }
-        saveClientConfig(this);
-        console.log(`[${timestamp()}] 刷新群配置: ${existingConv.conversationTitle || targetConvId}(${targetConvId})`);
-      } else if (!existingConv) {
+          saveClientConfig(this);
+          console.log(`[${timestamp()}] 刷新群配置: ${existingConv.conversationTitle || targetConvId}(${targetConvId})`);
+        } else if (!existingConv) {
         // 未注册群，创建新配置
-        const newConv: IConfig['conversations'][0] = {
-          conversationId: targetConvId,
-          conversationType: isTargetOther ? '1' : conversationType,
-          conversationTitle: cfgOpts.conversationTitle || (isTargetOther ? '' : conversationTitle),
-        };
-        if (cfgOpts.dingToken) newConv.dingToken = cfgOpts.dingToken;
-        if (cfgOpts.linkConversationId) newConv.linkConversationId = cfgOpts.linkConversationId;
-        if (cfgOpts.atSender !== undefined) newConv.atSender = cfgOpts.atSender;
-        if (cfgOpts.receiveReply !== undefined) newConv.receiveReply = cfgOpts.receiveReply;
-        if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
-        if (cfgOpts.permissionMode !== undefined) newConv.permissionMode = cfgOpts.permissionMode;
-        if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
-          newConv.whiteUserList = cfgOpts.whiteUserList;
-          for (const item of cfgOpts.whiteUserList) {
-            if (isMobile(item)) {
-              await resolveUserId(this, item);
+          const newConv: IConfig['conversations'][0] = {
+            conversationId: targetConvId,
+            conversationType: isTargetOther ? '1' : conversationType,
+            conversationTitle: cfgOpts.conversationTitle || (isTargetOther ? '' : conversationTitle),
+          };
+          if (cfgOpts.dingToken) newConv.dingToken = cfgOpts.dingToken;
+          if (cfgOpts.linkConversationId) newConv.linkConversationId = cfgOpts.linkConversationId;
+          if (cfgOpts.atSender !== undefined) newConv.atSender = cfgOpts.atSender;
+          if (cfgOpts.receiveReply !== undefined) newConv.receiveReply = cfgOpts.receiveReply;
+          if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
+          if (cfgOpts.permissionMode !== undefined) newConv.permissionMode = cfgOpts.permissionMode;
+          if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
+            newConv.whiteUserList = cfgOpts.whiteUserList;
+            for (const item of cfgOpts.whiteUserList) {
+              if (isMobile(item)) {
+                await resolveUserId(this, item);
+              }
             }
           }
+          this.config.conversations.push(newConv);
+          saveClientConfig(this);
+          console.log(`[${timestamp()}] 注册新群: ${newConv.conversationTitle || targetConvId}(${targetConvId}) 类型=${newConv.conversationType || '-'}`);
         }
-        this.config.conversations.push(newConv);
-        saveClientConfig(this);
-        console.log(`[${timestamp()}] 注册新群: ${newConv.conversationTitle || targetConvId}(${targetConvId}) 类型=${newConv.conversationType || '-'}`);
-      }
 
-      // 确保工作目录已创建
-      const workDir = this.getConversationDir(targetConvId);
-      if (!fs.existsSync(workDir)) {
-        fs.mkdirSync(workDir, { recursive: true });
-        console.log(`[${timestamp()}] 创建工作目录: ${workDir}`);
-      }
+        // 确保工作目录已创建
+        const workDir = this.getConversationDir(targetConvId);
+        if (!fs.existsSync(workDir)) {
+          fs.mkdirSync(workDir, { recursive: true });
+          console.log(`[${timestamp()}] 创建工作目录: ${workDir}`);
+        }
 
-      // 统一返回当前群配置信息
-      const convToShow = existingConv || this.getConversationConfig(targetConvId);
-      const info: string[] = [
-        existingConv ? `✅ 群配置已刷新` : `✅ 群已注册`,
-        `- **群名称:** ${convToShow?.conversationTitle || targetConvId}`,
-        `- **群ID:** ${targetConvId}`,
-      ];
-      if (convToShow?.conversationType) info.push(`- **会话类型:** ${convToShow.conversationType === '1' ? '单聊' : convToShow.conversationType === '2' ? '群聊' : convToShow.conversationType}`);
-      if (convToShow?.dingToken) info.push(`- **dingToken:** ${convToShow.dingToken.substring(0, 8)}...`);
-      else info.push('- **dingToken:** (未指定, 使用 defaultDingToken)');
-      if (convToShow?.linkConversationId) info.push(`- **linkConversationId:** ${convToShow.linkConversationId}`);
-      if (convToShow?.atSender === false) info.push('- **atSender:** false (不 @ 发送人)');
-      if (convToShow?.receiveReply === false) info.push('- **receiveReply:** false (不回复确认消息)');
-      if (convToShow?.permissionMode) info.push(`- **permissionMode:** ${convToShow.permissionMode}`);
-      if (convToShow?.whiteUserList?.length) {
-        const display = convToShow.whiteUserList.map(item => {
-          if (isMobile(item)) return item;
-          return userIdToPhone(this, item) || item;
-        }).join(', ');
-        info.push(`- **whiteUserList:** ${display}`);
-      }
-      info.push(`- **工作目录:** ${workDir}`);
-      info.push('\n💡 可编辑 config.json 补充更多配置');
-      await this.sendDingMessage({
-        conversationId,
-        sessionWebhook,
-        content: info.join('\n'),
-        msgType: 'markdown',
-      });
-      return;
-    }
-
-    // 帮助类命令：未注册群也可查看
-    // /help 命令：查看所有可用命令
-    if (parseHelpCommand(prompt)) {
-      await this.sendDingMessage({
-        conversationId,
-        sessionWebhook,
-        content: formatHelpOverview(TOOL_VERSION, this.isOwner(senderStaffId)),
-        msgType: 'markdown',
-      });
-      return;
-    }
-
-    // /version 命令：查看工具版本
-    if (parseVersionCommand(prompt)) {
-      await this.sendDingMessage({
-        conversationId,
-        sessionWebhook,
-        content: `**版本:** ${TOOL_VERSION}`,
-        msgType: 'markdown',
-      });
-      return;
-    }
-
-    // /{cmd} --help 命令：查看单个命令详细帮助
-    const helpCmdName = parseCommandHelp(prompt);
-    if (helpCmdName) {
-      const cmdDef = getCommandByName(helpCmdName);
-      if (cmdDef) {
+        // 统一返回当前群配置信息
+        const convToShow = existingConv || this.getConversationConfig(targetConvId);
+        const info: string[] = [
+          existingConv ? `✅ 群配置已刷新` : `✅ 群已注册`,
+          `- **群名称:** ${convToShow?.conversationTitle || targetConvId}`,
+          `- **群ID:** ${targetConvId}`,
+        ];
+        if (convToShow?.conversationType) info.push(`- **会话类型:** ${convToShow.conversationType === '1' ? '单聊' : convToShow.conversationType === '2' ? '群聊' : convToShow.conversationType}`);
+        if (convToShow?.dingToken) info.push(`- **dingToken:** ${convToShow.dingToken.substring(0, 8)}...`);
+        else info.push('- **dingToken:** (未指定, 使用 defaultDingToken)');
+        if (convToShow?.linkConversationId) info.push(`- **linkConversationId:** ${convToShow.linkConversationId}`);
+        if (convToShow?.atSender === false) info.push('- **atSender:** false (不 @ 发送人)');
+        if (convToShow?.receiveReply === false) info.push('- **receiveReply:** false (不回复确认消息)');
+        if (convToShow?.permissionMode) info.push(`- **permissionMode:** ${convToShow.permissionMode}`);
+        if (convToShow?.whiteUserList?.length) {
+          const display = convToShow.whiteUserList.map(item => {
+            if (isMobile(item)) return item;
+            return userIdToPhone(this, item) || item;
+          }).join(', ');
+          info.push(`- **whiteUserList:** ${display}`);
+        }
+        info.push(`- **工作目录:** ${workDir}`);
+        info.push('\n💡 可编辑 config.json 补充更多配置');
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: formatCommandHelp(cmdDef),
+          content: info.join('\n'),
           msgType: 'markdown',
         });
-      } else {
+      }),
+
+      // 帮助类命令：未注册群也可查看
+      // /help 命令：查看所有可用命令
+      route('/help', () => parseHelpCommand(prompt), async () => {
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: `❌ 未找到命令: **${helpCmdName}**\n\n💡 输入 \`/help\` 查看所有可用命令`,
+          content: formatHelpOverview(TOOL_VERSION, this.isOwner(senderStaffId)),
           msgType: 'markdown',
         });
-      }
-      return;
-    }
+      }),
 
-    // /reboot 命令：重启 cc-ding 进程（owner/管理员可用，未注册群也可用）
-    const rebootCmd = parseRebootCommand(prompt);
-    if (rebootCmd) {
-      if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
-
-      // 校验 tag 参数，防止 shell 注入
-      if (rebootCmd.tag && !/^[\w.\-]+$/.test(rebootCmd.tag)) {
+      // /version 命令：查看工具版本
+      route('/version', () => parseVersionCommand(prompt), async () => {
         await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: '❌ 无效的 tag，仅允许字母、数字、点、横线和下划线',
+          conversationId,
+          sessionWebhook,
+          content: `**版本:** ${TOOL_VERSION}`,
           msgType: 'markdown',
         });
-        return;
-      }
+      }),
 
-      const tag = rebootCmd.tag ? `@${rebootCmd.tag}` : '';
-      const cmd = rebootCmd.update
-        ? `pnpm add -g cc-ding${tag}`
-        : null;
-      const processName = `cc-ding-${this.clientId}`;
+      // /{cmd} --help 命令：查看单个命令详细帮助
+      route('cmd-help', () => parseCommandHelp(prompt), async helpCmdName => {
+        const cmdDef = getCommandByName(helpCmdName);
+        if (cmdDef) {
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            content: formatCommandHelp(cmdDef),
+            msgType: 'markdown',
+          });
+        } else {
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            content: `❌ 未找到命令: **${helpCmdName}**\n\n💡 输入 \`/help\` 查看所有可用命令`,
+            msgType: 'markdown',
+          });
+        }
+      }),
 
-      await this.sendDingMessage({
-        conversationId,
-        sessionWebhook,
-        content: cmd
-          ? `✅ 更新并重启，正在执行 ${cmd}...`
-          : `✅ cc-ding 正在重启中...`,
-        msgType: 'markdown',
-      });
+      // /reboot 命令：重启 cc-ding 进程（owner/管理员可用，未注册群也可用）
+      route('/reboot', () => parseRebootCommand(prompt), async rebootCmd => {
+        if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
-      // 先写 flag 文件，避免进程 crash 丢失
-      const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
-      fs.writeFileSync(rebootFlagFile, JSON.stringify({
-        conversationId,
-        senderStaffId,
-        sessionWebhook,
-        update: rebootCmd.update,
-      }), 'utf-8');
+        // 校验 tag 参数，防止 shell 注入
+        if (rebootCmd.tag && !/^[\w.\-]+$/.test(rebootCmd.tag)) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '❌ 无效的 tag，仅允许字母、数字、点、横线和下划线',
+            msgType: 'markdown',
+          });
+          return;
+        }
 
-      setTimeout(() => {
-        console.log(`[${timestamp()}] 执行 pm2 restart ${processName}${cmd ? ' (含更新)' : ''}`);
-        childExec(`${cmd ? `${cmd} && ` : ''}pm2 restart "${processName}"`, { timeout: 60_000 }, (err) => {
-          if (err) console.error(`[${timestamp()}] pm2 restart 失败:`, err);
+        const tag = rebootCmd.tag ? `@${rebootCmd.tag}` : '';
+        const cmd = rebootCmd.update
+          ? `pnpm add -g cc-ding${tag}`
+          : null;
+        const processName = `cc-ding-${this.clientId}`;
+
+        await this.sendDingMessage({
+          conversationId,
+          sessionWebhook,
+          content: cmd
+            ? `✅ 更新并重启，正在执行 ${cmd}...`
+            : `✅ cc-ding 正在重启中...`,
+          msgType: 'markdown',
         });
-      }, 1000);
-      return;
+
+        // 先写 flag 文件，避免进程 crash 丢失
+        const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
+        fs.writeFileSync(rebootFlagFile, JSON.stringify({
+          conversationId,
+          senderStaffId,
+          sessionWebhook,
+          update: rebootCmd.update,
+        }), 'utf-8');
+
+        setTimeout(() => {
+          console.log(`[${timestamp()}] 执行 pm2 restart ${processName}${cmd ? ' (含更新)' : ''}`);
+          childExec(`${cmd ? `${cmd} && ` : ''}pm2 restart "${processName}"`, { timeout: 60_000 }, (err) => {
+            if (err) console.error(`[${timestamp()}] pm2 restart 失败:`, err);
+          });
+        }, 1000);
+      }),
+    ];
+
+    for (const r of preRegistrationRoutes) {
+      if (await r.tryHandle()) return;
     }
 
     if (!conversationConfig) {
@@ -1044,760 +1166,882 @@ export class DingClaude {
       return;
     }
 
-    // /clean 命令：清除历史会话和缓存（单聊模式也允许操作）
-    const cleanType = parseCleanCommand(prompt);
-    if (cleanType !== null) {
+    // 已注册群的命令路由表
+    const commandRoutes: ICommandRoute[] = [
+      // /clean 命令：清除历史会话和缓存（单聊模式也允许操作）
+      route('/clean', () => parseCleanCommand(prompt), async cleanType => {
       // 单聊模式仅限 clean 当前群
-      if (cleanType === 'all' && conversationConfig?.conversationType !== '1' && !this.isOwner(senderStaffId)) {
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: '❌ 只有机器人 owner 才能清除所有群缓存',
-          msgType: 'markdown',
-        });
-        return;
-      }
-      if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
-
-      const targetConvId = cleanType === 'all' ? null : conversationId;
-      const result = this.cleanCache(targetConvId, true);
-
-      const parts: string[] = [];
-      parts.push(`🧹 缓存清理完成`);
-      if (result.sessionsDeleted > 0) parts.push(`- 会话目录: ${result.sessionsDeleted} 个`);
-      if (result.tasksDeleted > 0) parts.push(`- 任务目录: ${result.tasksDeleted} 个`);
-      if (result.imagesDeleted > 0) parts.push(`- 图片文件: ${result.imagesDeleted} 个`);
-      if (result.sessionsDeleted === 0 && result.tasksDeleted === 0 && result.imagesDeleted === 0) {
-        parts.push('(无历史数据)');
-      }
-      parts.push('\n💡 活跃会话已保留');
-
-      if (result.errors.length > 0) {
-        parts.push(`\n⚠️ 错误: ${result.errors.join('; ')}`);
-      }
-
-      await this.sendDingMessage({
-        conversationId,
-        sessionWebhook,
-        content: parts.join('\n'),
-        msgType: 'markdown',
-      });
-      return;
-    }
-
-    // /reset-apikeycfg 命令：手工重置 API Key 配置（仅 owner 可用）
-    if (parseResetApiKeyCfgCommand(prompt)) {
-      if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
-
-      if (!this.config.apiKeyCfg) {
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: '⚠️ 未配置 apiKeyCfg，无需重置',
-          msgType: 'markdown',
-        });
-        return;
-      }
-
-      resetApiKeyCfg(this);
-      const validCount = this.config.apiKeyCfg.claudeSettings.filter(s => s.isValid).length;
-      await this.sendDingMessage({
-        conversationId,
-        sessionWebhook,
-        content: `✅ apiKeyCfg 已重置\n- 有效 Key 数: ${validCount}/${this.config.apiKeyCfg.claudeSettings.length}\n- 重置时间: ${this.config.apiKeyCfg.resetTime || '-'}`,
-        msgType: 'markdown',
-      });
-      return;
-    }
-
-    // /auth 命令：管理当前群白名单（仅 owner 可用）
-    const authCmd = parseAuthCommand(prompt);
-    if (authCmd) {
-      if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
-
-      // /auth approve|reject <requestId>
-      if (authCmd.type === 'approve' || authCmd.type === 'reject') {
-        const request = this.pendingAuthRequests.get(authCmd.requestId);
-        if (!request) {
+        if (cleanType === 'all' && conversationConfig?.conversationType !== '1' && !this.isOwner(senderStaffId)) {
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: `❌ 未找到授权申请: ${authCmd.requestId}`,
+            content: '❌ 只有机器人 owner 才能清除所有群缓存',
+            msgType: 'markdown',
+          });
+          return;
+        }
+        if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
+
+        const targetConvId = cleanType === 'all' ? null : conversationId;
+        const result = this.cleanCache(targetConvId, true);
+
+        const parts: string[] = [];
+        parts.push(`🧹 缓存清理完成`);
+        if (result.sessionsDeleted > 0) parts.push(`- 会话目录: ${result.sessionsDeleted} 个`);
+        if (result.tasksDeleted > 0) parts.push(`- 任务目录: ${result.tasksDeleted} 个`);
+        if (result.imagesDeleted > 0) parts.push(`- 图片文件: ${result.imagesDeleted} 个`);
+        if (result.sessionsDeleted === 0 && result.tasksDeleted === 0 && result.imagesDeleted === 0) {
+          parts.push('(无历史数据)');
+        }
+        parts.push('\n💡 活跃会话已保留');
+
+        if (result.errors.length > 0) {
+          parts.push(`\n⚠️ 错误: ${result.errors.join('; ')}`);
+        }
+
+        await this.sendDingMessage({
+          conversationId,
+          sessionWebhook,
+          content: parts.join('\n'),
+          msgType: 'markdown',
+        });
+      }),
+
+      // /reset-apikeycfg 命令：手工重置 API Key 配置（仅 owner 可用）
+      route('/reset-apikeycfg', () => parseResetApiKeyCfgCommand(prompt), async () => {
+        if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+
+        if (!this.config.apiKeyCfg) {
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            content: '⚠️ 未配置 apiKeyCfg，无需重置',
             msgType: 'markdown',
           });
           return;
         }
 
-        this.pendingAuthRequests.delete(authCmd.requestId);
-
-        if (authCmd.type === 'approve') {
-          let targetConv = this.config.conversations.find(c => c.conversationId === request.conversationId);
-          if (!targetConv) {
-            targetConv = {
-              conversationId: request.conversationId,
-              conversationType: request.conversationType || '1',
-              conversationTitle: request.conversationTitle,
-            };
-            this.config.conversations.push(targetConv);
-          }
-          if (!targetConv.whiteUserList) {
-            targetConv.whiteUserList = [];
-          }
-          if (!targetConv.whiteUserList.includes(request.senderStaffId)) {
-            targetConv.whiteUserList.push(request.senderStaffId);
-          }
-          saveClientConfig(this);
-          console.log(`[${timestamp()}] 授权申请通过将: id=${authCmd.requestId}, userId=${request.senderStaffId}`);
-          await sendMessageToUser(this, request.senderStaffId,
-            '✅ 您的授权申请已通过，现在可以开始使用了', 'markdown');
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: `✅ 已通过授权申请\n- **用户ID:** ${request.senderStaffId}\n- **昵称:** ${request.senderNick}\n- **会话ID:** ${request.conversationId}`,
-            msgType: 'markdown',
-          });
-        } else {
-          console.log(`[${timestamp()}] 授权申请拒绝: id=${authCmd.requestId}, userId=${request.senderStaffId}`);
-          await sendMessageToUser(this, request.senderStaffId,
-            '❌ 您的授权申请已被拒绝', 'markdown');
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: `✅ 已拒绝授权申请\n- **用户ID:** ${request.senderStaffId}\n- **昵称:** ${request.senderNick}`,
-            msgType: 'markdown',
-          });
-        }
-        return;
-      }
-
-      const convWhiteList = conversationConfig.whiteUserList;
-
-      if (authCmd.type === 'list') {
-        const list = convWhiteList && convWhiteList.length > 0
-          ? convWhiteList.map(id => {
-            const phone = userIdToPhone(this, id);
-            return `- ${phone || id}`;
-          }).join('\n')
-          : '(未配置群级白名单，使用全局白名单)';
+        resetApiKeyCfg(this);
+        const validCount = this.config.apiKeyCfg.claudeSettings.filter(s => s.isValid).length;
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: `📋 **当前群白名单**\n${list}`,
+          content: `✅ apiKeyCfg 已重置\n- 有效 Key 数: ${validCount}/${this.config.apiKeyCfg.claudeSettings.length}\n- 重置时间: ${this.config.apiKeyCfg.resetTime || '-'}`,
           msgType: 'markdown',
         });
-        return;
-      }
+      }),
 
-      // /auth admin 命令：管理全局管理员列表
-      if (authCmd.type === 'adminList') {
-        const adminList = this.config.adminUserList && this.config.adminUserList.length > 0
-          ? this.config.adminUserList.map(id => {
-            const phone = userIdToPhone(this, id);
-            return `- ${phone || id}`;
-          }).join('\n')
-          : '(未配置管理员)';
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: `👑 **管理员列表**\n${adminList}`,
-          msgType: 'markdown',
-        });
-        return;
-      }
+      // /auth 命令：管理当前群白名单（仅 owner 可用）
+      route('/auth', () => parseAuthCommand(prompt), async authCmd => {
+        if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
 
-      if (authCmd.type === 'adminAdd') {
-        let targetUserId = authCmd.staffId;
-        if (isMobile(authCmd.staffId)) {
-          targetUserId = await resolveUserId(this, authCmd.staffId);
-          if (!targetUserId) {
+        // /auth approve|reject <requestId>
+        if (authCmd.type === 'approve' || authCmd.type === 'reject') {
+          const request = this.pendingAuthRequests.get(authCmd.requestId);
+          if (!request) {
             await this.sendDingMessage({
-              conversationId,
-              sessionWebhook,
-              content: `⚠️ 无法解析手机号: ${authCmd.staffId}`,
+              conversationId, sessionWebhook,
+              content: `❌ 未找到授权申请: ${authCmd.requestId}`,
               msgType: 'markdown',
             });
             return;
           }
-        }
 
-        const alreadyExists = this.config.adminUserList?.some(item => resolveToUserId(this, item) === targetUserId);
-        if (alreadyExists) {
-          const display = userIdToPhone(this, targetUserId) || targetUserId;
-          await this.sendDingMessage({
-            conversationId,
-            sessionWebhook,
-            content: `⚠️ ${display} 已在管理员列表中`,
-            msgType: 'markdown',
-          });
-          return;
-        }
-        if (!this.config.adminUserList) {
-          this.config.adminUserList = [];
-        }
-        this.config.adminUserList.push(authCmd.staffId);
-        saveClientConfig(this);
-        const addedDisplay = isMobile(authCmd.staffId) ? authCmd.staffId : (userIdToPhone(this, authCmd.staffId) || authCmd.staffId);
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: `✅ 已添加 ${addedDisplay} 到管理员列表`,
-          msgType: 'markdown',
-        });
-        return;
-      }
+          this.pendingAuthRequests.delete(authCmd.requestId);
 
-      if (authCmd.type === 'adminRm') {
-        let targetUserId = authCmd.staffId;
-        if (isMobile(authCmd.staffId)) {
-          targetUserId = await resolveUserId(this, authCmd.staffId);
-          if (!targetUserId) {
+          if (authCmd.type === 'approve') {
+            let targetConv = this.config.conversations.find(c => c.conversationId === request.conversationId);
+            if (!targetConv) {
+              targetConv = {
+                conversationId: request.conversationId,
+                conversationType: request.conversationType || '1',
+                conversationTitle: request.conversationTitle,
+              };
+              this.config.conversations.push(targetConv);
+            }
+            if (!targetConv.whiteUserList) {
+              targetConv.whiteUserList = [];
+            }
+            if (!targetConv.whiteUserList.includes(request.senderStaffId)) {
+              targetConv.whiteUserList.push(request.senderStaffId);
+            }
+            saveClientConfig(this);
+            console.log(`[${timestamp()}] 授权申请通过将: id=${authCmd.requestId}, userId=${request.senderStaffId}`);
+            await sendMessageToUser(this, request.senderStaffId,
+              '✅ 您的授权申请已通过，现在可以开始使用了', 'markdown');
             await this.sendDingMessage({
-              conversationId,
-              sessionWebhook,
-              content: `⚠️ 无法解析手机号: ${authCmd.staffId}`,
+              conversationId, sessionWebhook,
+              content: `✅ 已通过授权申请\n- **用户ID:** ${request.senderStaffId}\n- **昵称:** ${request.senderNick}\n- **会话ID:** ${request.conversationId}`,
               msgType: 'markdown',
             });
-            return;
-          }
-        }
-
-        const foundIndex = this.config.adminUserList?.findIndex(item => resolveToUserId(this, item) === targetUserId) ?? -1;
-        if (foundIndex < 0) {
-          const display = userIdToPhone(this, targetUserId) || targetUserId;
-          await this.sendDingMessage({
-            conversationId,
-            sessionWebhook,
-            content: `⚠️ ${display} 不在管理员列表中`,
-            msgType: 'markdown',
-          });
-          return;
-        }
-        const removedItem = this.config.adminUserList![foundIndex];
-        this.config.adminUserList.splice(foundIndex, 1);
-        if (this.config.adminUserList.length === 0) {
-          delete this.config.adminUserList;
-        }
-        saveClientConfig(this);
-        const removedDisplay = userIdToPhone(this, targetUserId) || removedItem;
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: `✅ 已移除 ${removedDisplay}`,
-          msgType: 'markdown',
-        });
-        return;
-      }
-
-      if (authCmd.type === 'add') {
-        // 解析手机号为 userId（用于去重检查），但 config 中存储原始值
-        let targetUserId = authCmd.staffId;
-        if (isMobile(authCmd.staffId)) {
-          targetUserId = await resolveUserId(this, authCmd.staffId);
-          if (!targetUserId) {
-            await this.sendDingMessage({
-              conversationId,
-              sessionWebhook,
-              content: `⚠️ 无法解析手机号: ${authCmd.staffId}`,
-              msgType: 'markdown',
-            });
-            return;
-          }
-        }
-
-        // 去重检查：比较 resolved userId
-        const alreadyExists = convWhiteList?.some(item => resolveToUserId(this, item) === targetUserId);
-        if (alreadyExists) {
-          const display = userIdToPhone(this, targetUserId) || targetUserId;
-          await this.sendDingMessage({
-            conversationId,
-            sessionWebhook,
-            content: `⚠️ ${display} 已在当前群白名单中`,
-            msgType: 'markdown',
-          });
-          return;
-        }
-        if (!conversationConfig.whiteUserList) {
-          conversationConfig.whiteUserList = [];
-        }
-        conversationConfig.whiteUserList.push(authCmd.staffId);
-        saveClientConfig(this);
-        const displayItems = conversationConfig.whiteUserList.map(item => {
-          const uid = resolveToUserId(this, item);
-          return userIdToPhone(this, uid) || item;
-        });
-        const addedDisplay = isMobile(authCmd.staffId) ? authCmd.staffId : (userIdToPhone(this, authCmd.staffId) || authCmd.staffId);
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: `✅ 已添加 ${addedDisplay} 到当前群白名单\n当前白名单: ${displayItems.join(', ')}`,
-          msgType: 'markdown',
-        });
-        return;
-      }
-
-      if (authCmd.type === 'del') {
-        // 解析手机号为 userId（用于查找），但 config 中删除匹配项
-        let targetUserId = authCmd.staffId;
-        if (isMobile(authCmd.staffId)) {
-          targetUserId = await resolveUserId(this, authCmd.staffId);
-          if (!targetUserId) {
-            await this.sendDingMessage({
-              conversationId,
-              sessionWebhook,
-              content: `⚠️ 无法解析手机号: ${authCmd.staffId}`,
-              msgType: 'markdown',
-            });
-            return;
-          }
-        }
-
-        // 查找匹配项：比较 resolved userId
-        const foundIndex = convWhiteList?.findIndex(item => resolveToUserId(this, item) === targetUserId) ?? -1;
-        if (foundIndex < 0) {
-          const display = userIdToPhone(this, targetUserId) || targetUserId;
-          await this.sendDingMessage({
-            conversationId,
-            sessionWebhook,
-            content: `⚠️ ${display} 不在当前群白名单中`,
-            msgType: 'markdown',
-          });
-          return;
-        }
-        const removedItem = conversationConfig.whiteUserList![foundIndex];
-        conversationConfig.whiteUserList.splice(foundIndex, 1);
-        // 清理空数组
-        if (conversationConfig.whiteUserList.length === 0) {
-          delete conversationConfig.whiteUserList;
-        }
-        saveClientConfig(this);
-        const display = conversationConfig.whiteUserList?.length
-          ? conversationConfig.whiteUserList.map(item => {
-            const uid = resolveToUserId(this, item);
-            return userIdToPhone(this, uid) || item;
-          }).join(', ')
-          : '(空，使用全局白名单)';
-        const removedDisplay = userIdToPhone(this, targetUserId) || removedItem;
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: `✅ 已移除 ${removedDisplay}\n当前白名单: ${display}`,
-          msgType: 'markdown',
-        });
-        return;
-      }
-    }
-
-    // /open 命令：在文件管理器或终端中打开工作目录（仅 owner 可用）
-    const openTarget = parseOpenCommand(prompt);
-    if (openTarget !== null) {
-      if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
-
-      const conversationDir = this.getConversationDir(conversationId);
-      const { exec } = await import('child_process');
-      const platform = process.platform;
-
-      try {
-        if (openTarget === 'folder') {
-          if (platform === 'darwin') {
-            exec(`open "${conversationDir}"`);
           } else {
-            exec(`explorer "${conversationDir}"`);
+            console.log(`[${timestamp()}] 授权申请拒绝: id=${authCmd.requestId}, userId=${request.senderStaffId}`);
+            await sendMessageToUser(this, request.senderStaffId,
+              '❌ 您的授权申请已被拒绝', 'markdown');
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: `✅ 已拒绝授权申请\n- **用户ID:** ${request.senderStaffId}\n- **昵称:** ${request.senderNick}`,
+              msgType: 'markdown',
+            });
           }
+          return;
+        }
+
+        const convWhiteList = conversationConfig.whiteUserList;
+
+        if (authCmd.type === 'list') {
+          const list = convWhiteList && convWhiteList.length > 0
+            ? convWhiteList.map(id => {
+              const phone = userIdToPhone(this, id);
+              return `- ${phone || id}`;
+            }).join('\n')
+            : '(未配置群级白名单，使用全局白名单)';
           await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: `📂 已在文件管理器中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
+            conversationId,
+            sessionWebhook,
+            content: `📋 **当前群白名单**\n${list}`,
             msgType: 'markdown',
           });
-        } else if (openTarget === 'code') {
-          exec('which code', (err) => {
-            if (err) {
-              this.sendDingMessage({
-                conversationId, sessionWebhook,
-                content: '❌ 未检测到 VS Code `code` 命令\n请安装 VS Code 并通过 Command Palette 安装 Shell Command',
+          return;
+        }
+
+        // /auth admin 命令：管理全局管理员列表
+        if (authCmd.type === 'adminList') {
+          const adminList = this.config.adminUserList && this.config.adminUserList.length > 0
+            ? this.config.adminUserList.map(id => {
+              const phone = userIdToPhone(this, id);
+              return `- ${phone || id}`;
+            }).join('\n')
+            : '(未配置管理员)';
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            content: `👑 **管理员列表**\n${adminList}`,
+            msgType: 'markdown',
+          });
+          return;
+        }
+
+        if (authCmd.type === 'adminAdd') {
+          let targetUserId = authCmd.staffId;
+          if (isMobile(authCmd.staffId)) {
+            targetUserId = await resolveUserId(this, authCmd.staffId);
+            if (!targetUserId) {
+              await this.sendDingMessage({
+                conversationId,
+                sessionWebhook,
+                content: `⚠️ 无法解析手机号: ${authCmd.staffId}`,
                 msgType: 'markdown',
               });
               return;
             }
-            exec(`code "${conversationDir}"`);
-            this.sendDingMessage({
-              conversationId, sessionWebhook,
-              content: `💻 已在 VS Code 中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
+          }
+
+          const alreadyExists = this.config.adminUserList?.some(item => resolveToUserId(this, item) === targetUserId);
+          if (alreadyExists) {
+            const display = userIdToPhone(this, targetUserId) || targetUserId;
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              content: `⚠️ ${display} 已在管理员列表中`,
               msgType: 'markdown',
             });
-          });
-        } else {
-          if (platform === 'darwin') {
-            exec(`open -a Terminal "${conversationDir}"`);
-          } else {
-            exec(`start cmd /k "cd /d ${conversationDir}"`, { shell: 'cmd.exe' });
+            return;
           }
+          if (!this.config.adminUserList) {
+            this.config.adminUserList = [];
+          }
+          this.config.adminUserList.push(authCmd.staffId);
+          saveClientConfig(this);
+          const addedDisplay = isMobile(authCmd.staffId) ? authCmd.staffId : (userIdToPhone(this, authCmd.staffId) || authCmd.staffId);
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            content: `✅ 已添加 ${addedDisplay} 到管理员列表`,
+            msgType: 'markdown',
+          });
+          return;
+        }
+
+        if (authCmd.type === 'adminRm') {
+          let targetUserId = authCmd.staffId;
+          if (isMobile(authCmd.staffId)) {
+            targetUserId = await resolveUserId(this, authCmd.staffId);
+            if (!targetUserId) {
+              await this.sendDingMessage({
+                conversationId,
+                sessionWebhook,
+                content: `⚠️ 无法解析手机号: ${authCmd.staffId}`,
+                msgType: 'markdown',
+              });
+              return;
+            }
+          }
+
+          const foundIndex = this.config.adminUserList?.findIndex(item => resolveToUserId(this, item) === targetUserId) ?? -1;
+          if (foundIndex < 0) {
+            const display = userIdToPhone(this, targetUserId) || targetUserId;
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              content: `⚠️ ${display} 不在管理员列表中`,
+              msgType: 'markdown',
+            });
+            return;
+          }
+          const removedItem = this.config.adminUserList![foundIndex];
+          this.config.adminUserList.splice(foundIndex, 1);
+          if (this.config.adminUserList.length === 0) {
+            delete this.config.adminUserList;
+          }
+          saveClientConfig(this);
+          const removedDisplay = userIdToPhone(this, targetUserId) || removedItem;
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            content: `✅ 已移除 ${removedDisplay}`,
+            msgType: 'markdown',
+          });
+          return;
+        }
+
+        if (authCmd.type === 'add') {
+        // 解析手机号为 userId（用于去重检查），但 config 中存储原始值
+          let targetUserId = authCmd.staffId;
+          if (isMobile(authCmd.staffId)) {
+            targetUserId = await resolveUserId(this, authCmd.staffId);
+            if (!targetUserId) {
+              await this.sendDingMessage({
+                conversationId,
+                sessionWebhook,
+                content: `⚠️ 无法解析手机号: ${authCmd.staffId}`,
+                msgType: 'markdown',
+              });
+              return;
+            }
+          }
+
+          // 去重检查：比较 resolved userId
+          const alreadyExists = convWhiteList?.some(item => resolveToUserId(this, item) === targetUserId);
+          if (alreadyExists) {
+            const display = userIdToPhone(this, targetUserId) || targetUserId;
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              content: `⚠️ ${display} 已在当前群白名单中`,
+              msgType: 'markdown',
+            });
+            return;
+          }
+          if (!conversationConfig.whiteUserList) {
+            conversationConfig.whiteUserList = [];
+          }
+          conversationConfig.whiteUserList.push(authCmd.staffId);
+          saveClientConfig(this);
+          const displayItems = conversationConfig.whiteUserList.map(item => {
+            const uid = resolveToUserId(this, item);
+            return userIdToPhone(this, uid) || item;
+          });
+          const addedDisplay = isMobile(authCmd.staffId) ? authCmd.staffId : (userIdToPhone(this, authCmd.staffId) || authCmd.staffId);
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            content: `✅ 已添加 ${addedDisplay} 到当前群白名单\n当前白名单: ${displayItems.join(', ')}`,
+            msgType: 'markdown',
+          });
+          return;
+        }
+
+        if (authCmd.type === 'del') {
+        // 解析手机号为 userId（用于查找），但 config 中删除匹配项
+          let targetUserId = authCmd.staffId;
+          if (isMobile(authCmd.staffId)) {
+            targetUserId = await resolveUserId(this, authCmd.staffId);
+            if (!targetUserId) {
+              await this.sendDingMessage({
+                conversationId,
+                sessionWebhook,
+                content: `⚠️ 无法解析手机号: ${authCmd.staffId}`,
+                msgType: 'markdown',
+              });
+              return;
+            }
+          }
+
+          // 查找匹配项：比较 resolved userId
+          const foundIndex = convWhiteList?.findIndex(item => resolveToUserId(this, item) === targetUserId) ?? -1;
+          if (foundIndex < 0) {
+            const display = userIdToPhone(this, targetUserId) || targetUserId;
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              content: `⚠️ ${display} 不在当前群白名单中`,
+              msgType: 'markdown',
+            });
+            return;
+          }
+          const removedItem = conversationConfig.whiteUserList![foundIndex];
+          conversationConfig.whiteUserList.splice(foundIndex, 1);
+          // 清理空数组
+          if (conversationConfig.whiteUserList.length === 0) {
+            delete conversationConfig.whiteUserList;
+          }
+          saveClientConfig(this);
+          const display = conversationConfig.whiteUserList?.length
+            ? conversationConfig.whiteUserList.map(item => {
+              const uid = resolveToUserId(this, item);
+              return userIdToPhone(this, uid) || item;
+            }).join(', ')
+            : '(空，使用全局白名单)';
+          const removedDisplay = userIdToPhone(this, targetUserId) || removedItem;
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            content: `✅ 已移除 ${removedDisplay}\n当前白名单: ${display}`,
+            msgType: 'markdown',
+          });
+          return;
+        }
+      }),
+
+      // /open 命令：在文件管理器或终端中打开工作目录（仅 owner 可用）
+      route('/open', () => parseOpenCommand(prompt), async openTarget => {
+        if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+
+        const conversationDir = this.getConversationDir(conversationId);
+        const { exec } = await import('child_process');
+        const platform = process.platform;
+
+        try {
+          if (openTarget === 'folder') {
+            if (platform === 'darwin') {
+              exec(`open "${conversationDir}"`);
+            } else {
+              exec(`explorer "${conversationDir}"`);
+            }
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: `📂 已在文件管理器中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
+              msgType: 'markdown',
+            });
+          } else if (openTarget === 'code') {
+            exec('which code', (err) => {
+              if (err) {
+                this.sendDingMessage({
+                  conversationId, sessionWebhook,
+                  content: '❌ 未检测到 VS Code `code` 命令\n请安装 VS Code 并通过 Command Palette 安装 Shell Command',
+                  msgType: 'markdown',
+                });
+                return;
+              }
+              exec(`code "${conversationDir}"`);
+              this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: `💻 已在 VS Code 中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
+                msgType: 'markdown',
+              });
+            });
+          } else {
+            if (platform === 'darwin') {
+              exec(`open -a Terminal "${conversationDir}"`);
+            } else {
+              exec(`start cmd /k "cd /d ${conversationDir}"`, { shell: 'cmd.exe' });
+            }
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: `💻 已在终端中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
+              msgType: 'markdown',
+            });
+          }
+        } catch (err) {
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: `💻 已在终端中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
+            content: `❌ 打开失败: ${err instanceof Error ? err.message : String(err)}`,
             msgType: 'markdown',
           });
         }
-      } catch (err) {
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: `❌ 打开失败: ${err instanceof Error ? err.message : String(err)}`,
-          msgType: 'markdown',
-        });
-      }
-      return;
-    }
+      }),
 
-    // /cron 命令：定时任务管理
-    const cronCmd = parseCronCommand(prompt);
-    if (cronCmd) {
-      await this.handleCronCommand(cronCmd, { conversationId, sessionWebhook, senderStaffId, senderNick, conversationConfig });
-      return;
-    }
+      // /cron 命令：定时任务管理
+      route('/cron', () => parseCronCommand(prompt), async cronCmd => {
+        await this.handleCronCommand(cronCmd, { conversationId, sessionWebhook, senderStaffId, senderNick, conversationConfig });
+      }),
 
-    // /todo 命令：待办管理
-    const todoCmd = parseTodoCommand(prompt, rawData.atUsers);
-    if (todoCmd !== null) {
-      await this.handleTodoCommand(todoCmd, { conversationId, sessionWebhook, senderStaffId, senderNick });
-      return;
-    }
+      // /todo 命令：待办管理
+      route('/todo', () => parseTodoCommand(prompt, rawData.atUsers), async todoCmd => {
+        await this.handleTodoCommand(todoCmd, { conversationId, sessionWebhook, senderStaffId, senderNick });
+      }),
 
-    // /bash 命令：在工作目录执行 bash 命令
-    const bashCmd = parseBashCommand(prompt);
-    if (bashCmd !== null) {
-      const conversationDir = this.getConversationDir(conversationId);
-      // 全局 preBash + 群级别 preBash 叠加执行
-      const preBashParts: string[] = [];
-      if (this.config.preBash) preBashParts.push(this.config.preBash);
-      if (conversationConfig?.preBash) preBashParts.push(conversationConfig.preBash);
-      const finalCmd = preBashParts.length > 0 ? `${preBashParts.join(' ; ')} ; ${bashCmd}` : bashCmd;
-      const self = this;
+      // /menu 命令：快捷指令菜单
+      route('/menu', () => parseMenuCommand(prompt), async menuCmd => {
+        await this.handleMenuCommand(menuCmd, { conversationId, sessionWebhook, senderStaffId });
+      }),
 
-      childExec(finalCmd, {
-        cwd: conversationDir,
-        timeout: 30000,
-        maxBuffer: 1024 * 1024, // 1MB
-      }, async (error, stdout, stderr) => {
-        try {
-          let replyContent: string;
-          if (error) {
-            replyContent = `❌ 命令执行失败\n\`\`\`\n${error.message}\n\`\`\``;
-            if (stderr) {
-              replyContent += `\n\n**stderr:**\n\`\`\`\n${self.sanitizeOutput(stderr)}\n\`\`\``;
+      // /bash 命令：在工作目录执行 bash 命令
+      route('/bash', () => parseBashCommand(prompt), async bashCmd => {
+      // /bash 可在宿主机执行任意命令，仅限 owner/管理员，并记录审计日志
+        if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
+        this.appendBashAudit(conversationId, senderStaffId, bashCmd);
+        const conversationDir = this.getConversationDir(conversationId);
+        // 全局 preBash + 群级别 preBash 叠加执行
+        const preBashParts: string[] = [];
+        if (this.config.preBash) preBashParts.push(this.config.preBash);
+        if (conversationConfig?.preBash) preBashParts.push(conversationConfig.preBash);
+        const finalCmd = preBashParts.length > 0 ? `${preBashParts.join(' ; ')} ; ${bashCmd}` : bashCmd;
+        const self = this;
+
+        childExec(finalCmd, {
+          cwd: conversationDir,
+          timeout: 30000,
+          maxBuffer: 1024 * 1024, // 1MB
+        }, async (error, stdout, stderr) => {
+          try {
+            let replyContent: string;
+            if (error) {
+              replyContent = `❌ 命令执行失败\n\`\`\`\n${error.message}\n\`\`\``;
+              if (stderr) {
+                replyContent += `\n\n**stderr:**\n\`\`\`\n${self.sanitizeOutput(stderr)}\n\`\`\``;
+              }
+            } else {
+              const output = stdout || '(无输出)';
+              replyContent = `✅ 执行成功\n\`\`\`\n${self.sanitizeOutput(output)}\n\`\`\``;
+              if (stderr) {
+                replyContent += `\n\n**stderr:**\n\`\`\`\n${self.sanitizeOutput(stderr)}\n\`\`\``;
+              }
             }
-          } else {
-            const output = stdout || '(无输出)';
-            replyContent = `✅ 执行成功\n\`\`\`\n${self.sanitizeOutput(output)}\n\`\`\``;
-            if (stderr) {
-              replyContent += `\n\n**stderr:**\n\`\`\`\n${self.sanitizeOutput(stderr)}\n\`\`\``;
-            }
+
+            await self.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: replyContent,
+              msgType: 'markdown',
+            });
+          } catch (sendErr) {
+            console.error(`[bash] 发送消息失败:`, sendErr);
           }
+        });
+      }),
 
-          await self.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: replyContent,
-            msgType: 'markdown',
-          });
-        } catch (sendErr) {
-          console.error(`[bash] 发送消息失败:`, sendErr);
+      // /new 命令：开始新会话
+      route('/new', () => /^\/new(?:\s|$)/i.test(prompt), async () => {
+        const activeFound = this.findActiveSession(conversationId);
+        if (activeFound) {
+          console.log(`收到新会话命令，结束旧会话: 群=${activeFound.session.session.conversationId}, 会话ID=${this.getSessionId(activeFound.session.session)}`);
+          this.interruptClaudeProcess(activeFound.session, '新会话命令中断正在执行的 Claude 进程');
+          this.activeSessions.delete(activeFound.key);
+          this.saveActiveSession(activeFound.key);
         }
-      });
-      return;
-    }
-
-    // 处理特殊命令
-    // /new 命令
-    if (/^\/new(?:\s|$)/i.test(prompt)) {
-      const activeFound = this.findActiveSession(conversationId);
-      if (activeFound) {
-        console.log(`收到新会话命令，结束旧会话: 群=${activeFound.session.session.conversationId}, 会话ID=${this.getSessionId(activeFound.session.session)}`);
-        this.interruptClaudeProcess(activeFound.session, '新会话命令中断正在执行的 Claude 进程');
-        this.activeSessions.delete(activeFound.key);
-        this.saveActiveSession(activeFound.key);
-      }
-      const actualMsg = prompt.replace(/^\/new\s*/i, '').trim();
-      if (actualMsg) {
-        await this.startNewSession({
-          conversationId,
-          sessionWebhook,
-          senderStaffId,
-          senderNick,
-          message: actualMsg,
-          conversationConfig,
-        });
-      } else {
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          atUserId: senderStaffId,
-          content: '🚀 请输入您的问题开始新会话',
-        });
-      }
-      return;
-    }
-
-    // 继续会话命令
-    const targetSessionId = parseContinueSessionCommand(prompt);
-    if (targetSessionId !== null && conversationConfig) {
-      // 空字符串表示恢复最近会话
-      let sessionIdToResume = targetSessionId;
-      if (!sessionIdToResume) {
-        const latestSession = findLatestSession(this, conversationId);
-        if (!latestSession) {
+        const actualMsg = prompt.replace(/^\/new\s*/i, '').trim();
+        if (actualMsg) {
+          await this.startNewSession({
+            conversationId,
+            sessionWebhook,
+            senderStaffId,
+            senderNick,
+            message: actualMsg,
+            conversationConfig,
+          });
+        } else {
           await this.sendDingMessage({
             conversationId,
             sessionWebhook,
             atUserId: senderStaffId,
-            content: '⚠️ 未找到已结束的会话',
+            content: '🚀 请输入您的问题开始新会话',
+          });
+        }
+      }),
+
+      // /resume 继续会话命令
+      route('/resume', () => parseContinueSessionCommand(prompt), async targetSessionId => {
+      // 空字符串表示恢复最近会话
+        let sessionIdToResume = targetSessionId;
+        if (!sessionIdToResume) {
+          const latestSession = findLatestSession(this, conversationId);
+          if (!latestSession) {
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              atUserId: senderStaffId,
+              content: '⚠️ 未找到已结束的会话',
+              msgType: 'markdown',
+            });
+            return;
+          }
+          sessionIdToResume = getSessionId(latestSession);
+        }
+        await this.switchToSession(conversationId, sessionWebhook, sessionIdToResume, senderStaffId, conversationConfig);
+      }),
+
+      // /log 命令：读取最近 n 行会话日志
+      route('/log', () => parseLogCommand(prompt), async logLines => {
+        const logContent = this.readSessionLogTail(conversationId, logLines);
+        if (logContent) {
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            content: `📋 最近 ${logLines} 行日志:\n\`\`\`\n${logContent}\n\`\`\``,
             msgType: 'markdown',
           });
-          return;
+        } else {
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            content: '⚠️ 当前无活跃会话或暂无日志',
+          });
         }
-        sessionIdToResume = getSessionId(latestSession);
-      }
-      await this.switchToSession(conversationId, sessionWebhook, sessionIdToResume, senderStaffId, conversationConfig);
-      return;
-    }
+      }),
 
-    // /log 命令：读取最近 n 行会话日志
-    const logLines = parseLogCommand(prompt);
-    if (logLines !== null) {
-      const logContent = this.readSessionLogTail(conversationId, logLines);
-      if (logContent) {
+      // /info 命令：查看群配置和会话信息
+      route('/info', () => parseInfoCommand(prompt), async infoType => {
+        const parts: string[] = [];
+        const workDir = this.getConversationDir(conversationId);
+        if (infoType === 'all' || infoType === 'robot') {
+          parts.push('### 🌐 全局核心配置\n' + formatGlobalConfig(this.config));
+          parts.push('### 🤖 群配置信息\n' + formatConversationInfo(conversationConfig, conversationId, (uid) => userIdToPhone(this, uid), workDir));
+        }
+        if (infoType === 'all' || infoType === 'session') {
+          const sessionInfo = this.formatSessionInfo(conversationId);
+          if (sessionInfo) {
+            parts.push('### 💬 当前会话信息\n' + sessionInfo);
+          } else {
+            parts.push('### 💬 当前会话信息\n无活跃会话');
+          }
+        }
+        if (infoType === 'all' || infoType === 'task') {
+          parts.push('### 📝 任务队列信息\n' + this.formatTaskInfo());
+        }
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: `📋 最近 ${logLines} 行日志:\n\`\`\`\n${logContent}\n\`\`\``,
+          content: parts.join('\n\n'),
           msgType: 'markdown',
         });
-      } else {
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: '⚠️ 当前无活跃会话或暂无日志',
-        });
-      }
-      return;
-    }
+      }),
 
-    // /info 命令：查看群配置和会话信息
-    const infoType = parseInfoCommand(prompt);
-    if (infoType !== null) {
-      const parts: string[] = [];
-      const workDir = this.getConversationDir(conversationId);
-      if (infoType === 'all' || infoType === 'robot') {
-        parts.push('### 🌐 全局核心配置\n' + formatGlobalConfig(this.config));
-        parts.push('### 🤖 群配置信息\n' + formatConversationInfo(conversationConfig, conversationId, (uid) => userIdToPhone(this, uid), workDir));
-      }
-      if (infoType === 'all' || infoType === 'session') {
-        const sessionInfo = this.formatSessionInfo(conversationId);
-        if (sessionInfo) {
-          parts.push('### 💬 当前会话信息\n' + sessionInfo);
-        } else {
-          parts.push('### 💬 当前会话信息\n无活跃会话');
-        }
-      }
-      if (infoType === 'all' || infoType === 'task') {
-        parts.push('### 📝 任务队列信息\n' + this.formatTaskInfo());
-      }
-      await this.sendDingMessage({
-        conversationId,
-        sessionWebhook,
-        content: parts.join('\n\n'),
-        msgType: 'markdown',
-      });
-      return;
-    }
+      // /ls 命令：查看目录结构
+      route('/ls', () => parseLsCommand(prompt), async lsParsed => {
+        const { target, depth } = lsParsed;
+        const conversationDir = this.getConversationDir(conversationId);
+        let targetDir = conversationDir;
+        let targetLabel = '当前工作目录';
 
-    // /ls 命令：查看目录结构
-    const lsParsed = parseLsCommand(prompt);
-    if (lsParsed !== null) {
-      const { target, depth } = lsParsed;
-      const conversationDir = this.getConversationDir(conversationId);
-      let targetDir = conversationDir;
-      let targetLabel = '当前工作目录';
-
-      if (target && target !== 'root') {
-        if (target.startsWith('./') || target.startsWith('../') || target.startsWith('/')) {
-          const resolved = path.resolve(conversationDir, target);
-          if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
-            if (!resolved.startsWith(conversationDir)) {
+        if (target && target !== 'root') {
+          if (target.startsWith('./') || target.startsWith('../') || target.startsWith('/')) {
+            const resolved = path.resolve(conversationDir, target);
+            if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+              if (!resolved.startsWith(conversationDir)) {
+                await this.sendDingMessage({
+                  conversationId, sessionWebhook,
+                  content: `❌ 路径超出工作目录范围`,
+                  msgType: 'markdown',
+                });
+                return;
+              }
+              targetDir = resolved;
+              targetLabel = target;
+            } else {
               await this.sendDingMessage({
                 conversationId, sessionWebhook,
-                content: `❌ 路径超出工作目录范围`,
+                content: `❌ 路径不存在或不是目录: **${target}**`,
                 msgType: 'markdown',
               });
               return;
             }
-            targetDir = resolved;
-            targetLabel = target;
           } else {
-            await this.sendDingMessage({
-              conversationId, sessionWebhook,
-              content: `❌ 路径不存在或不是目录: **${target}**`,
-              msgType: 'markdown',
-            });
-            return;
-          }
-        } else {
-          const found = findSubdirByName(conversationDir, target);
-          if (found) {
-            targetDir = found;
-            targetLabel = target;
-          } else {
-            await this.sendDingMessage({
-              conversationId, sessionWebhook,
-              content: `❌ 未找到名为 **${target}** 的目录`,
-              msgType: 'markdown',
-            });
-            return;
+            const found = findSubdirByName(conversationDir, target);
+            if (found) {
+              targetDir = found;
+              targetLabel = target;
+            } else {
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: `❌ 未找到名为 **${target}** 的目录`,
+                msgType: 'markdown',
+              });
+              return;
+            }
           }
         }
-      }
 
-      const structure = getDirectoryStructure(targetDir, 0, depth);
-      await this.sendDingMessage({
-        conversationId,
-        sessionWebhook,
-        content: `📂 ${targetLabel} (展开${depth}层):\n\`\`\`\n${structure}\n\`\`\``,
-        msgType: 'markdown',
-      });
-      return;
-    }
-
-    // /task cancel 命令
-    const cancelQuery = parseTaskCancelCommand(prompt);
-    if (cancelQuery) {
-      const result = this.cancelTask(cancelQuery, conversationId);
-      await this.sendDingMessage({
-        conversationId,
-        sessionWebhook,
-        content: result,
-        msgType: 'markdown',
-      });
-      return;
-    }
-
-    if (prompt.startsWith('/task ')) {
-      const taskPrompt = prompt.substring(6).trim();
-      if (taskPrompt) {
+        const structure = getDirectoryStructure(targetDir, 0, depth);
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          atUserId: senderStaffId,
-          content: '📋 任务已收到,完成后我会回复',
+          content: `📂 ${targetLabel} (展开${depth}层):\n\`\`\`\n${structure}\n\`\`\``,
+          msgType: 'markdown',
         });
-        await this.saveTask({
+      }),
+
+      // /task cancel 命令
+      route('/task cancel', () => parseTaskCancelCommand(prompt) || null, async cancelQuery => {
+        const result = this.cancelTask(cancelQuery, conversationId);
+        await this.sendDingMessage({
           conversationId,
-          prompt: taskPrompt,
-          senderStaffId,
-          senderNickName: senderNick,
           sessionWebhook,
+          content: result,
+          msgType: 'markdown',
         });
-      }
-      return;
-    }
+      }),
 
-    // /mq 命令：查看和管理当前会话消息队列
-    const mqCmd = parseMqCommand(prompt);
-    if (mqCmd) {
-      const activeSession = this.findActiveSession(conversationId);
-      const queue = activeSession?.session.messageQueue ?? [];
+      // /task 命令：提交任务到队列
+      route('/task', () => prompt.startsWith('/task ') || null, async () => {
+        const taskPrompt = prompt.substring(6).trim();
+        if (taskPrompt) {
+          await this.sendDingMessage({
+            conversationId,
+            sessionWebhook,
+            atUserId: senderStaffId,
+            content: '📋 任务已收到,完成后我会回复',
+          });
+          await this.saveTask({
+            conversationId,
+            prompt: taskPrompt,
+            senderStaffId,
+            senderNickName: senderNick,
+            sessionWebhook,
+          });
+        }
+      }),
 
-      switch (mqCmd.type) {
-        case 'list': {
-          if (queue.length === 0) {
+      // /mq 命令：查看和管理当前会话消息队列
+      // 注意: front/rm 类型不在此处理，保持原有行为继续透传给会话
+      route('/mq', () => parseMqCommand(prompt), async mqCmd => {
+        const activeSession = this.findActiveSession(conversationId);
+        const queue = activeSession?.session.messageQueue ?? [];
+
+        switch (mqCmd.type) {
+          case 'list': {
+            if (queue.length === 0) {
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: '📭 当前无排队消息',
+                msgType: 'markdown',
+              });
+            } else {
+              const lines = queue.map((entry, i) =>
+                `${i + 1}. **${entry.senderNick || entry.senderStaffId}:** ${this.truncateMsg(entry.message)}`,
+              );
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: `📨 消息队列 (${queue.length} 条)\n${lines.join('\n')}`,
+                msgType: 'markdown',
+              });
+            }
+            return;
+          }
+
+          case 'front': {
+            if (queue.length === 0) {
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: '📭 当前无排队消息',
+                msgType: 'markdown',
+              });
+              return;
+            }
+            // 优先插队发送者自己最近排队的消息，没有则取队尾消息
+            let frontIdx = queue.length - 1;
+            for (let i = queue.length - 1; i >= 0; i--) {
+              if (queue[i].senderStaffId === senderStaffId) { frontIdx = i; break; }
+            }
+            if (frontIdx === 0) {
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: 'ℹ️ 该消息已在队首，无需插队',
+                msgType: 'markdown',
+              });
+              return;
+            }
+            const [ moved ] = queue.splice(frontIdx, 1);
+            queue.unshift(moved);
             await this.sendDingMessage({
               conversationId, sessionWebhook,
-              content: '📭 当前无排队消息',
+              content: `✅ 已插队到队首\n1. **${moved.senderNick || moved.senderStaffId}:** ${this.truncateMsg(moved.message)}`,
               msgType: 'markdown',
             });
-          } else {
-            const lines = queue.map((entry, i) =>
+            return;
+          }
+
+          case 'rm': {
+            if (queue.length === 0) {
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: '📭 当前无排队消息',
+                msgType: 'markdown',
+              });
+              return;
+            }
+            const unique = [ ...new Set(mqCmd.indices) ];
+            const valid = unique.filter(n => n >= 1 && n <= queue.length).sort((a, b) => b - a);
+            const invalid = unique.filter(n => n < 1 || n > queue.length);
+            if (valid.length === 0) {
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: `⚠️ 序号无效，当前队列共 ${queue.length} 条`,
+                msgType: 'markdown',
+              });
+              return;
+            }
+            // 从大到小删除，避免删除过程中序号位移
+            const removed: typeof queue = [];
+            for (const n of valid) {
+              removed.unshift(queue.splice(n - 1, 1)[0]);
+            }
+            const removedLines = removed.map(entry =>
+              `- **${entry.senderNick || entry.senderStaffId}:** ${this.truncateMsg(entry.message)}`,
+            );
+            let content = `✅ 已删除 ${removed.length} 条消息\n${removedLines.join('\n')}`;
+            if (invalid.length > 0) {
+              content += `\n⚠️ 已忽略无效序号: ${invalid.join(', ')}`;
+            }
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content,
+              msgType: 'markdown',
+            });
+            return;
+          }
+
+          case 'cancel': {
+            if (queue.length === 0) {
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: '📭 当前无排队消息',
+                msgType: 'markdown',
+              });
+              return;
+            }
+            const removeCount = Math.min(mqCmd.count, queue.length);
+            const removed = queue.splice(queue.length - removeCount, removeCount);
+            const removedLines = removed.map((entry, i) =>
               `${i + 1}. **${entry.senderNick || entry.senderStaffId}:** ${this.truncateMsg(entry.message)}`,
             );
             await this.sendDingMessage({
               conversationId, sessionWebhook,
-              content: `📨 消息队列 (${queue.length} 条)\n${lines.join('\n')}`,
-              msgType: 'markdown',
-            });
-          }
-          return;
-        }
-
-        case 'cancel': {
-          if (queue.length === 0) {
-            await this.sendDingMessage({
-              conversationId, sessionWebhook,
-              content: '📭 当前无排队消息',
+              content: `✅ 已从队尾移除 ${removeCount} 条消息\n${removedLines.join('\n')}`,
               msgType: 'markdown',
             });
             return;
           }
-          const removeCount = Math.min(mqCmd.count, queue.length);
-          const removed = queue.splice(queue.length - removeCount, removeCount);
-          const removedLines = removed.map((entry, i) =>
-            `${i + 1}. **${entry.senderNick || entry.senderStaffId}:** ${this.truncateMsg(entry.message)}`,
-          );
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: `✅ 已从队尾移除 ${removeCount} 条消息\n${removedLines.join('\n')}`,
-            msgType: 'markdown',
-          });
-          return;
-        }
 
-        case 'cancelAll': {
-          if (queue.length === 0) {
+          case 'cancelAll': {
+            if (queue.length === 0) {
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: '📭 当前无排队消息',
+                msgType: 'markdown',
+              });
+              return;
+            }
+            const removedCount = queue.length;
+            queue.length = 0;
             await this.sendDingMessage({
               conversationId, sessionWebhook,
-              content: '📭 当前无排队消息',
+              content: `✅ 已清空消息队列，共移除 ${removedCount} 条消息`,
               msgType: 'markdown',
             });
             return;
           }
-          const removedCount = queue.length;
-          queue.length = 0;
+        }
+      }),
+
+      // /! 命令：中断当前任务，立即处理队列中的消息
+      route('/!', () => parseInterruptCommand(prompt), async () => {
+        const found = this.findActiveSession(conversationId);
+        if (!found) {
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: `✅ 已清空消息队列，共移除 ${removedCount} 条消息`,
-            msgType: 'markdown',
+            content: '⚠️ 当前没有活跃会话',
           });
           return;
         }
-      }
-    }
-
-    // /goon 命令：强制重启 Claude 进程
-    if (parseGoonCommand(prompt)) {
-      const activeSession = this.activeSessions.get(conversationId);
-      if (!activeSession) {
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: '⚠️ 当前没有活跃会话',
-        });
-        return;
-      }
-      if (activeSession.currentProcess) {
-        console.log(`[${timestamp()}] /goon: 终止当前 Claude 进程`);
-        activeSession.interrupted = true;
-        activeSession.currentProcess.kill('SIGINT');
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: '🔄 正在重启 Claude 进程...',
-        });
-        // 直接在当前处理 goonPending，避免依赖 processMessageQueue（队列为空时会跳过 goonPending 检查）
-        activeSession.goonPending = false;
-        activeSession.isProcessing = true;
-        try {
-          await executeClaudeQuery(this, activeSession.session, '继续', {
-            senderNick: activeSession.session.startNickName,
-            senderStaffId: activeSession.lastSenderStaffId,
-            permissionMode: activeSession.conversationConfig.permissionMode,
+        const activeSession = found.session;
+        if (!activeSession.currentProcess) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: 'ℹ️ 当前没有正在执行的任务',
           });
-        } finally {
-          activeSession.isProcessing = false;
+          return;
         }
-      } else {
-        console.log(`[${timestamp()}] /goon: 无运行中进程，直接发送"继续"`);
+        // 中断后原调用栈中的 executeClaudeQuery 会结束，finally 释放 isProcessing 并自动 drain 消息队列
+        interruptClaudeProcess(activeSession, `/!: ${senderNick} 中断当前任务`);
+        const queued = activeSession.messageQueue.length;
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: queued > 0 ? `⏹ 已中断当前任务，开始处理队列中的 ${queued} 条消息` : '⏹ 已中断当前任务',
+        });
+      }),
+
+      // /goon 命令：强制重启 Claude 进程
+      route('/goon', () => parseGoonCommand(prompt), async () => {
+        const activeSession = this.activeSessions.get(conversationId);
+        if (!activeSession) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '⚠️ 当前没有活跃会话',
+          });
+          return;
+        }
+        if (activeSession.currentProcess) {
+          console.log(`[${timestamp()}] /goon: 终止当前 Claude 进程`);
+          activeSession.interrupted = true;
+          activeSession.currentProcess.kill('SIGINT');
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '🔄 正在重启 Claude 进程...',
+          });
+          // 直接在当前处理 goonPending，避免依赖 processMessageQueue（队列为空时会跳过 goonPending 检查）
+          activeSession.goonPending = false;
+          activeSession.isProcessing = true;
+          try {
+            await executeClaudeQuery(this, activeSession.session, '继续', {
+              senderNick: activeSession.session.startNickName,
+              senderStaffId: activeSession.lastSenderStaffId,
+              permissionMode: activeSession.conversationConfig.permissionMode,
+            });
+          } finally {
+            activeSession.isProcessing = false;
+          }
+        } else {
+          console.log(`[${timestamp()}] /goon: 无运行中进程，直接发送"继续"`);
+          activeSession.isProcessing = true;
+          try {
+            await executeClaudeQuery(this, activeSession.session, '继续', {
+              senderNick,
+              senderStaffId,
+              permissionMode: activeSession.conversationConfig.permissionMode,
+            });
+          } finally {
+            activeSession.isProcessing = false;
+          }
+        }
+      }),
+
+      // /cc 命令：直接透传消息给 Claude（不附加发送人信息）
+      route('/cc', () => parseCcCommand(prompt), async ccMessage => {
+        const activeSession = this.activeSessions.get(conversationId);
+        if (!activeSession) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '⚠️ 当前没有活跃会话，请先发送消息开始会话',
+          });
+          return;
+        }
+        if (activeSession.isProcessing) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '⏳ 正在处理中，请稍等...',
+          });
+          return;
+        }
         activeSession.isProcessing = true;
         try {
-          await executeClaudeQuery(this, activeSession.session, '继续', {
+          if (activeSession.conversationConfig.receiveReply !== false) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              atUserId: senderStaffId,
+              content: '📥 已收到，正在处理...',
+            }).catch(() => {});
+          }
+          await executeClaudeQuery(this, activeSession.session, ccMessage, {
             senderNick,
             senderStaffId,
             permissionMode: activeSession.conversationConfig.permissionMode,
@@ -1805,68 +2049,32 @@ export class DingClaude {
         } finally {
           activeSession.isProcessing = false;
         }
-      }
-      return;
-    }
+      }),
 
-    // /cc 命令：直接透传消息给 Claude（不附加发送人信息）
-    const ccMessage = parseCcCommand(prompt);
-    if (ccMessage !== null) {
-      const activeSession = this.activeSessions.get(conversationId);
-      if (!activeSession) {
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: '⚠️ 当前没有活跃会话，请先发送消息开始会话',
-        });
-        return;
-      }
-      if (activeSession.isProcessing) {
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: '⏳ 正在处理中，请稍等...',
-        });
-        return;
-      }
-      activeSession.isProcessing = true;
-      try {
-        if (activeSession.conversationConfig.receiveReply !== false) {
+      // /claude.md 命令：查看 CLAUDE.md 内容
+      route('/claude.md', () => parseClaudeMdCommand(prompt), async () => {
+        const conversationDir = this.getConversationDir(conversationId);
+        const claudeMdPath = path.join(conversationDir, '.claude', 'CLAUDE.md');
+        if (fs.existsSync(claudeMdPath)) {
+          const content = fs.readFileSync(claudeMdPath, 'utf-8');
+          const truncated = content.length > 8000 ? content.substring(0, 8000) + '\n...(内容过长已截断)' : content;
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            atUserId: senderStaffId,
-            content: '📥 已收到，正在处理...',
-          }).catch(() => {});
+            content: `📄 **CLAUDE.md**\n\`\`\`\n${truncated}\n\`\`\``,
+            msgType: 'markdown',
+          });
+        } else {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: `⚠️ 未找到 CLAUDE.md\n路径: \`${claudeMdPath}\``,
+            msgType: 'markdown',
+          });
         }
-        await executeClaudeQuery(this, activeSession.session, ccMessage, {
-          senderNick,
-          senderStaffId,
-          permissionMode: activeSession.conversationConfig.permissionMode,
-        });
-      } finally {
-        activeSession.isProcessing = false;
-      }
-      return;
-    }
+      }),
+    ];
 
-    // /claude.md 命令：查看 CLAUDE.md 内容
-    if (parseClaudeMdCommand(prompt)) {
-      const conversationDir = this.getConversationDir(conversationId);
-      const claudeMdPath = path.join(conversationDir, '.claude', 'CLAUDE.md');
-      if (fs.existsSync(claudeMdPath)) {
-        const content = fs.readFileSync(claudeMdPath, 'utf-8');
-        const truncated = content.length > 8000 ? content.substring(0, 8000) + '\n...(内容过长已截断)' : content;
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: `📄 **CLAUDE.md**\n\`\`\`\n${truncated}\n\`\`\``,
-          msgType: 'markdown',
-        });
-      } else {
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: `⚠️ 未找到 CLAUDE.md\n路径: \`${claudeMdPath}\``,
-          msgType: 'markdown',
-        });
-      }
-      return;
+    for (const r of commandRoutes) {
+      if (await r.tryHandle()) return;
     }
 
     // 处理普通 session 消息
@@ -2023,6 +2231,9 @@ export class DingClaude {
 
     // 启动 Cron 引擎
     this.cronEngine.start();
+
+    // 启动 /menu 待选状态过期清理定时器
+    startSelectionCleanupTimer();
 
     // 启动连接健康监控
     this.startConnectionWatchdog();

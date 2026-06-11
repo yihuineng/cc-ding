@@ -1,6 +1,6 @@
 import fs from 'fs';
 import { dateUtil } from 'utils-ok';
-import { DingClaude } from './cc-ding-cli';
+import type { DingClaude } from './cc-ding-cli';
 import { getClientDir, timestamp } from './session';
 
 // ==================== Types ====================

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { dateUtil } from 'utils-ok';
-import { DingClaude } from './cc-ding-cli';
+import type { DingClaude } from './cc-ding-cli';
 import { IRawCallbackData, IRichTextParagraph } from './types';
 import { getImageDownloadUrl, downloadImageBuffer, detectExtFromBuffer, extractDownloadCode } from './image';
 import { getConversationDir, timestamp } from './session';

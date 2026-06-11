@@ -4,7 +4,7 @@ import os from 'os';
 import assert from 'assert';
 import crypto from 'crypto';
 import path from 'path';
-import { DingClaude } from './cc-ding-cli';
+import type { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IActiveSessionPersist, IConfig, ISession } from './types';
 import { parseEndCommand } from './commands';
 import { sendDingMessage, queryUserIdByMobile, queryDingUser } from './messaging';
@@ -36,7 +36,9 @@ export function initClientDir(clientId: string, config: IConfig): string {
   const clientDir = path.join(getHomeDir(), '.cc-ding', clientId);
   const cfgFile = path.join(clientDir, 'config.json');
   fs.mkdirSync(clientDir, { recursive: true });
-  fs.writeFileSync(cfgFile, JSON.stringify(config, null, 2), 'utf-8');
+  // 配置包含密钥，限制为仅 owner 可读写
+  fs.writeFileSync(cfgFile, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  fs.chmodSync(cfgFile, 0o600);
   return cfgFile;
 }
 

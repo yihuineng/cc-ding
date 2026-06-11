@@ -3,10 +3,11 @@ import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import { utils } from '../common';
-import { DingClaude } from './cc-ding-cli';
+import type { DingClaude } from './cc-ding-cli';
 import { IClaudeSetting, ITask } from './types';
 import { sendDingMessage } from './messaging';
 import { isRetryableApiError, resolveClaudeSettingsPath } from './claude-process';
+import { runOneShotPrompt } from './claude-sdk';
 import { getConversationConfig, getConversationDir, getTasksDir, debugLog, timestamp } from './session';
 import {
   rotateApiKey,
@@ -19,6 +20,40 @@ import {
 } from './api-key-manager';
 
 const MAX_RETRY_COUNT = 3;
+/** 任务重置为待办后，延迟多久唤醒 handler 重试 */
+const RETRY_NOTIFY_DELAY_MS = 10_000;
+/** 队列空闲时的兜底扫描间隔（捕获外部写入的任务文件等异常场景） */
+const IDLE_SWEEP_INTERVAL_MS = 60_000;
+
+// ==================== 任务队列唤醒信号 ====================
+// 任务提交/重试时即时唤醒 handler，替代固定间隔轮询
+
+const taskWaiters: Array<() => void> = [];
+
+/** 唤醒所有等待中的任务 handler */
+export function notifyTaskQueue(): void {
+  while (taskWaiters.length > 0) {
+    const wake = taskWaiters.shift()!;
+    wake();
+  }
+}
+
+/** 等待新任务信号，超时后自动返回（兜底扫描） */
+function waitForTaskSignal(timeoutMs: number): Promise<void> {
+  return new Promise(resolve => {
+    const wake = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      const idx = taskWaiters.indexOf(wake);
+      if (idx !== -1) taskWaiters.splice(idx, 1);
+      resolve();
+    }, timeoutMs);
+    timer.unref?.();
+    taskWaiters.push(wake);
+  });
+}
 
 /**
  * 格式化任务队列信息：处理中、待办队列、最近完成 top5、失败任务
@@ -122,14 +157,7 @@ async function preprocessTask(
   prompt: string,
 ): Promise<{ title: string; promptSimply: string } | null> {
   const conversationDir = getConversationDir(self, conversationId);
-  const entryCmd = 'claude';
-
-  const cmdArgs = [ '--permission-mode', 'bypassPermissions', '--print' ];
-
   const settingsPath = resolveClaudeSettingsPath(self, conversationDir);
-  if (settingsPath) {
-    cmdArgs.push('--settings', settingsPath);
-  }
 
   const prePrompt = [
     '请对以下任务需求进行预处理，生成简短标题和优化后的需求描述。',
@@ -139,59 +167,29 @@ async function preprocessTask(
     `原始需求: ${prompt}`,
   ].join('\n');
 
-  cmdArgs.push(prePrompt);
+  const res = await runOneShotPrompt(prePrompt, { cwd: conversationDir, settingsPath, timeoutMs: 30_000 });
 
-  const PREPROCESS_TIMEOUT_MS = 30_000;
+  if (!res.ok || !res.text.trim()) {
+    const reason = res.timedOut ? '超时' : (res.errorOutput.trim().substring(0, 100) || '无输出');
+    console.log(`[${timestamp()}] 任务预处理失败(${reason})，使用原始prompt`);
+    return null;
+  }
 
-  return new Promise((resolve) => {
-    let output = '';
-    const child = spawn(entryCmd, cmdArgs, {
-      cwd: conversationDir,
-      stdio: [ 'ignore', 'pipe', 'pipe' ],
-    });
-
-    const timeoutId = setTimeout(() => {
-      child.kill('SIGTERM');
-      setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } }, 3000);
-    }, PREPROCESS_TIMEOUT_MS);
-
-    child.stdout.on('data', (data) => {
-      output += data.toString();
-    });
-
-    child.stderr.on('data', () => { /* ignore */ });
-
-    child.on('close', (code) => {
-      clearTimeout(timeoutId);
-      if (code !== 0 || !output.trim()) {
-        console.log(`[${timestamp()}] 任务预处理失败(退出码:${code})，使用原始prompt`);
-        resolve(null);
-        return;
-      }
-      try {
-        let jsonStr = output.trim();
-        const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
-        if (jsonMatch) jsonStr = jsonMatch[0];
-        const result = JSON.parse(jsonStr);
-        if (result.title && result.promptSimply) {
-          console.log(`[${timestamp()}] 任务预处理完成: title="${result.title}"`);
-          resolve({ title: String(result.title), promptSimply: String(result.promptSimply) });
-        } else {
-          console.log(`[${timestamp()}] 任务预处理返回格式不正确，使用原始prompt`);
-          resolve(null);
-        }
-      } catch (err) {
-        console.log(`[${timestamp()}] 任务预处理JSON解析失败，使用原始prompt: ${err}`);
-        resolve(null);
-      }
-    });
-
-    child.on('error', (err) => {
-      clearTimeout(timeoutId);
-      console.error(`[${timestamp()}] 任务预处理进程错误:`, err);
-      resolve(null);
-    });
-  });
+  try {
+    let jsonStr = res.text.trim();
+    const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
+    if (jsonMatch) jsonStr = jsonMatch[0];
+    const result = JSON.parse(jsonStr);
+    if (result.title && result.promptSimply) {
+      console.log(`[${timestamp()}] 任务预处理完成: title="${result.title}"`);
+      return { title: String(result.title), promptSimply: String(result.promptSimply) };
+    }
+    console.log(`[${timestamp()}] 任务预处理返回格式不正确，使用原始prompt`);
+    return null;
+  } catch (err) {
+    console.log(`[${timestamp()}] 任务预处理JSON解析失败，使用原始prompt: ${err}`);
+    return null;
+  }
 }
 
 export function countTodoTask(self: DingClaude): number {
@@ -322,6 +320,9 @@ async function resetTaskToTodo(self: DingClaude, taskDir: string, reason: string
   if (fs.existsSync(doingFile)) {
     fileUtil.rename(doingFile, todoFile);
   }
+  // 延迟唤醒 handler 重试（与旧轮询间隔一致）
+  const timer = setTimeout(() => notifyTaskQueue(), RETRY_NOTIFY_DELAY_MS);
+  timer.unref?.();
   return true;
 }
 
@@ -405,11 +406,15 @@ function updateCmdArgsSettings(cmdArgs: string[], settingsPath: string | undefin
   }
 }
 
-export async function handleTask(self: DingClaude): Promise<void> {
+/**
+ * 处理一个待办任务
+ * @returns true 表示已处理完一个任务（可立即尝试下一个）；false 表示队列为空或需要退避等待
+ */
+export async function handleTask(self: DingClaude): Promise<boolean> {
   const task = await getOneTodoTask(self);
   if (!task) {
     debugLog(self, '未发现待办任务...');
-    return;
+    return false;
   }
 
   const convCfg = getConversationConfig(self, task.conversationId);
@@ -417,7 +422,7 @@ export async function handleTask(self: DingClaude): Promise<void> {
   const taskDir = `${getTasksDir(self, task.conversationId)}/${task.startTimeStr}`;
   if (!fs.existsSync(taskDir)) {
     console.error(`任务目录不存在: ${taskDir}`);
-    return;
+    return true;
   }
 
   // 通知用户任务开始处理（cron 任务不发送开始提醒）
@@ -452,7 +457,7 @@ export async function handleTask(self: DingClaude): Promise<void> {
       // 无可用配额，重置任务为待办
       console.log(`[${timestamp()}] 无可用配额，任务重置为待办`);
       await resetTaskToTodo(self, taskDir, '无可用配额');
-      return;
+      return false;
     }
     useApiMode = true;
     console.log(`[${timestamp()}] 切换到 API Key 模式`);
@@ -464,7 +469,7 @@ export async function handleTask(self: DingClaude): Promise<void> {
   const promptWithSkill = `${skill ? `/${skill}` : ''} 用户: ${sender}, 需求: ${taskPrompt}; 最后将回复内容保存至: ${resultMd}`.trim();
 
   const cmdArgs = [
-    '--permission-mode', 'bypassPermissions',
+    '--permission-mode', convCfg?.permissionMode || 'acceptEdits',
     '--print',
     promptWithSkill,
   ];
@@ -601,7 +606,7 @@ export async function handleTask(self: DingClaude): Promise<void> {
         ].join('\n');
         fs.writeFileSync(logFile, logContent);
         await resetTaskToTodo(self, taskDir, '无可用配额(429)');
-        return;
+        return false;
       }
 
       // 认证错误(401)：不可重试，直接标记失败
@@ -614,7 +619,7 @@ export async function handleTask(self: DingClaude): Promise<void> {
         ].join('\n');
         fs.writeFileSync(logFile, logContent);
         await failTask(self, taskDir, '认证失败(401)，API Key 无效或服务未授权');
-        return;
+        return true;
       }
 
       // 可重试 API 错误（422 TPM 限流等）
@@ -646,7 +651,7 @@ export async function handleTask(self: DingClaude): Promise<void> {
             ].join('\n');
             fs.writeFileSync(logFile, logContent);
             await resetTaskToTodo(self, taskDir, 'TPM限流快速失败次数过多');
-            return;
+            return false;
           }
           console.log(`[${timestamp()}] 检测到 TPM 限流(快速失败)，${RETRY_DELAY_MS / 1000}s 后重试 (${consecutiveFastFail}/${MAX_FAST_FAIL})`);
         } else {
@@ -671,7 +676,7 @@ export async function handleTask(self: DingClaude): Promise<void> {
     // 非超时、非429、非422的其他错误 → 标记为失败
     console.error(`命令执行失败, 退出码: ${exitCode}`);
     await failTask(self, taskDir, `执行失败(退出码: ${exitCode})`);
-    return;
+    return true;
   }
 
   if (fs.existsSync(resultMd)) {
@@ -679,16 +684,26 @@ export async function handleTask(self: DingClaude): Promise<void> {
   } else {
     console.error('任务未按预期处理');
     await failTask(self, taskDir, '未生成结果文件');
-    return;
+    return true;
   }
 
   await finishTask(self, taskDir);
+  return true;
 }
 
+/**
+ * 任务处理循环：事件驱动
+ * - 处理完一个任务立即尝试下一个（排空队列）
+ * - 队列为空时等待 saveTask 的唤醒信号，IDLE_SWEEP_INTERVAL_MS 兜底扫描
+ */
 export async function runTaskHandlerLoop(self: DingClaude): Promise<void> {
   while (true) {
-    await handleTask(self).catch(e => console.error(e));
-    await baseUtil.sleep(10E3);
+    const processed = await handleTask(self).catch((e): boolean => {
+      console.error(e);
+      return false;
+    });
+    if (processed) continue;
+    await waitForTaskSignal(IDLE_SWEEP_INTERVAL_MS);
   }
 }
 
@@ -720,6 +735,8 @@ export async function saveTask(self: DingClaude, opts: {
   };
   await fileUtil.saveFileStr(JSON.stringify(taskData, null, 2), todoFile);
   debugLog(self, `任务已保存: ${todoFile}`);
+  // 即时唤醒任务 handler，无需等待轮询
+  notifyTaskQueue();
 
   // 异步预处理：后台调用 Claude 归纳标题和优化 prompt，完成后更新 task.json
   preprocessTask(self, conversationId, prompt).then(preResult => {

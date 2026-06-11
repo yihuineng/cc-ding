@@ -1,10 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
-import { DingClaude } from './cc-ding-cli';
+import type { DingClaude } from './cc-ding-cli';
 import { IClaudeSetting } from './types';
 import { timestamp, getHomeDir } from './session';
 import { dateUtil } from 'utils-ok';
+import { resolveSecret, isEnvRef } from './secrets';
 
 /**
  * 保存 config.json 到磁盘
@@ -12,7 +13,9 @@ import { dateUtil } from 'utils-ok';
 export function saveClientConfig(self: DingClaude): void {
   const configPath = `${self.getClientDir()}/config.json`;
   try {
-    fs.writeFileSync(configPath, JSON.stringify(self.config, null, 2), 'utf-8');
+    // 配置包含密钥，限制为仅 owner 可读写
+    fs.writeFileSync(configPath, JSON.stringify(self.config, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    fs.chmodSync(configPath, 0o600);
   } catch (err) {
     console.error(`[${timestamp()}] 保存 config.json 失败:`, err);
   }
@@ -74,7 +77,7 @@ export function settingLabel(setting: IClaudeSetting): string {
  * 在 claudeSettings 中查找指定 apiKey 的可读标识
  */
 function findSettingLabel(settings: IClaudeSetting[], apiKey: string): string {
-  const found = settings.find(s => s.apiKey === apiKey);
+  const found = settings.find(s => resolveSecret(s.apiKey) === resolveSecret(apiKey));
   return found ? settingLabel(found) : `...${apiKey.slice(-6)}`;
 }
 
@@ -87,7 +90,7 @@ export function rotateApiKey(self: DingClaude, usedKey: string): IClaudeSetting 
   if (!cfg) return null;
   // 标记匹配的 setting 为无效
   for (const setting of cfg.claudeSettings) {
-    if (setting.apiKey === usedKey && setting.isValid) {
+    if (resolveSecret(setting.apiKey) === resolveSecret(usedKey) && setting.isValid) {
       setting.isValid = false;
       break;
     }
@@ -146,8 +149,9 @@ export function ensureSettingsWithApiKey(workDir: string, setting: IClaudeSettin
   }
 
   let changed = false;
-  if (settings.env.ANTHROPIC_AUTH_TOKEN !== setting.apiKey) {
-    settings.env.ANTHROPIC_AUTH_TOKEN = setting.apiKey;
+  const resolvedApiKey = resolveSecret(setting.apiKey);
+  if (settings.env.ANTHROPIC_AUTH_TOKEN !== resolvedApiKey) {
+    settings.env.ANTHROPIC_AUTH_TOKEN = resolvedApiKey;
     changed = true;
   }
   if (setting.baseUrl && settings.env.ANTHROPIC_BASE_URL !== setting.baseUrl) {
@@ -166,7 +170,9 @@ export function ensureSettingsWithApiKey(workDir: string, setting: IClaudeSettin
 
   if (changed) {
     fs.mkdirSync(claudeDir, { recursive: true });
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8');
+    // settings-ding.json 含明文 API Key，限制为仅 owner 可读写
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    fs.chmodSync(settingsPath, 0o600);
     console.log(`[${timestamp()}] 已写入 Claude 配置到 ${settingsPath} (${settingLabel(setting)}, model: ${setting.model}, smallModel: ${effectiveSmallModel})`);
   }
 
@@ -295,6 +301,36 @@ export function startupCheck(self: DingClaude): void {
       }
     }
     results.push({ level: 'PASS', message: `conversations 共 ${config.conversations.length} 个群配置` });
+  }
+
+  // ---- 2.5 安全检查 ----
+  // bypassPermissions 显式配置告警
+  for (const conv of config.conversations || []) {
+    if (conv.permissionMode === 'bypassPermissions') {
+      const label = conv.conversationTitle || conv.conversationId;
+      results.push({ level: 'WARN', message: `会话 "${label}" 配置了 bypassPermissions，Claude 将跳过所有权限确认，请确认该群成员可信` });
+    }
+  }
+  // config.json 文件权限检查（包含密钥，应为 0600）
+  const cfgFilePath = path.join(clientDir, 'config.json');
+  try {
+    const mode = fs.statSync(cfgFilePath).mode & 0o777;
+    if (mode & 0o077) {
+      fs.chmodSync(cfgFilePath, 0o600);
+      results.push({ level: 'WARN', message: `config.json 权限过宽 (${mode.toString(8)})，已自动收紧为 600` });
+    }
+  } catch { /* ignore */ }
+  // $ENV: 引用可解析性检查
+  const envRefChecks: { value?: string; label: string }[] = [
+    { value: config.clientSecret, label: 'clientSecret' },
+    { value: config.defaultDingToken, label: 'defaultDingToken' },
+    ...(config.conversations || []).map((c, i) => ({ value: c.dingToken, label: `conversations[${i}].dingToken` })),
+    ...(config.apiKeyCfg?.claudeSettings || []).map((s, i) => ({ value: s.apiKey, label: `apiKeyCfg.claudeSettings[${i}].apiKey` })),
+  ];
+  for (const { value, label } of envRefChecks) {
+    if (isEnvRef(value) && !resolveSecret(value)) {
+      results.push({ level: 'FATAL', message: `${label} 引用的环境变量未设置: ${value}` });
+    }
   }
 
   // ---- 3. apiKeyCfg 检查 ----

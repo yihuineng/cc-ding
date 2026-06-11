@@ -1,11 +1,10 @@
 import fs from 'fs';
-import readline from 'readline';
-import { spawn } from 'child_process';
 import { dateUtil } from 'utils-ok';
-import { DingClaude } from './cc-ding-cli';
+import type { DingClaude } from './cc-ding-cli';
 import { ISession } from './types';
 import { sendDingMessage } from './messaging';
-import { parseClaudeStreamLine, executeClaudeQuery, resolveClaudeSettingsPath } from './claude-process';
+import { executeClaudeQuery, resolveClaudeSettingsPath } from './claude-process';
+import { runOneShotPrompt } from './claude-sdk';
 import { saveTask } from './task';
 import {
   getClientDir, timestamp,
@@ -149,95 +148,42 @@ async function analyzeCronWithClaude(
   input: string,
 ): Promise<{ cron: string; prompt: string; desc: string }> {
   const dingGroupDir = dc.getConversationDir(conversationId);
-  const entryCmd = 'claude';
-
   const prompt = ANALYSIS_PROMPT.replace('{INPUT}', input);
-
-  const args = [
-    '--permission-mode', 'bypassPermissions',
-    '--print',
-    '--output-format', 'stream-json',
-    '--verbose',
-  ];
-
   const settingsPath = resolveClaudeSettingsPath(dc, dingGroupDir);
-  if (settingsPath) {
-    args.push('--settings', settingsPath);
+
+  console.log(`[${timestamp()}] Cron分析(Agent SDK): cwd=${dingGroupDir}`);
+
+  const res = await runOneShotPrompt(prompt, { cwd: dingGroupDir, settingsPath, timeoutMs: 60_000 });
+
+  if (!res.ok) {
+    if (res.timedOut) throw new Error('分析超时(60s)');
+    const combined = res.errorOutput;
+    console.error(`[${timestamp()}] Cron分析失败: ${combined.trim().substring(0, 200)}`);
+    // 根据错误类型给出更具体的提示
+    if (/\b429\b/.test(combined)) {
+      throw new Error('Claude 配额已耗尽(429)，请稍后重试或明天再试');
+    }
+    if (/\b422\b/.test(combined) || /TPM|额度超限/i.test(combined)) {
+      throw new Error('Claude TPM 限流(422)，请稍后重试');
+    }
+    if (/\b401\b/.test(combined) || /auth|认证|permission/i.test(combined)) {
+      throw new Error('Claude 认证失败(401)，请检查 API Key 配置');
+    }
+    throw new Error(`分析失败: ${combined.trim().substring(0, 200) || '无输出，请检查 claude 是否可用'}`);
   }
 
-  console.log(`[${timestamp()}] Cron分析: ${entryCmd} ${args.join(' ')}`);
-
-  return new Promise((resolve, reject) => {
-    const child = spawn(entryCmd, args, {
-      cwd: dingGroupDir,
-      stdio: [ 'pipe', 'pipe', 'pipe' ],
-    });
-
-    child.stdin?.write(`${prompt}\n`);
-    child.stdin?.end();
-
-    let resultContent = '';
-    let stderrOutput = '';
-    const rl = readline.createInterface({ input: child.stdout! });
-    rl.on('line', (line) => {
-      const parsed = parseClaudeStreamLine(line);
-      if (parsed?.type === 'result' && parsed.content) {
-        resultContent = parsed.content;
+  try {
+    const jsonMatch = res.text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const result = JSON.parse(jsonMatch[0]);
+      if (result.cron && result.prompt) {
+        return result;
       }
-    });
-
-    child.stderr?.on('data', (data) => {
-      stderrOutput += data.toString();
-    });
-
-    const timeout = setTimeout(() => {
-      child.kill();
-      reject(new Error('分析超时(60s)'));
-    }, 60_000);
-
-    child.on('close', (code) => {
-      clearTimeout(timeout);
-      if (code === 0 && resultContent) {
-        try {
-          const jsonMatch = resultContent.match(/\{[\s\S]*\}/);
-          if (jsonMatch) {
-            const result = JSON.parse(jsonMatch[0]);
-            if (result.cron && result.prompt) {
-              resolve(result);
-              return;
-            }
-          }
-          reject(new Error('Claude 返回格式不正确'));
-        } catch {
-          reject(new Error('JSON 解析失败'));
-        }
-      } else {
-        // 记录 stderr 以便诊断
-        const stderrHint = stderrOutput.trim()
-          ? ` (${stderrOutput.trim().substring(0, 200)})`
-          : '';
-        console.error(`[${timestamp()}] Cron分析进程退出(${code})${stderrHint}`);
-        // 根据错误类型给出更具体的提示
-        const combined = stderrOutput;
-        if (/\b429\b/.test(combined)) {
-          reject(new Error('Claude 配额已耗尽(429)，请稍后重试或明天再试'));
-        } else if (/\b422\b/.test(combined) || /TPM|额度超限/i.test(combined)) {
-          reject(new Error('Claude TPM 限流(422)，请稍后重试'));
-        } else if (/\b401\b/.test(combined) || /auth|认证|permission/i.test(combined)) {
-          reject(new Error('Claude 认证失败(401)，请检查 API Key 配置'));
-        } else if (code === 1 && !resultContent && !stderrOutput.trim()) {
-          reject(new Error('Claude 进程异常退出，无输出。请检查 claude 命令是否可用'));
-        } else {
-          reject(new Error(`分析失败 (退出码: ${code})${stderrHint}`));
-        }
-      }
-    });
-
-    child.on('error', (err) => {
-      clearTimeout(timeout);
-      reject(new Error(`启动 Claude 进程失败: ${err.message}`));
-    });
-  });
+    }
+  } catch {
+    throw new Error('JSON 解析失败');
+  }
+  throw new Error('Claude 返回格式不正确');
 }
 
 // ==================== Formatting ====================

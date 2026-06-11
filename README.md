@@ -97,7 +97,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | 命令 | 说明 |
 |------|------|
 | `/ls [目录] [层数]` | 查看目录结构 |
-| `/bash <命令>` | 执行任意命令（覆盖 pwd/mkdir/touch/rm 等） |
+| `/bash <命令>` | 执行任意命令（仅 owner/管理员，执行记录审计日志 `bash-audit.log`） |
 
 #### 管理命令（仅 owner）
 
@@ -152,8 +152,14 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `apiKeyCfg` | API Key 池化：429 自动切换、每日 0 点重置 |
 | `useLocalOcr` | 图片本地 OCR（默认 `true`），模型支持图片时可设 `false` |
 | `linkConversationId` | 关联群 ID，多群共享同一 Claude 会话上下文 |
-| `permissionMode` | Claude 进程权限模式（默认 `bypassPermissions`），可选: `default`、`acceptEdits`、`plan`、`auto`、`bypassPermissions`、`dontAsk` |
+| `permissionMode` | Claude 进程权限模式（默认 `acceptEdits`；`bypassPermissions` 需显式配置，启动时会告警），可选: `default`、`acceptEdits`、`plan`、`auto`、`bypassPermissions`、`dontAsk` |
 | `preBash` | 全局 `/bash` 前置命令 |
+
+#### 安全说明
+
+- 敏感字段（`clientSecret`、`dingToken`、`defaultDingToken`、`apiKeyCfg[].apiKey`）支持 `$ENV:VAR_NAME` 形式引用环境变量，避免明文落盘，例如 `"clientSecret": "$ENV:DING_SECRET"`
+- `config.json` 与 `settings-ding.json` 写入时自动收紧为 `600` 权限
+- `/bash` 仅限 owner/管理员执行，所有命令记录到 `~/.cc-ding/{clientId}/bash-audit.log`
 
 ### 数据存储
 
@@ -263,7 +269,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | Command | Description |
 |---------|-------------|
 | `/ls [dir] [depth]` | View directory structure |
-| `/bash <cmd>` | Execute arbitrary commands (covers pwd/mkdir/touch/rm etc.) |
+| `/bash <cmd>` | Execute arbitrary commands (owner/admin only, audited in `bash-audit.log`) |
 
 #### Admin (owner only)
 
@@ -318,8 +324,14 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `apiKeyCfg` | API Key pooling: auto-switch on 429, daily reset at midnight |
 | `useLocalOcr` | Local image OCR (default `true`); set `false` if model supports images natively |
 | `linkConversationId` | Link groups to share one Claude session context |
-| `permissionMode` | Claude process permission mode (default `bypassPermissions`), options: `default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk` |
+| `permissionMode` | Claude process permission mode (default `acceptEdits`; `bypassPermissions` must be set explicitly and warns at startup), options: `default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk` |
 | `preBash` | Global pre-bash command for `/bash` |
+
+#### Security Notes
+
+- Sensitive fields (`clientSecret`, `dingToken`, `defaultDingToken`, `apiKeyCfg[].apiKey`) support `$ENV:VAR_NAME` references to environment variables, e.g. `"clientSecret": "$ENV:DING_SECRET"`
+- `config.json` and `settings-ding.json` are written with `600` permissions
+- `/bash` is restricted to owner/admin; all commands are audited in `~/.cc-ding/{clientId}/bash-audit.log`
 
 ### Data Storage
 

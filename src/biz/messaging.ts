@@ -1,7 +1,8 @@
 import { baseUtil } from 'utils-ok';
 import urllib from 'urllib';
-import { DingClaude } from './cc-ding-cli';
+import type { DingClaude } from './cc-ding-cli';
 import { ISendMsgOpts, IDingUserDetail } from './types';
+import { resolveSecret } from './secrets';
 
 const DING_API_BASE = 'https://api.dingtalk.com';
 const DING_OAPI_BASE = 'https://oapi.dingtalk.com';
@@ -211,7 +212,7 @@ export async function sendDingMessage(self: DingClaude, opts: ISendMsgOpts): Pro
   const atUserIds = effectiveAtUserId ? [ effectiveAtUserId ] : [];
 
   // 优先: 会话级 dingToken > sessionWebhook > 客户端级 defaultDingToken
-  const dingToken = conversation?.dingToken;
+  const dingToken = resolveSecret(conversation?.dingToken);
 
   // 钉钉 markdown 消息需要在 content 中显式写 @staffId 才能触发 at 提醒
   let actualContent = content;
@@ -260,7 +261,7 @@ export async function sendDingMessage(self: DingClaude, opts: ISendMsgOpts): Pro
     }
   } else if (self.config.defaultDingToken) {
     const accessToken = await self.dingStreamClient.getAccessToken();
-    const url = `https://oapi.dingtalk.com/robot/send?access_token=${self.config.defaultDingToken}`;
+    const url = `https://oapi.dingtalk.com/robot/send?access_token=${resolveSecret(self.config.defaultDingToken)}`;
     try {
       await urllib.request(url, {
         method: 'POST',
