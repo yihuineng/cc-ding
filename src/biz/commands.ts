@@ -150,10 +150,11 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/bash',
-    description: '在工作目录执行 bash 命令（如配置了 preBash 全局/群级别，将叠加前置执行）',
+    description: '在工作目录执行 bash 命令（仅 owner/管理员，执行将记录审计日志；如配置了 preBash 全局/群级别，将叠加前置执行）',
     usage: '/bash <命令>',
     examples: [ '/bash ls -la', '/bash pwd', '/bash git status' ],
     category: '文件',
+    ownerOnly: true,
   },
   {
     name: '/auth',
@@ -166,7 +167,7 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/recorder',
     aliases: [ '/r' ],
-    description: 'Recorder 模式：记录所有消息到本地（仅 owner 单聊）',
+    description: 'Recorder 模式：记录所有消息到本地（仅 owner 单聊，录制中可发送 /exit 或 /e 快捷退出）',
     usage: '/recorder [on|exit]',
     examples: [ '/recorder on', '/recorder exit', '/r on', '/r exit' ],
     category: '管理',
@@ -756,13 +757,6 @@ export function parseAuthCommand(text: string): AuthCommand | null {
   const rejectMatch = trimmed.match(/^\/auth\s+reject\s+(\S+)$/i);
   if (rejectMatch) return { type: 'reject', requestId: rejectMatch[1] };
   if (/^\/auth(?:\s+list)?$/i.test(trimmed)) return { type: 'list' };
-  return null;
-}
-
-export function parseRecorderCommand(text: string): 'on' | 'exit' | null {
-  const trimmed = text.trim();
-  if (/^\/recorder\s+on$/i.test(trimmed)) return 'on';
-  if (/^\/recorder\s+exit$/i.test(trimmed)) return 'exit';
   return null;
 }
 

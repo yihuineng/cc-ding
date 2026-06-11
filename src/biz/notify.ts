@@ -3,6 +3,7 @@ import path from 'path';
 import os from 'os';
 import urllib from 'urllib';
 import { IConfig } from './types';
+import { resolveSecret } from './secrets';
 
 export interface NotifyOpts {
   clientId: string;
@@ -153,7 +154,7 @@ export async function sendNotify(opts: NotifyOpts): Promise<{ success: number; f
 
       try {
         if (!cachedToken) {
-          cachedToken = await getAccessToken(clientId, config.clientSecret);
+          cachedToken = await getAccessToken(clientId, resolveSecret(config.clientSecret));
         }
 
         // 解析 userId（缓存优先）
@@ -187,7 +188,7 @@ export async function sendNotify(opts: NotifyOpts): Promise<{ success: number; f
     }
 
     // 群聊：使用 webhook API
-    const dingToken = conv?.dingToken || config.defaultDingToken;
+    const dingToken = resolveSecret(conv?.dingToken || config.defaultDingToken);
     if (!dingToken) {
       console.error(`  ✗ ${title}: 无 dingToken 可用`);
       fail++;

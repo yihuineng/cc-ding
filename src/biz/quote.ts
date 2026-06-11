@@ -1,4 +1,4 @@
-import { DingClaude } from './cc-ding-cli';
+import type { DingClaude } from './cc-ding-cli';
 import { IRawCallbackData, IQuoteInfo, IChatRecordItem, IRichTextParagraph } from './types';
 import { fetchQuotedMessage } from './messaging';
 import { processPictureMessage, processRichTextMessage, downloadToFilesDir } from './image';

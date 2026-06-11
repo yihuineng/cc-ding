@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
 import { spawn } from 'child_process';
-import { DingClaude } from './cc-ding-cli';
+import type { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IClaudeSetting, ISession } from './types';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { timestamp, getReplyWebhook, getReplyConversationId } from './session';
@@ -16,6 +16,7 @@ import {
   getForceEnabledSettingsPath,
   settingLabel,
 } from './api-key-manager';
+import { resolveSecret } from './secrets';
 
 const MAX_FAST_FAIL = 20;
 const API_RETRY_DELAY_MS = 10_000;
@@ -53,7 +54,7 @@ export function resolveClaudeSettingsPath(
     const savedApiKey = readApiKeyFromSettings(dingGroupDir);
     let currentSetting: IClaudeSetting | null = null;
     if (savedApiKey) {
-      currentSetting = self.config.apiKeyCfg.claudeSettings.find(s => s.apiKey === savedApiKey && s.isValid) || null;
+      currentSetting = self.config.apiKeyCfg.claudeSettings.find(s => resolveSecret(s.apiKey) === savedApiKey && s.isValid) || null;
     }
     if (!currentSetting) {
       currentSetting = pickValidApiKey(self);
@@ -665,7 +666,7 @@ export async function executeClaudeQuery(
   let currentSetting: IClaudeSetting | null = null;
   const savedApiKey = readApiKeyFromSettings(dingGroupDir);
   if (savedApiKey && self.config.apiKeyCfg) {
-    currentSetting = self.config.apiKeyCfg.claudeSettings.find(s => s.apiKey === savedApiKey && s.isValid) || null;
+    currentSetting = self.config.apiKeyCfg.claudeSettings.find(s => resolveSecret(s.apiKey) === savedApiKey && s.isValid) || null;
     if (currentSetting) {
       console.log(`[${timestamp()}] 从 settings-ding.json 恢复 Claude Setting: ${settingLabel(currentSetting)}`);
     }
@@ -694,7 +695,8 @@ export async function executeClaudeQuery(
   self.appendSessionLog(sessionDir, 'user', messageWithPrefix);
 
   const entryCmd = 'claude';
-  const permissionMode = opts?.permissionMode ?? 'bypassPermissions';
+  // 默认 acceptEdits（安全默认值）；如需绕过所有权限确认，需在配置中显式设置 bypassPermissions
+  const permissionMode = opts?.permissionMode ?? 'acceptEdits';
   const fixedCmdArgs = [
     '--permission-mode', permissionMode,
     '--print',
