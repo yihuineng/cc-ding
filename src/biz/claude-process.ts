@@ -29,6 +29,9 @@ const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000;
 /** Watchdog: 检查间隔 */
 const WATCHDOG_CHECK_INTERVAL_MS = 30 * 1000;
 
+/** CLAUDE.md 注入内容的内存缓存，key=conversationId，value=上次注入的完整内容字符串 */
+const injectedContextCache = new Map<string, string>();
+
 /**
  * 解析 Claude 的 settings 文件路径
  * 统一处理 forceEnable、apiKeyCfg 轮换等逻辑
@@ -524,25 +527,16 @@ function runClaudeOnce(
   });
 }
 
+const START_MARK = '<!-- cc-ding:session-context-start (DO NOT EDIT) -->';
+const END_MARK = '<!-- cc-ding:session-context-end (DO NOT EDIT) -->';
+
 /**
- * 在会话工作目录写入 .claude/CLAUDE.md，将当前 client 和 conversation
- * 配置信息注入 Claude Code 的系统上下文。
- *
- * 策略：
- * - 首次会话：创建 CLAUDE.md（如用户已有则在其上方追加 cc-ding 段）
- * - 后续会话：用 START/END 标记精准替换 cc-ding 段，保留用户内容不变
- * - 不产生重复信息，配置变更时自动刷新
+ * 构建 cc-ding 上下文内容字符串。
+ * 将 client 和 conversation 配置信息格式化为 CLAUDE.md 中可注入的段落。
  */
-function injectSessionContext(self: DingClaude, session: ISession): void {
-  const dingGroupDir = self.getConversationDir(session.conversationId);
-  const claudeDir = path.join(dingGroupDir, '.claude');
-  if (!fs.existsSync(claudeDir)) fs.mkdirSync(claudeDir, { recursive: true });
-
-  const convCfg = self.getConversationConfig(session.conversationId);
+function buildContextContent(self: DingClaude, conversationId: string): string {
+  const convCfg = self.getConversationConfig(conversationId);
   const config = self.config;
-
-  const START_MARK = '<!-- cc-ding:session-context-start (DO NOT EDIT) -->';
-  const END_MARK = '<!-- cc-ding:session-context-end (DO NOT EDIT) -->';
 
   const lines: string[] = [
     START_MARK,
@@ -554,7 +548,7 @@ function injectSessionContext(self: DingClaude, session: ISession): void {
     `- owner: ${config.owner}`,
     '',
     '## Conversation',
-    `- conversationId: \`${session.conversationId}\``,
+    `- conversationId: \`${conversationId}\``,
     convCfg?.conversationType ? `- conversationType: ${convCfg.conversationType === '1' ? '单聊' : '群聊'}` : '',
     convCfg?.conversationTitle ? `- conversationTitle: ${convCfg.conversationTitle}` : '',
     convCfg?.linkConversationId ? `- linkConversationId: \`${convCfg.linkConversationId}\` (关联群，共享工作目录)` : '',
@@ -576,13 +570,23 @@ function injectSessionContext(self: DingClaude, session: ISession): void {
     END_MARK,
   ].filter(Boolean);
 
-  const newSection = lines.join('\n') + '\n';
+  return lines.join('\n') + '\n';
+}
+
+/**
+ * 将 cc-ding 上下文写入/更新到指定群的 .claude/CLAUDE.md 文件。
+ * 不比对缓存，直接写入（用于启动时首次注入）。
+ */
+function writeContextToFile(self: DingClaude, conversationId: string, newSection: string): void {
+  const dingGroupDir = self.getConversationDir(conversationId);
+  const claudeDir = path.join(dingGroupDir, '.claude');
+  if (!fs.existsSync(claudeDir)) fs.mkdirSync(claudeDir, { recursive: true });
+
   const claudeMdPath = path.join(claudeDir, 'CLAUDE.md');
 
   if (!fs.existsSync(claudeMdPath)) {
-    // 文件不存在，直接创建
     fs.writeFileSync(claudeMdPath, newSection, 'utf-8');
-    console.log(`[${timestamp()}] cc-ding 上下文已写入 CLAUDE.md: ${claudeMdPath}`);
+    console.log(`[${timestamp()}] cc-ding 上下文已注入 CLAUDE.md: ${claudeMdPath}`);
     return;
   }
 
@@ -591,17 +595,52 @@ function injectSessionContext(self: DingClaude, session: ISession): void {
   const endIdx = existing.indexOf(END_MARK);
 
   if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-    // 已有 cc-ding 段，精准替换该段（保留用户自定义的其他内容）
     const before = existing.substring(0, startIdx);
     const after = existing.substring(endIdx + END_MARK.length);
     const updated = before + newSection + after;
     fs.writeFileSync(claudeMdPath, updated, 'utf-8');
     console.log(`[${timestamp()}] cc-ding 上下文已更新: ${claudeMdPath}`);
   } else {
-    // 有用户内容但无 cc-ding 标记，追加到顶部
     fs.writeFileSync(claudeMdPath, newSection + '\n' + existing, 'utf-8');
     console.log(`[${timestamp()}] cc-ding 上下文已追加到现有 CLAUDE.md: ${claudeMdPath}`);
   }
+}
+
+/**
+ * 启动时注入：为所有已注册的群写入 CLAUDE.md 上下文。
+ * 应用启动时调用一次，确保工作目录中已有上下文信息。
+ */
+export function injectStartupContexts(self: DingClaude): void {
+  const conversations = Array.isArray(self.config.conversations) ? self.config.conversations : [];
+  for (const conv of conversations) {
+    const newSection = buildContextContent(self, conv.conversationId);
+    injectedContextCache.set(conv.conversationId, newSection);
+    writeContextToFile(self, conv.conversationId, newSection);
+  }
+}
+
+/**
+ * 检查配置是否变更，仅在变更时写入 CLAUDE.md。
+ * 避免每次消息都执行文件 I/O，提升性能。
+ *
+ * 策略：
+ * - 首次消息：对比内存缓存，未缓存则写入
+ * - 后续消息：仅当当前配置与上次注入的内容不同时才写入
+ * - 不产生重复信息，配置变更时自动刷新
+ */
+export function injectSessionContextIfChanged(self: DingClaude, session: ISession): void {
+  const conversationId = session.conversationId;
+  const newSection = buildContextContent(self, conversationId);
+  const cached = injectedContextCache.get(conversationId);
+
+  if (cached === newSection) {
+    // 内容未变更，跳过文件写入
+    return;
+  }
+
+  // 内容变更或首次（此群），写入文件并更新缓存
+  injectedContextCache.set(conversationId, newSection);
+  writeContextToFile(self, conversationId, newSection);
 }
 
 /**
@@ -618,8 +657,8 @@ export async function executeClaudeQuery(
   let sessionLog = `${sessionDir}/session.log`;
   const dingGroupDir = self.getConversationDir(session.conversationId);
 
-  // 会话开始时，将 client 和 conversation 配置信息写入 CLAUDE.md 注入 Claude 上下文
-  injectSessionContext(self, session);
+  // 会话开始时，检查配置是否变更并注入 Claude 上下文（仅在变更时写入）
+  injectSessionContextIfChanged(self, session);
 
   fs.mkdirSync(sessionDir, { recursive: true });
   // 从 settings-ding.json 恢复上次使用的 Claude Setting

@@ -18,7 +18,7 @@ import {
   parseRebootCommand,
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
-import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery } from './claude-process';
+import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts } from './claude-process';
 import { recordMessage, getRecorderDir } from './recorder';
 import {
   getClientDir, getClientConfig, authCheck, isOwner, isAdmin, debugLog,
@@ -1829,6 +1829,13 @@ export class DingClaude {
       }
       activeSession.isProcessing = true;
       try {
+        if (activeSession.conversationConfig.receiveReply !== false) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            atUserId: senderStaffId,
+            content: '📥 已收到，正在处理...',
+          }).catch(() => {});
+        }
         await executeClaudeQuery(this, activeSession.session, ccMessage, {
           senderNick,
           senderStaffId,
@@ -2007,6 +2014,9 @@ export class DingClaude {
     }
 
     this.loadActiveSessions();
+
+    // 启动时注入一次群信息上下文到各群的 .claude/CLAUDE.md，后续仅在配置变更时才更新
+    injectStartupContexts(this);
 
     // 检查是否有重启后待通知的消息
     await this.notifyPendingReboot();
