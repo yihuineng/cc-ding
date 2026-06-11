@@ -96,38 +96,10 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     category: '任务',
   },
   {
-    name: '/pwd',
-    description: '显示当前工作目录的绝对路径',
-    usage: '/pwd',
-    examples: [ '/pwd' ],
-    category: '文件',
-  },
-  {
     name: '/ls',
     description: '查看工作目录结构',
     usage: '/ls [目标目录] [展开层数]',
     examples: [ '/ls', '/ls root 2', '/ls product 1' ],
-    category: '文件',
-  },
-  {
-    name: '/mkdir',
-    description: '在工作目录下创建文件夹（支持相对路径，不能超出工作目录范围）',
-    usage: '/mkdir <相对路径>',
-    examples: [ '/mkdir src', '/mkdir src/components', '/mkdir ./docs' ],
-    category: '文件',
-  },
-  {
-    name: '/touch',
-    description: '在工作目录下创建空文件（支持相对路径，不能超出工作目录范围）',
-    usage: '/touch <相对路径>',
-    examples: [ '/touch README.md', '/touch src/cc-ding-cli.ts', '/touch ./config.json' ],
-    category: '文件',
-  },
-  {
-    name: '/rm',
-    description: '删除工作目录下的文件或目录（支持相对路径，不能超出工作目录范围）',
-    usage: '/rm <相对路径>',
-    examples: [ '/rm temp.txt', '/rm src/old.ts', '/rm ./docs/obsolete/' ],
     category: '文件',
   },
   {
@@ -171,8 +143,8 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/cfg',
     description: '注册当前群到配置，或刷新指定字段(已注册群)',
-    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"]',
-    examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
+    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode]',
+    examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --permissionMode auto', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
     category: '管理',
     ownerOnly: true,
   },
@@ -202,9 +174,9 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/todo',
-    description: '待办管理：添加/完成/删除/列表/提醒',
-    usage: '/todo <内容> [@人] [ddl 截止时间] | /todo done <序号> | /todo rm <序号|all> | /todo list | /todo remind <0-23>',
-    examples: [ '/todo 完成报告 ddl 明天', '/todo 修复bug @张三 ddl 下周五', '/todo done 1', '/todo rm 2', '/todo rm all', '/todo list', '/todo remind 9', '/todo remind -1' ],
+    description: '待办管理：添加/完成/删除/列表/提醒/模式切换',
+    usage: '/todo <内容> [@人] [ddl 截止时间] | /todo done <序号> | /todo rm <序号|all> | /todo list | /todo remind <0-23> | /todo mode <staffId|dingtalkId>',
+    examples: [ '/todo 完成报告 ddl 明天', '/todo 修复bug @张三 ddl 下周五', '/todo done 1', '/todo rm 2', '/todo rm all', '/todo list', '/todo remind 9', '/todo remind -1', '/todo mode dingtalkId' ],
     category: '任务',
   },
   {
@@ -361,6 +333,7 @@ export function formatConversationInfo(
   if (conv.atSender === false) lines.push(`- **atSender:** false`);
   if (conv.receiveReply === false) lines.push(`- **receiveReply:** false (不回复确认消息)`);
   if (conv.useLocalOcr === false) lines.push(`- **本地OCR:** 关闭`);
+  if (conv.permissionMode) lines.push(`- **permissionMode:** ${conv.permissionMode}`);
   if (conv.taskCfg?.skill) lines.push(`- **taskSkill:** ${conv.taskCfg.skill}`);
   if (conv.preBash) lines.push(`- **preBash:** \`${conv.preBash}\``);
   return lines.join('\n');
@@ -547,53 +520,10 @@ export function parseCronCommand(text: string): CronCommand | null {
 }
 
 /**
- * 解析 /pwd 命令
- */
-export function parsePwdCommand(text: string): boolean {
-  return text.trim() === '/pwd';
-}
-
-/**
  * 解析 /version 命令
  */
 export function parseVersionCommand(text: string): boolean {
   return text.trim() === '/version';
-}
-
-/**
- * 解析单参数路径命令的工厂函数
- * 用于 /mkdir、/touch、/rm 等格式为 /{cmd} <路径> 的命令
- */
-function parsePathCommand(text: string, command: string): string | null {
-  const trimmed = text.trim();
-  const match = trimmed.match(new RegExp(`^\\/${command}\\s+(.+)$`));
-  if (!match) return null;
-  const p = match[1].trim();
-  return p || null;
-}
-
-/**
- * 解析 /mkdir 命令
- * 返回相对路径，解析失败返回 null
- */
-export function parseMkdirCommand(text: string): string | null {
-  return parsePathCommand(text, 'mkdir');
-}
-
-/**
- * 解析 /touch 命令
- * 返回相对路径，解析失败返回 null
- */
-export function parseTouchCommand(text: string): string | null {
-  return parsePathCommand(text, 'touch');
-}
-
-/**
- * 解析 /rm 命令
- * 返回相对路径，解析失败返回 null
- */
-export function parseRmCommand(text: string): string | null {
-  return parsePathCommand(text, 'rm');
 }
 
 /**
@@ -648,6 +578,7 @@ export interface ICfgOptions {
   atSender?: boolean;
   receiveReply?: boolean;
   preBash?: string;
+  permissionMode?: string;
 }
 
 export function parseCfgCommand(text: string): ICfgOptions | null {
@@ -700,6 +631,8 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
         // 去除首尾引号
         result.preBash = bashParts.join(' ').replace(/^["']|["']$/g, '');
       }
+    } else if (token === '--permissionMode' && tokens[i + 1]) {
+      result.permissionMode = tokens[++i];
     }
   }
 
@@ -864,15 +797,17 @@ export function parseInterruptCommand(text: string): boolean {
  * - /todo rm <序号|all>            -> remove
  * - /todo list                     -> list
  * - /todo remind <0-23|-1>         -> remind
+ * - /todo mode <staffId|dingtalkId> -> mode
  */
 export type TodoCommand =
-  | { type: 'add'; content: string; assigneeStaffId?: string; deadline?: string }
+  | { type: 'add'; content: string; assigneeId?: string; assigneeNick?: string; deadline?: string }
   | { type: 'done'; index: number }
   | { type: 'remove'; index: number | 'all' }
   | { type: 'list' }
-  | { type: 'remind'; hour: number | null }; // null = 关闭提醒
+  | { type: 'remind'; hour: number | null } // null = 关闭提醒
+  | { type: 'mode'; mode: 'staffId' | 'dingtalkId' };
 
-export function parseTodoCommand(text: string): TodoCommand | null {
+export function parseTodoCommand(text: string, atUsers?: Array<{ staffId?: string; dingtalkId?: string }>): TodoCommand | null {
   const trimmed = text.trim();
   if (!/^\/todo(?:\s|$)/i.test(trimmed) && trimmed.toLowerCase() !== '/todo') return null;
 
@@ -883,6 +818,10 @@ export function parseTodoCommand(text: string): TodoCommand | null {
 
   // /todo list (无参数也等同于 list)
   if (!rest) return { type: 'list' };
+
+  // /todo mode <staffId|dingtalkId>
+  const modeMatch = rest.match(/^mode\s+(staffId|dingtalkId)$/i);
+  if (modeMatch) return { type: 'mode', mode: modeMatch[1] as 'staffId' | 'dingtalkId' };
 
   // /todo done <序号>
   const doneMatch = rest.match(/^done\s+(\d+)$/i);
@@ -908,14 +847,19 @@ export function parseTodoCommand(text: string): TodoCommand | null {
 
   // /todo <内容> [@人] [ddl 截止时间]
   let content = rest;
-  let assigneeStaffId: string | undefined;
+  let assigneeId: string | undefined;
+  let assigneeNick: string | undefined;
   let deadline: string | undefined;
 
-  // 提取 @人
+  // 提取 @人：优先从 atUsers 中解析（自动匹配），回退到文本提取
   const atMatch = content.match(/@(\S+)/);
   if (atMatch) {
-    assigneeStaffId = atMatch[1];
+    const atText = atMatch[1];
     content = content.replace(/@\S+/, '').trim();
+    // atUsers 参数预留：未来可实现自动将 @昵称 匹配为 staffId/dingtalkId
+    void atUsers;
+    assigneeId = atText;
+    assigneeNick = atText;
   }
 
   // 提取 ddl
@@ -927,7 +871,7 @@ export function parseTodoCommand(text: string): TodoCommand | null {
 
   if (!content) return null;
 
-  return { type: 'add', content, assigneeStaffId, deadline };
+  return { type: 'add', content, assigneeId, assigneeNick, deadline };
 }
 
 /**

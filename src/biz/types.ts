@@ -38,8 +38,6 @@ export interface IConfig {
     /** 保存目录，默认为会话工作目录下的 .recorder */
     dist?: string;
   };
-  /** 是否为 Claude 进程添加 --dangerous-skip-sandbox 参数，默认 false */
-  skipSandbox?: boolean;
 }
 
 export interface IConversation {
@@ -48,6 +46,8 @@ export interface IConversation {
   linkConversationId?: string; // 关联会话ID, 指定时共用该id的工作目录(多个群机器人记忆共享场景, 同时也需要注意并发控制避免文件操作冲突)
   conversationTitle?: string;
   dingToken?: string; // 机器人单聊时, 不存在
+  /** 单聊目标用户手机号（通过 phone-map.json 缓存解析为 userId） */
+  mobile?: string;
   whiteUserList?: string[]; // 机器人实例维度白名单, 定义时优先级高于Client维度
   agent?: string; // 指定agent
   useLocalOcr?: boolean; // 本地 OCR 降级（用于不支持图片识别的模型），默认 true
@@ -56,6 +56,8 @@ export interface IConversation {
   receiveReply?: boolean;
   /** /bash 执行前的前置命令（群级别，与全局 preBash 叠加执行） */
   preBash?: string;
+  /** Claude 进程权限模式，默认 bypassPermissions。可选值: default | acceptEdits | plan | auto | bypassPermissions | dontAsk */
+  permissionMode?: string;
   sessionCfg?: {
     // task 功能默认开启，无需配置开关
   }; // 群维度session相关配置
@@ -191,6 +193,14 @@ export interface IRichTextParagraph {
   downloadCode?: string;           // 图片下载码(用于 /v1.0/robot/messageFiles/download API)
   pictureDownloadCode?: string;    // 图片下载码(备用字段)
   userId?: string;
+  displayName?: string;            // @提及用户的显示名
+}
+
+/** 钉钉回调中被 @ 的用户信息 */
+export interface IAtUser {
+  dingtalkId: string;
+  staffId: string;
+  userId: string;
 }
 
 /** 钉钉回调原始数据(扩展 RobotTextMessage,包含引用相关字段) */
@@ -203,6 +213,7 @@ export interface IRawCallbackData extends Omit<RobotTextMessage, 'text' | 'msgty
   fileName?: string;                             // 文件名(msgtype=file 时)
   downloadCode?: string;                         // 通用下载码(多种消息类型)
   originalMsgId?: string;   // 原始消息ID(钉钉回调可选字段)
+  atUsers?: IAtUser[];      // 被 @ 的用户列表(钉钉回调可选字段)
 }
 
 /** 解析后的引用信息 */

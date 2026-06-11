@@ -73,7 +73,6 @@ program
       taskQueueSize: 10,
       taskHandlerCount: 1,
       sessionMaxConcurrency: 20,
-      skipSandbox: false,
     };
 
     initClientDir(opts.clientId, config);
@@ -135,15 +134,21 @@ program
 
 program
   .command('notify')
-  .description('通过钉钉机器人发送消息到指定群')
+  .description('通过钉钉机器人发送消息到指定群或单聊')
   .requiredOption('-ci, --clientId <value>', 'clientId')
   .requiredOption('-c, --conversations <value>', '目标会话ID（多个用逗号分隔）')
   .requiredOption('-m, --message <value>', '消息内容')
   .option('-at, --atUserIds <value>', '@ 指定用户（多个用逗号分隔）')
+  .option('-mo, --mobile <value>', '单聊目标手机号（多个用逗号分隔，与 conversations 一一对应）')
   .option('-md, --markdown', '使用 Markdown 格式发送', false)
   .action(async (opts) => {
     const conversationIds = opts.conversations.split(',').map((s: string) => s.trim()).filter(Boolean);
     const atUserIds = opts.atUserIds ? opts.atUserIds.split(',').map((s: string) => s.trim()).filter(Boolean) : [];
+
+    // 解析 --mobile 映射（与 conversations 一一对应）
+    const mobiles: string[] = opts.mobile
+      ? opts.mobile.split(',').map((s: string) => s.trim()).filter(Boolean)
+      : [];
 
     console.log(`📤 发送消息到 ${conversationIds.length} 个会话...`);
     const result = await sendNotify({
@@ -151,6 +156,7 @@ program
       message: opts.message,
       conversationIds,
       atUserIds,
+      mobiles,
       markdown: opts.markdown,
     });
 

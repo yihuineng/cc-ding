@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 (2026-06-07)
+
+### 新功能
+- `/todo` 工号模式适配：用户可选 `staffId` 或 `dingtalkId` 标识
+- 会话自动注入 `clientId` 和 `conversation` 信息
+
+### 修复
+- 发送消息中包含 `@` 人员时信息丢失的问题
+- `/cc` 命令透传消息不携带用户信息的问题（多次迭代修复）
+- `--conversationId` 权限检查和 `/goon` 命令处理
+- `sendOwnerMessage` 手机号解析为 `userId` 的问题
+- recorder 文件名同秒覆盖问题（加入毫秒后缀）
+- reboot 相关问题
+
+### 优化
+- `recorder.ts` 复用 `image.ts` 导出的工具函数，删除重复代码
+- 支持跳过 sandbox 模式
+- README 文档更新
+
 ## 0.2.0 (2026-06-06)
 
 ### 新功能

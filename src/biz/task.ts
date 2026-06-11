@@ -489,51 +489,64 @@ export async function handleTask(self: DingClaude): Promise<void> {
 
   debugLog(self, `执行命令: claude ${cmdArgs.join(' ')}`);
 
-  const TIMEOUT_MS = 10 * 60 * 1000;
   const MAX_FAST_FAIL = 20;
   const RETRY_DELAY_MS = 10_000;
   const FAST_FAIL_THRESHOLD_MS = 10_000;
+  const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000;
+  const WATCHDOG_CHECK_INTERVAL_MS = 60 * 1000;
   const entryCmd = 'claude';
 
-  const runTaskOnce = (args: string[]): Promise<{ exitCode: number; output: string; elapsed: number; timedOut: boolean }> => {
+  const runTaskOnce = (args: string[]): Promise<{ exitCode: number; output: string; elapsed: number }> => {
     const startTime = Date.now();
     return new Promise((resolve) => {
       const logChunks: string[] = [];
       let exited = false;
-      let timedOut = false;
+      let lastActivityTime = Date.now();
 
       const child = spawn(entryCmd, args, {
         cwd: conversationDir,
         stdio: [ 'ignore', 'pipe', 'pipe' ],
       });
 
-      const timeoutId = setTimeout(() => {
-        if (!exited) {
-          timedOut = true;
-          console.error('任务执行超时(10分钟)，终止进程');
-          child.kill('SIGTERM');
-          setTimeout(() => {
-            if (!exited) child.kill('SIGKILL');
-          }, 5000);
+      // Watchdog: 定期检查是否长时间无活动，发送提醒（不终止进程）
+      const watchdogTimer = setInterval(() => {
+        if (exited) {
+          clearInterval(watchdogTimer);
+          return;
         }
-      }, TIMEOUT_MS);
+        const elapsed = Date.now() - lastActivityTime;
+        if (elapsed >= WATCHDOG_TIMEOUT_MS) {
+          console.warn(`[${timestamp()}] 任务 Watchdog: ${WATCHDOG_TIMEOUT_MS / 1000}s 无日志输出，通知用户`);
+          clearInterval(watchdogTimer);
+          sendDingMessage(self, {
+            conversationId: task.conversationId,
+            sessionWebhook: task.sessionWebhook,
+            atUserId: task.senderStaffId,
+            content: `⏰ 任务超过 ${WATCHDOG_TIMEOUT_MS / 1000}s 无响应，仍在执行中，请稍候`,
+          }).catch(err => console.error('发送任务 Watchdog 通知失败:', err));
+        }
+      }, WATCHDOG_CHECK_INTERVAL_MS);
+
+      const updateActivity = () => { lastActivityTime = Date.now(); };
 
       child.stdout.on('data', (data) => {
         const str = data.toString();
         process.stdout.write(str);
         logChunks.push(str);
+        updateActivity();
       });
 
       child.stderr.on('data', (data) => {
         const str = data.toString();
         process.stderr.write(str);
         logChunks.push(str);
+        updateActivity();
       });
 
       child.on('close', (code) => {
         exited = true;
-        clearTimeout(timeoutId);
-        resolve({ exitCode: code ?? 1, output: logChunks.join(''), elapsed: Date.now() - startTime, timedOut });
+        clearInterval(watchdogTimer);
+        resolve({ exitCode: code ?? 1, output: logChunks.join(''), elapsed: Date.now() - startTime });
       });
 
       child.on('error', (err) => {
@@ -545,28 +558,14 @@ export async function handleTask(self: DingClaude): Promise<void> {
 
   let exitCode: number;
   let combinedOutput: string;
-  let lastTimedOut = false;
   let consecutiveFastFail = 0;
 
   while (true) {
     const result = await runTaskOnce(cmdArgs);
     exitCode = result.exitCode;
     combinedOutput = result.output;
-    lastTimedOut = result.timedOut;
 
     if (exitCode !== 0) {
-      // 超时：重置为待办（给重试机会）
-      if (lastTimedOut) {
-        console.log(`[${timestamp()}] 任务执行超时，重置为待办`);
-        const logContent = [
-          `[${timestamp()}] 执行命令: ${entryCmd} ${cmdArgs.join(' ')}`,
-          `[${timestamp()}] 超时(${TIMEOUT_MS / 1000}s)`,
-          combinedOutput,
-        ].join('\n');
-        fs.writeFileSync(logFile, logContent);
-        await resetTaskToTodo(self, taskDir, '执行超时');
-        return;
-      }
 
       // 配额耗尽 (429): 尝试切换/轮换 Key
       if (isQuotaExhaustedError(combinedOutput) && apiKeyCfg) {

@@ -96,9 +96,8 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 
 | 命令 | 说明 |
 |------|------|
-| `/pwd` | 显示工作目录 |
 | `/ls [目录] [层数]` | 查看目录结构 |
-| `/mkdir` / `/touch` / `/rm` | 创建目录 / 创建空文件 / 删除 |
+| `/bash <命令>` | 执行任意命令（覆盖 pwd/mkdir/touch/rm 等） |
 
 #### 管理命令（仅 owner）
 
@@ -109,7 +108,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `/open [shell]` | 打开工作目录 |
 | `/clean [all]` | 清除历史和缓存 |
 | `/reset-apikeycfg` | 重置 API Key 配置 |
-| `/cfg` | 注册当前群到配置 |
+| `/cfg` | 注册当前群到配置（支持 `--permissionMode` 设置权限模式） |
 | `/auth [add\|del <用户>]` | 管理群级白名单 |
 
 ### 配置说明
@@ -131,6 +130,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
       "whiteUserList": ["工号1", "工号2"],
       "agent": "指定agent（可选）",
       "useLocalOcr": true,
+      "permissionMode": "bypassPermissions",
       "taskCfg": { "skill": "指定技能（可选）" }
     }
   ],
@@ -139,8 +139,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
   "sessionMaxConcurrency": 20,
   "includeThinking": false,
   "resultOnly": true,
-  "debug": false,
-  "skipSandbox": false
+  "debug": false
 }
 ```
 
@@ -153,7 +152,8 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `apiKeyCfg` | API Key 池化：429 自动切换、每日 0 点重置 |
 | `useLocalOcr` | 图片本地 OCR（默认 `true`），模型支持图片时可设 `false` |
 | `linkConversationId` | 关联群 ID，多群共享同一 Claude 会话上下文 |
-| `skipSandbox` | 跳过沙箱，允许完整文件系统访问（默认 `false`） |
+| `permissionMode` | Claude 进程权限模式（默认 `bypassPermissions`），可选: `default`、`acceptEdits`、`plan`、`auto`、`bypassPermissions`、`dontAsk` |
+| `preBash` | 全局 `/bash` 前置命令 |
 
 ### 数据存储
 
@@ -262,9 +262,8 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 
 | Command | Description |
 |---------|-------------|
-| `/pwd` | Show working directory |
 | `/ls [dir] [depth]` | View directory structure |
-| `/mkdir` / `/touch` / `/rm` | Create dir / Create empty file / Delete |
+| `/bash <cmd>` | Execute arbitrary commands (covers pwd/mkdir/touch/rm etc.) |
 
 #### Admin (owner only)
 
@@ -275,7 +274,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `/open [shell]` | Open working directory |
 | `/clean [all]` | Clear history and cache |
 | `/reset-apikeycfg` | Reset API Key configuration |
-| `/cfg` | Register current group to config |
+| `/cfg` | Register current group to config (supports `--permissionMode` to set permission mode) |
 | `/auth [add\|del <user>]` | Manage group whitelist |
 
 ### Configuration
@@ -297,6 +296,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
       "whiteUserList": ["emp_id_1", "emp_id_2"],
       "agent": "specified_agent (optional)",
       "useLocalOcr": true,
+      "permissionMode": "bypassPermissions",
       "taskCfg": { "skill": "specified_skill (optional)" }
     }
   ],
@@ -305,8 +305,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
   "sessionMaxConcurrency": 20,
   "includeThinking": false,
   "resultOnly": true,
-  "debug": false,
-  "skipSandbox": false
+  "debug": false
 }
 ```
 
@@ -319,7 +318,8 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `apiKeyCfg` | API Key pooling: auto-switch on 429, daily reset at midnight |
 | `useLocalOcr` | Local image OCR (default `true`); set `false` if model supports images natively |
 | `linkConversationId` | Link groups to share one Claude session context |
-| `skipSandbox` | Skip sandbox for full filesystem access (default `false`) |
+| `permissionMode` | Claude process permission mode (default `bypassPermissions`), options: `default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk` |
+| `preBash` | Global pre-bash command for `/bash` |
 
 ### Data Storage
 
