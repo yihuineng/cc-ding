@@ -3,7 +3,7 @@ import { getHomeDir } from './session';
 import { CheckLevel, CheckResult, settingLabel } from './api-key-manager';
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import { commandExists } from './platform';
 
 export function printDoctorResults(results: CheckResult[]): void {
   console.log('');
@@ -238,10 +238,9 @@ export function runDoctor(clientDir: string): CheckResult[] {
   }
 
   // ---- 6. 命令可用性检查 ----
-  try {
-    execSync('which claude', { stdio: 'pipe' });
+  if (commandExists('claude')) {
     results.push(check('PASS', 'claude 命令可用'));
-  } catch {
+  } else {
     results.push(check('FATAL', 'claude 命令不可用，请确认 Claude Code CLI 已安装'));
   }
 

@@ -1,7 +1,6 @@
 import { baseUtil, dateUtil, fileUtil } from 'utils-ok';
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
 import { utils } from '../common';
 import type { DingClaude } from './cc-ding-cli';
 import { IClaudeSetting, ITask } from './types';
@@ -18,12 +17,20 @@ import {
   getForceEnabledSettingsPath,
   settingLabel,
 } from './api-key-manager';
+import { commandExists, spawnCommand } from './platform';
 
 const MAX_RETRY_COUNT = 3;
 /** 任务重置为待办后，延迟多久唤醒 handler 重试 */
 const RETRY_NOTIFY_DELAY_MS = 10_000;
 /** 队列空闲时的兜底扫描间隔（捕获外部写入的任务文件等异常场景） */
 const IDLE_SWEEP_INTERVAL_MS = 60_000;
+
+function formatClaudeCommandMissingMessage(command: string): string {
+  return [
+    `未检测到 Claude Code CLI 命令 ${command}`,
+    'Windows 下请确认 claude.cmd 所在目录已加入运行 cc-ding 的 PATH，并在安装/修改 PATH 后重启 PowerShell、PM2 或当前 cc-ding 进程。',
+  ].join('\n');
+}
 
 // ==================== 任务队列唤醒信号 ====================
 // 任务提交/重试时即时唤醒 handler，替代固定间隔轮询
@@ -500,6 +507,17 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
   const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000;
   const WATCHDOG_CHECK_INTERVAL_MS = 60 * 1000;
   const entryCmd = 'claude';
+  if (!commandExists(entryCmd)) {
+    const message = formatClaudeCommandMissingMessage(entryCmd);
+    const logContent = [
+      `[${timestamp()}] 执行命令: ${entryCmd} ${cmdArgs.join(' ')}`,
+      `[${timestamp()}] 退出码: 127`,
+      message,
+    ].join('\n');
+    fs.writeFileSync(logFile, logContent);
+    await failTask(self, taskDir, message);
+    return true;
+  }
 
   const runTaskOnce = (args: string[]): Promise<{ exitCode: number; output: string; elapsed: number }> => {
     const startTime = Date.now();
@@ -508,7 +526,7 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
       let exited = false;
       let lastActivityTime = Date.now();
 
-      const child = spawn(entryCmd, args, {
+      const child = spawnCommand(entryCmd, args, {
         cwd: conversationDir,
         stdio: [ 'ignore', 'pipe', 'pipe' ],
       });
@@ -555,8 +573,11 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
       });
 
       child.on('error', (err) => {
+        exited = true;
+        clearInterval(watchdogTimer);
         console.error('进程执行错误:', err);
         logChunks.push(`进程执行错误: ${err.message}`);
+        resolve({ exitCode: 1, output: logChunks.join(''), elapsed: Date.now() - startTime });
       });
     });
   };
