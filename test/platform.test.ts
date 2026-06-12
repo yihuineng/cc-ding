@@ -70,6 +70,8 @@ describe('platform helpers', () => {
   it('Claude 缺失提示复用同一份文案', () => {
     const message = formatClaudeCommandMissingMessage('claude');
     assert.ok(message.includes('`claude`'));
+    assert.ok(message.includes('Claude Code CLI 已安装'));
+    assert.ok(message.includes('进程 PATH'));
     assert.ok(message.includes('`claude.cmd`'));
   });
 });

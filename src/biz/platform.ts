@@ -129,7 +129,8 @@ export function buildWindowsCdCommand(dir: string): string {
 export function formatClaudeCommandMissingMessage(command: string): string {
   return [
     `未检测到 Claude Code CLI 命令 \`${command}\``,
-    'Windows 下请确认 `claude.cmd` 所在目录已加入运行 cc-ding 的 PATH，并在安装/修改 PATH 后重启 PowerShell、PM2 或当前 cc-ding 进程。',
+    '请确认 Claude Code CLI 已安装，并且运行 cc-ding 的进程 PATH 中可以访问该命令。安装或修改 PATH 后，请重启当前终端、PM2 或 cc-ding 进程。',
+    'Windows 补充：如果通过 npm 全局安装 Claude Code CLI，请确认 `claude.cmd` 所在目录已加入 PATH。',
   ].join('\n');
 }
 
