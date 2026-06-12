@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
+import { randomUUID } from 'crypto';
 import type { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IClaudeSetting, ISession } from './types';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
@@ -778,6 +779,14 @@ export async function executeClaudeQuery(
       if (!isRetry) {
         console.log(`[${timestamp()}] 恢复 Claude 会话: ${session.claudeSessionId}`);
       }
+    } else if (!isRetry) {
+      // 首轮会话：显式指定 session-id，确保 session 从开始就被持久化到磁盘，
+      // 这样后续 --resume 一定能找到该会话。不预先设置 claudeSessionId，
+      // 因为 Claude 可能在内部使用不同的 UUID；改为依赖 stream 中返回的真实 session_id。
+      const explicitSessionId = randomUUID();
+      cmdArgs.push('--session-id', explicitSessionId);
+      cmdArgs.push('--name', `cc-ding-${session.startTimeStr}`);
+      console.log(`[${timestamp()}] 创建 Claude 会话(显式 session-id): ${explicitSessionId}`);
     }
     const settingsPath = resolveClaudeSettingsPath(self, dingGroupDir, opts?.settings);
     if (settingsPath) {
