@@ -54,7 +54,7 @@ import { resetApiKeyCfg, scheduleApiKeyCfgDailyReset, startupCheck, saveClientCo
 import { resolveSecret } from './secrets';
 import { ICommandRoute, route } from './command-route';
 import { CronEngine, formatCronJobList, formatCronJobInfo, isValidCronExpression } from './cron';
-import { commandExists, isWindowsPlatform, spawnCommand } from './platform';
+import { buildWindowsCdCommand, commandExists, isWindowsPlatform, spawnCommand } from './platform';
 
 /** 工具版本号 */
 const TOOL_VERSION = projUtil().getPkgVersion();
@@ -1558,7 +1558,7 @@ export class DingClaude {
             if (platform === 'darwin') {
               await launchDetached('open', [ '-a', 'Terminal', conversationDir ]);
             } else if (isWindowsPlatform(platform)) {
-              await launchDetached('cmd.exe', [ '/K', 'cd', '/d', conversationDir ]);
+              await launchDetached('cmd.exe', [ '/d', '/s', '/v:off', '/K', buildWindowsCdCommand(conversationDir) ]);
             } else if (commandExists('x-terminal-emulator')) {
               await launchDetached('x-terminal-emulator', [], conversationDir);
             } else {

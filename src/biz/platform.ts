@@ -5,6 +5,7 @@ import type { ChildProcess, SpawnOptions } from 'child_process';
 
 const DEFAULT_WINDOWS_PATH_EXT = '.COM;.EXE;.BAT;.CMD';
 const WINDOWS_SHELL_SCRIPT_EXTENSIONS = new Set([ '.cmd', '.bat' ]);
+const WINDOWS_CMD_PREFIX_ARGS = [ '/d', '/s', '/v:off' ];
 
 interface CommandLookupOptions {
   platform?: NodeJS.Platform;
@@ -117,6 +118,21 @@ export function buildWindowsCommandLineForCmd(command: string, args: string[]): 
   return [ command, ...args ].map(quoteWindowsCommandArg).join(' ');
 }
 
+export function buildWindowsCmdArgs(command: string, args: string[]): string[] {
+  return [ ...WINDOWS_CMD_PREFIX_ARGS, '/c', buildWindowsCommandLineForCmd(command, args) ];
+}
+
+export function buildWindowsCdCommand(dir: string): string {
+  return `cd /d ${quoteWindowsCommandArg(dir)}`;
+}
+
+export function formatClaudeCommandMissingMessage(command: string): string {
+  return [
+    `未检测到 Claude Code CLI 命令 \`${command}\``,
+    'Windows 下请确认 `claude.cmd` 所在目录已加入运行 cc-ding 的 PATH，并在安装/修改 PATH 后重启 PowerShell、PM2 或当前 cc-ding 进程。',
+  ].join('\n');
+}
+
 function isWindowsShellScript(command: string): boolean {
   return WINDOWS_SHELL_SCRIPT_EXTENSIONS.has(path.extname(command).toLowerCase());
 }
@@ -124,7 +140,7 @@ function isWindowsShellScript(command: string): boolean {
 export function spawnCommand(command: string, args: string[], options: SpawnOptions = {}): ChildProcess {
   const resolved = resolveExecutable(command) || command;
   if (isWindowsPlatform() && isWindowsShellScript(resolved)) {
-    return spawn('cmd.exe', [ '/d', '/s', '/c', buildWindowsCommandLineForCmd(resolved, args) ], options);
+    return spawn('cmd.exe', buildWindowsCmdArgs(resolved, args), options);
   }
   return spawn(resolved, args, options);
 }

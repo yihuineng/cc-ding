@@ -16,7 +16,7 @@ import {
   settingLabel,
 } from './api-key-manager';
 import { resolveSecret } from './secrets';
-import { commandExists, spawnCommand } from './platform';
+import { commandExists, formatClaudeCommandMissingMessage, spawnCommand } from './platform';
 
 const MAX_FAST_FAIL = 20;
 const API_RETRY_DELAY_MS = 10_000;
@@ -131,13 +131,6 @@ class ContextWindowExceededError extends Error {
     super('Context window exceeded: prompt tokens exceed maximum context window');
     this.name = 'ContextWindowExceededError';
   }
-}
-
-function formatClaudeCommandMissingMessage(command: string): string {
-  return [
-    `未检测到 Claude Code CLI 命令 \`${command}\``,
-    'Windows 下请确认 `claude.cmd` 所在目录已加入运行 cc-ding 的 PATH，并在安装/修改 PATH 后重启 PowerShell、PM2 或当前 cc-ding 进程。',
-  ].join('\n');
 }
 
 function readLastLogLines(logPath: string, n: number): string {
@@ -711,6 +704,7 @@ export async function executeClaudeQuery(
       sessionWebhook: getReplyWebhook(session),
       atUserId: senderStaffId || session.startStaffId,
       content: `❌ ${message}`,
+      msgType: 'markdown',
     });
     return;
   }

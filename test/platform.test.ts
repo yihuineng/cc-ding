@@ -3,7 +3,10 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
+  buildWindowsCdCommand,
+  buildWindowsCmdArgs,
   buildWindowsCommandLineForCmd,
+  formatClaudeCommandMissingMessage,
   getExecutableCandidates,
   quoteWindowsCommandArg,
   resolveExecutable,
@@ -51,5 +54,22 @@ describe('platform helpers', () => {
 
     const line = buildWindowsCommandLineForCmd('C:\\Program Files\\Claude\\claude.cmd', [ '--print', 'hello world' ]);
     assert.strictEqual(line, '"C:\\Program Files\\Claude\\claude.cmd" --print "hello world"');
+  });
+
+  it('cmd.exe 参数显式关闭 delayed expansion', () => {
+    assert.deepStrictEqual(
+      buildWindowsCmdArgs('C:\\Claude\\claude.cmd', [ '--print', 'hello!' ]),
+      [ '/d', '/s', '/v:off', '/c', 'C:\\Claude\\claude.cmd --print "hello!"' ],
+    );
+  });
+
+  it('Windows cd 命令对路径做 quoting', () => {
+    assert.strictEqual(buildWindowsCdCommand('C:\\Program Files\\cc ding'), 'cd /d "C:\\Program Files\\cc ding"');
+  });
+
+  it('Claude 缺失提示复用同一份文案', () => {
+    const message = formatClaudeCommandMissingMessage('claude');
+    assert.ok(message.includes('`claude`'));
+    assert.ok(message.includes('`claude.cmd`'));
   });
 });

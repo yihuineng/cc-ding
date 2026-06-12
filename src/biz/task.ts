@@ -17,20 +17,13 @@ import {
   getForceEnabledSettingsPath,
   settingLabel,
 } from './api-key-manager';
-import { commandExists, spawnCommand } from './platform';
+import { commandExists, formatClaudeCommandMissingMessage, spawnCommand } from './platform';
 
 const MAX_RETRY_COUNT = 3;
 /** 任务重置为待办后，延迟多久唤醒 handler 重试 */
 const RETRY_NOTIFY_DELAY_MS = 10_000;
 /** 队列空闲时的兜底扫描间隔（捕获外部写入的任务文件等异常场景） */
 const IDLE_SWEEP_INTERVAL_MS = 60_000;
-
-function formatClaudeCommandMissingMessage(command: string): string {
-  return [
-    `未检测到 Claude Code CLI 命令 ${command}`,
-    'Windows 下请确认 claude.cmd 所在目录已加入运行 cc-ding 的 PATH，并在安装/修改 PATH 后重启 PowerShell、PM2 或当前 cc-ding 进程。',
-  ].join('\n');
-}
 
 // ==================== 任务队列唤醒信号 ====================
 // 任务提交/重试时即时唤醒 handler，替代固定间隔轮询
