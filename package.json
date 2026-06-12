@@ -43,9 +43,9 @@
   "scripts": {
     "lint": "eslint . && tsc && npm run blacklint",
     "lint:fix": "eslint . --fix",
-    "blacklint": "utils-ok blacklint --blacklintDir 'src bin'",
-    "test": "mocha 'test/**/*.test.ts'",
-    "build": "npm run lint && npm run test && sh build.sh",
+    "blacklint": "utils-ok blacklint --blacklintDir \"src bin\"",
+    "test": "mocha \"test/**/*.test.ts\"",
+    "build": "npm run lint && npm run test && node scripts/build.mjs",
     "prepublishOnly": "npm run build"
   },
   "files": [

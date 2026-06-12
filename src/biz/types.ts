@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import type { ChildProcess } from 'child_process';
 import { RobotTextMessage } from 'utils-ok';
 
 // config.json
@@ -100,7 +100,7 @@ export interface IActiveSession {
   lastSenderStaffId: string;
   isProcessing: boolean;
   conversationConfig: IConfig['conversations'][0];
-  currentProcess?: ReturnType<typeof spawn>; // 当前执行的 Claude 进程
+  currentProcess?: ChildProcess; // 当前执行的 Claude 进程
   interrupted?: boolean; // 是否被用户中断
   goonPending?: boolean; // 是否收到 /goon 请求，待重启
   lastActivityTime?: number; // 最近一次 Claude 进程活动时间（watchdog 用）

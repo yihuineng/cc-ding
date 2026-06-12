@@ -2,11 +2,13 @@ import { ProjUtil, fileUtil } from 'utils-ok';
 import path from 'path';
 import assert from 'assert';
 import fs from 'fs';
+import os from 'os';
 
 export function loadEnv() {
-  if (fs.existsSync(`${process.env.HOME}/.cc-ding/.env`)) {
+  const userEnvPath = path.join(os.homedir(), '.cc-ding', '.env');
+  if (fs.existsSync(userEnvPath)) {
     require('dotenv')
-      .config({ path: `${process.env.HOME}/.cc-ding/.env` });
+      .config({ path: userEnvPath });
   }
   require('dotenv').config();
 }
@@ -54,4 +56,3 @@ export const utils = {
     fs.renameSync(filePath, newPath);
   },
 };
-

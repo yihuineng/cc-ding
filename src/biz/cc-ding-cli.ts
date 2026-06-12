@@ -54,7 +54,7 @@ import { resetApiKeyCfg, scheduleApiKeyCfgDailyReset, startupCheck, saveClientCo
 import { resolveSecret } from './secrets';
 import { ICommandRoute, route } from './command-route';
 import { CronEngine, formatCronJobList, formatCronJobInfo, isValidCronExpression } from './cron';
-import { isWindows } from './platform';
+import { commandExists, isWindows, isWindowsPlatform, spawnCommand } from './platform';
 
 /** 工具版本号 */
 const TOOL_VERSION = projUtil().getPkgVersion();
@@ -1509,15 +1509,30 @@ export class DingClaude {
         if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
 
         const conversationDir = this.getConversationDir(conversationId);
-        const { exec } = await import('child_process');
         const platform = process.platform;
+        const launchDetached = (command: string, args: string[], cwd?: string) => new Promise<void>((resolve, reject) => {
+          const child = spawnCommand(command, args, {
+            cwd,
+            detached: true,
+            stdio: 'ignore',
+          });
+          child.once('error', reject);
+          child.once('spawn', () => {
+            child.unref();
+            resolve();
+          });
+        });
 
         try {
           if (openTarget === 'folder') {
             if (platform === 'darwin') {
-              exec(`open "${conversationDir}"`);
+              await launchDetached('open', [ conversationDir ]);
+            } else if (isWindowsPlatform(platform)) {
+              await launchDetached('explorer.exe', [ conversationDir ]);
+            } else if (commandExists('xdg-open')) {
+              await launchDetached('xdg-open', [ conversationDir ]);
             } else {
-              exec(`explorer "${conversationDir}"`);
+              throw new Error('未检测到可用的文件管理器打开命令');
             }
             await this.sendDingMessage({
               conversationId, sessionWebhook,
@@ -1525,32 +1540,29 @@ export class DingClaude {
               msgType: 'markdown',
             });
           } else if (openTarget === 'code') {
-            // 跨平台检查 VS Code `code` 命令
-            const whichCmd = isWindows() ? 'where code' : 'which code';
-            exec(whichCmd, (err) => {
-              if (err) {
-                this.sendDingMessage({
-                  conversationId, sessionWebhook,
-                  content: '❌ 未检测到 VS Code `code` 命令\n请安装 VS Code 并将 `code` 添加到 PATH',
-                  msgType: 'markdown',
-                });
-                return;
-              }
-              exec(`code "${conversationDir}"`);
-              this.sendDingMessage({
+            if (!commandExists('code')) {
+              await this.sendDingMessage({
                 conversationId, sessionWebhook,
-                content: `💻 已在 VS Code 中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
+                content: '❌ 未检测到 VS Code `code` 命令\n请安装 VS Code 并确认 `code` 已加入 PATH',
                 msgType: 'markdown',
               });
+              return;
+            }
+            await launchDetached('code', [ conversationDir ]);
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: `💻 已在 VS Code 中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
+              msgType: 'markdown',
             });
           } else {
             if (platform === 'darwin') {
-              exec(`open -a Terminal "${conversationDir}"`);
-            } else if (platform === 'win32') {
-              exec(`start "" cmd /k "cd /d "${conversationDir}""`, { shell: 'cmd.exe' });
+              await launchDetached('open', [ '-a', 'Terminal', conversationDir ]);
+            } else if (isWindowsPlatform(platform)) {
+              await launchDetached('cmd.exe', [ '/K', 'cd', '/d', conversationDir ]);
+            } else if (commandExists('x-terminal-emulator')) {
+              await launchDetached('x-terminal-emulator', [], conversationDir);
             } else {
-              // Linux: 尝试常见终端
-              exec(`xdg-open "${conversationDir}"`);
+              throw new Error('未检测到可用的终端打开命令');
             }
             await this.sendDingMessage({
               conversationId, sessionWebhook,
@@ -1592,7 +1604,8 @@ export class DingClaude {
         const preBashParts: string[] = [];
         if (this.config.preBash) preBashParts.push(this.config.preBash);
         if (conversationConfig?.preBash) preBashParts.push(conversationConfig.preBash);
-        const finalCmd = preBashParts.length > 0 ? `${preBashParts.join(' ; ')} ; ${bashCmd}` : bashCmd;
+        const shellJoiner = isWindowsPlatform() ? ' && ' : ' ; ';
+        const finalCmd = preBashParts.length > 0 ? [ ...preBashParts, bashCmd ].join(shellJoiner) : bashCmd;
         const self = this;
 
         childExec(finalCmd, {

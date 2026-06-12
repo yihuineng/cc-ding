@@ -1,12 +1,11 @@
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
 import type { DingClaude } from './cc-ding-cli';
 import { IClaudeSetting } from './types';
 import { timestamp, getHomeDir } from './session';
 import { dateUtil } from 'utils-ok';
 import { resolveSecret, isEnvRef } from './secrets';
-import { isWindows } from './platform';
+import { commandExists, isWindows } from './platform';
 
 /**
  * 保存 config.json 到磁盘
@@ -400,10 +399,9 @@ export function startupCheck(self: DingClaude): void {
   }
 
   // ---- 5. claude 命令可用性 ----
-  try {
-    execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { stdio: 'pipe' });
+  if (commandExists('claude')) {
     results.push({ level: 'PASS', message: 'claude 命令可用' });
-  } catch {
+  } else {
     results.push({ level: 'FATAL', message: 'claude 命令不可用，请确认 Claude Code CLI 已安装' });
   }
 

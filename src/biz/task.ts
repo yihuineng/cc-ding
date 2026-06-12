@@ -1,7 +1,6 @@
 import { asyncUtil, dateUtil, fileUtil } from 'utils-ok';
 import fs from 'fs';
 import path from 'path';
-import { spawn } from 'child_process';
 import { utils } from '../common';
 import type { DingClaude } from './cc-ding-cli';
 import { IClaudeSetting, ITask } from './types';
@@ -18,6 +17,7 @@ import {
   getForceEnabledSettingsPath,
   settingLabel,
 } from './api-key-manager';
+import { commandExists, formatClaudeCommandMissingMessage, spawnCommand } from './platform';
 
 const MAX_RETRY_COUNT = 3;
 /** 任务重置为待办后，延迟多久唤醒 handler 重试 */
@@ -500,6 +500,17 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
   const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000;
   const WATCHDOG_CHECK_INTERVAL_MS = 60 * 1000;
   const entryCmd = 'claude';
+  if (!commandExists(entryCmd)) {
+    const message = formatClaudeCommandMissingMessage(entryCmd);
+    const logContent = [
+      `[${timestamp()}] 执行命令: ${entryCmd} ${cmdArgs.join(' ')}`,
+      `[${timestamp()}] 退出码: 127`,
+      message,
+    ].join('\n');
+    fs.writeFileSync(logFile, logContent);
+    await failTask(self, taskDir, message);
+    return true;
+  }
 
   const runTaskOnce = (args: string[]): Promise<{ exitCode: number; output: string; elapsed: number }> => {
     const startTime = Date.now();
@@ -508,7 +519,7 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
       let exited = false;
       let lastActivityTime = Date.now();
 
-      const child = spawn(entryCmd, args, {
+      const child = spawnCommand(entryCmd, args, {
         cwd: conversationDir,
         stdio: [ 'ignore', 'pipe', 'pipe' ],
       });
@@ -555,8 +566,11 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
       });
 
       child.on('error', (err) => {
+        exited = true;
+        clearInterval(watchdogTimer);
         console.error('进程执行错误:', err);
         logChunks.push(`进程执行错误: ${err.message}`);
+        resolve({ exitCode: 1, output: logChunks.join(''), elapsed: Date.now() - startTime });
       });
     });
   };
