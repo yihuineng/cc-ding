@@ -1,4 +1,5 @@
 import { timestamp } from './session';
+import { isWindows } from './platform';
 import fs from 'fs';
 import path from 'path';
 
@@ -34,6 +35,9 @@ export function acquirePidLock(clientDir: string, clientId: string): void {
     try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
   };
   process.on('exit', cleanup);
-  process.on('SIGINT', () => { cleanup(); process.exit(130); });
-  process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+  // SIGINT/SIGTERM 在 Windows 上部分场景不支持，仅 Unix 注册
+  if (!isWindows()) {
+    process.on('SIGINT', () => { cleanup(); process.exit(130); });
+    process.on('SIGTERM', () => { cleanup(); process.exit(143); });
+  }
 }

@@ -1,11 +1,11 @@
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
 import type { DingClaude } from './cc-ding-cli';
 import { IClaudeSetting } from './types';
 import { timestamp, getHomeDir } from './session';
 import { dateUtil } from 'utils-ok';
 import { resolveSecret, isEnvRef } from './secrets';
+import { commandExists, isWindows } from './platform';
 
 /**
  * 保存 config.json 到磁盘
@@ -14,8 +14,8 @@ export function saveClientConfig(self: DingClaude): void {
   const configPath = `${self.getClientDir()}/config.json`;
   try {
     // 配置包含密钥，限制为仅 owner 可读写
-    fs.writeFileSync(configPath, JSON.stringify(self.config, null, 2), { encoding: 'utf-8', mode: 0o600 });
-    fs.chmodSync(configPath, 0o600);
+    fs.writeFileSync(configPath, JSON.stringify(self.config, null, 2), { encoding: 'utf-8', mode: isWindows() ? undefined : 0o600 });
+    if (!isWindows()) fs.chmodSync(configPath, 0o600);
   } catch (err) {
     console.error(`[${timestamp()}] 保存 config.json 失败:`, err);
   }
@@ -171,8 +171,8 @@ export function ensureSettingsWithApiKey(workDir: string, setting: IClaudeSettin
   if (changed) {
     fs.mkdirSync(claudeDir, { recursive: true });
     // settings-ding.json 含明文 API Key，限制为仅 owner 可读写
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { encoding: 'utf-8', mode: 0o600 });
-    fs.chmodSync(settingsPath, 0o600);
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { encoding: 'utf-8', mode: isWindows() ? undefined : 0o600 });
+    if (!isWindows()) fs.chmodSync(settingsPath, 0o600);
     console.log(`[${timestamp()}] 已写入 Claude 配置到 ${settingsPath} (${settingLabel(setting)}, model: ${setting.model}, smallModel: ${effectiveSmallModel})`);
   }
 
@@ -312,14 +312,17 @@ export function startupCheck(self: DingClaude): void {
     }
   }
   // config.json 文件权限检查（包含密钥，应为 0600）
-  const cfgFilePath = path.join(clientDir, 'config.json');
-  try {
-    const mode = fs.statSync(cfgFilePath).mode & 0o777;
-    if (mode & 0o077) {
-      fs.chmodSync(cfgFilePath, 0o600);
-      results.push({ level: 'WARN', message: `config.json 权限过宽 (${mode.toString(8)})，已自动收紧为 600` });
-    }
-  } catch { /* ignore */ }
+  // Windows 无 POSIX 权限概念，跳过
+  if (!isWindows()) {
+    const cfgFilePath = path.join(clientDir, 'config.json');
+    try {
+      const mode = fs.statSync(cfgFilePath).mode & 0o777;
+      if (mode & 0o077) {
+        fs.chmodSync(cfgFilePath, 0o600);
+        results.push({ level: 'WARN', message: `config.json 权限过宽 (${mode.toString(8)})，已自动收紧为 600` });
+      }
+    } catch { /* ignore */ }
+  }
   // $ENV: 引用可解析性检查
   const envRefChecks: { value?: string; label: string }[] = [
     { value: config.clientSecret, label: 'clientSecret' },
@@ -396,10 +399,9 @@ export function startupCheck(self: DingClaude): void {
   }
 
   // ---- 5. claude 命令可用性 ----
-  try {
-    execSync('which claude', { stdio: 'pipe' });
+  if (commandExists('claude')) {
     results.push({ level: 'PASS', message: 'claude 命令可用' });
-  } catch {
+  } else {
     results.push({ level: 'FATAL', message: 'claude 命令不可用，请确认 Claude Code CLI 已安装' });
   }
 

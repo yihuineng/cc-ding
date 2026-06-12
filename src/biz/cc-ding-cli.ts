@@ -54,6 +54,7 @@ import { resetApiKeyCfg, scheduleApiKeyCfgDailyReset, startupCheck, saveClientCo
 import { resolveSecret } from './secrets';
 import { ICommandRoute, route } from './command-route';
 import { CronEngine, formatCronJobList, formatCronJobInfo, isValidCronExpression } from './cron';
+import { commandExists, isWindows, isWindowsPlatform, spawnCommand } from './platform';
 
 /** 工具版本号 */
 const TOOL_VERSION = projUtil().getPkgVersion();
@@ -199,7 +200,7 @@ export class DingClaude {
     try {
       const auditFile = path.join(this.getClientDir(), 'bash-audit.log');
       const line = `[${timestamp()}] conversation=${conversationId} user=${senderStaffId} cmd=${JSON.stringify(cmd)}\n`;
-      fs.appendFileSync(auditFile, line, { encoding: 'utf-8', mode: 0o600 });
+      fs.appendFileSync(auditFile, line, { encoding: 'utf-8', mode: isWindows() ? undefined : 0o600 });
     } catch (err) {
       console.error('写入 bash 审计日志失败:', err);
     }
@@ -1508,15 +1509,30 @@ export class DingClaude {
         if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
 
         const conversationDir = this.getConversationDir(conversationId);
-        const { exec } = await import('child_process');
         const platform = process.platform;
+        const launchDetached = (command: string, args: string[], cwd?: string) => new Promise<void>((resolve, reject) => {
+          const child = spawnCommand(command, args, {
+            cwd,
+            detached: true,
+            stdio: 'ignore',
+          });
+          child.once('error', reject);
+          child.once('spawn', () => {
+            child.unref();
+            resolve();
+          });
+        });
 
         try {
           if (openTarget === 'folder') {
             if (platform === 'darwin') {
-              exec(`open "${conversationDir}"`);
+              await launchDetached('open', [ conversationDir ]);
+            } else if (isWindowsPlatform(platform)) {
+              await launchDetached('explorer.exe', [ conversationDir ]);
+            } else if (commandExists('xdg-open')) {
+              await launchDetached('xdg-open', [ conversationDir ]);
             } else {
-              exec(`explorer "${conversationDir}"`);
+              throw new Error('未检测到可用的文件管理器打开命令');
             }
             await this.sendDingMessage({
               conversationId, sessionWebhook,
@@ -1524,27 +1540,29 @@ export class DingClaude {
               msgType: 'markdown',
             });
           } else if (openTarget === 'code') {
-            exec('which code', (err) => {
-              if (err) {
-                this.sendDingMessage({
-                  conversationId, sessionWebhook,
-                  content: '❌ 未检测到 VS Code `code` 命令\n请安装 VS Code 并通过 Command Palette 安装 Shell Command',
-                  msgType: 'markdown',
-                });
-                return;
-              }
-              exec(`code "${conversationDir}"`);
-              this.sendDingMessage({
+            if (!commandExists('code')) {
+              await this.sendDingMessage({
                 conversationId, sessionWebhook,
-                content: `💻 已在 VS Code 中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
+                content: '❌ 未检测到 VS Code `code` 命令\n请安装 VS Code 并确认 `code` 已加入 PATH',
                 msgType: 'markdown',
               });
+              return;
+            }
+            await launchDetached('code', [ conversationDir ]);
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: `💻 已在 VS Code 中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
+              msgType: 'markdown',
             });
           } else {
             if (platform === 'darwin') {
-              exec(`open -a Terminal "${conversationDir}"`);
+              await launchDetached('open', [ '-a', 'Terminal', conversationDir ]);
+            } else if (isWindowsPlatform(platform)) {
+              await launchDetached('cmd.exe', [ '/K', 'cd', '/d', conversationDir ]);
+            } else if (commandExists('x-terminal-emulator')) {
+              await launchDetached('x-terminal-emulator', [], conversationDir);
             } else {
-              exec(`start cmd /k "cd /d ${conversationDir}"`, { shell: 'cmd.exe' });
+              throw new Error('未检测到可用的终端打开命令');
             }
             await this.sendDingMessage({
               conversationId, sessionWebhook,
@@ -1586,7 +1604,8 @@ export class DingClaude {
         const preBashParts: string[] = [];
         if (this.config.preBash) preBashParts.push(this.config.preBash);
         if (conversationConfig?.preBash) preBashParts.push(conversationConfig.preBash);
-        const finalCmd = preBashParts.length > 0 ? `${preBashParts.join(' ; ')} ; ${bashCmd}` : bashCmd;
+        const shellJoiner = isWindowsPlatform() ? ' && ' : ' ; ';
+        const finalCmd = preBashParts.length > 0 ? [ ...preBashParts, bashCmd ].join(shellJoiner) : bashCmd;
         const self = this;
 
         childExec(finalCmd, {
@@ -1983,7 +2002,12 @@ export class DingClaude {
         if (activeSession.currentProcess) {
           console.log(`[${timestamp()}] /goon: 终止当前 Claude 进程`);
           activeSession.interrupted = true;
-          activeSession.currentProcess.kill('SIGINT');
+          // Windows 不支持 SIGINT，使用默认 kill
+          if (isWindows()) {
+            activeSession.currentProcess.kill();
+          } else {
+            activeSession.currentProcess.kill('SIGINT');
+          }
           await this.sendDingMessage({
             conversationId, sessionWebhook,
             content: '🔄 正在重启 Claude 进程...',

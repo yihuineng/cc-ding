@@ -9,6 +9,7 @@ import { IActiveSession, IActiveSessionPersist, IConfig, ISession } from './type
 import { parseEndCommand } from './commands';
 import { sendDingMessage, queryUserIdByMobile, queryDingUser } from './messaging';
 import { interruptClaudeProcess, executeClaudeQuery } from './claude-process';
+import { isWindows } from './platform';
 
 /**
  * 获取当前时间戳字符串 (YYYY-MM-DD HH:mm:ss)
@@ -37,8 +38,8 @@ export function initClientDir(clientId: string, config: IConfig): string {
   const cfgFile = path.join(clientDir, 'config.json');
   fs.mkdirSync(clientDir, { recursive: true });
   // 配置包含密钥，限制为仅 owner 可读写
-  fs.writeFileSync(cfgFile, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: 0o600 });
-  fs.chmodSync(cfgFile, 0o600);
+  fs.writeFileSync(cfgFile, JSON.stringify(config, null, 2), { encoding: 'utf-8', mode: isWindows() ? undefined : 0o600 });
+  if (!isWindows()) fs.chmodSync(cfgFile, 0o600);
   return cfgFile;
 }
 
@@ -75,7 +76,7 @@ export function ensureClientDir(clientId: string): void {
 export function getClientConfig(self: DingClaude): IConfig {
   const appCfgFile = `${getClientDir(self)}/config.json`;
   assert(fs.existsSync(appCfgFile), `Could not find client config file: ${appCfgFile}`);
-  const cfg = fileUtil.getJSON(appCfgFile);
+  const cfg = fileUtil.getJSON(appCfgFile) as IConfig;
   assert(cfg.clientSecret, 'config.json missing required field: clientSecret');
   assert(cfg.whiteUserList, 'config.json missing required field: whiteUserList');
   return cfg;

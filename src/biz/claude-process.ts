@@ -1,7 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
-import { spawn } from 'child_process';
 import type { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IClaudeSetting, ISession } from './types';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
@@ -17,6 +16,7 @@ import {
   settingLabel,
 } from './api-key-manager';
 import { resolveSecret } from './secrets';
+import { commandExists, formatClaudeCommandMissingMessage, isWindows, spawnCommand } from './platform';
 
 const MAX_FAST_FAIL = 20;
 const API_RETRY_DELAY_MS = 10_000;
@@ -227,7 +227,12 @@ export function interruptClaudeProcess(activeSession: IActiveSession, logReason:
   }
   console.log(`[${timestamp()}] ${logReason}`);
   activeSession.interrupted = true;
-  activeSession.currentProcess.kill('SIGINT');
+  // Windows 不支持 SIGINT，使用默认 kill（TerminateProcess）
+  if (isWindows()) {
+    activeSession.currentProcess.kill();
+  } else {
+    activeSession.currentProcess.kill('SIGINT');
+  }
   return true;
 }
 
@@ -256,7 +261,7 @@ function runClaudeOnce(
   const startTime = Date.now();
 
   return new Promise((resolve, reject) => {
-    const child = spawn(entryCmd, cmdArgs, {
+    const child = spawnCommand(entryCmd, cmdArgs, {
       cwd: dingGroupDir,
       stdio: [ 'pipe', 'pipe', 'pipe' ],
     });
@@ -695,6 +700,18 @@ export async function executeClaudeQuery(
   self.appendSessionLog(sessionDir, 'user', messageWithPrefix);
 
   const entryCmd = 'claude';
+  if (!commandExists(entryCmd)) {
+    const message = formatClaudeCommandMissingMessage(entryCmd);
+    console.error(`[${timestamp()}] ${message.replace(/\n/g, ' ')}`);
+    fs.appendFileSync(sessionLog, `[${timestamp()}] [ERROR]: ${message}\n`, 'utf-8');
+    await sendDingMessage(self, {
+      conversationId: getReplyConversationId(session),
+      sessionWebhook: getReplyWebhook(session),
+      atUserId: senderStaffId || session.startStaffId,
+      content: `❌ ${message}`,
+    });
+    return;
+  }
   // 默认 acceptEdits（安全默认值）；如需绕过所有权限确认，需在配置中显式设置 bypassPermissions
   const permissionMode = opts?.permissionMode ?? 'acceptEdits';
   const fixedCmdArgs = [
