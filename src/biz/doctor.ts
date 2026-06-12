@@ -239,7 +239,7 @@ export function runDoctor(clientDir: string): CheckResult[] {
 
   // ---- 6. 命令可用性检查 ----
   try {
-    execSync('which claude', { stdio: 'pipe' });
+    execSync(process.platform === 'win32' ? 'where claude' : 'which claude', { stdio: 'pipe' });
     results.push(check('PASS', 'claude 命令可用'));
   } catch {
     results.push(check('FATAL', 'claude 命令不可用，请确认 Claude Code CLI 已安装'));

@@ -1,4 +1,4 @@
-import { baseUtil, dateUtil, fileUtil } from 'utils-ok';
+import { asyncUtil, dateUtil, fileUtil } from 'utils-ok';
 import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
@@ -635,7 +635,7 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
               const settingsPath = ensureSettingsWithApiKey(conversationDir, currentSetting);
               updateCmdArgsSettings(cmdArgs, settingsPath);
               console.log(`[${timestamp()}] TPM 限流连续快速失败 ${MAX_FAST_FAIL} 次，切换到新 Key: ${settingLabel(newSetting)}`);
-              await baseUtil.sleep(RETRY_DELAY_MS);
+              await asyncUtil.sleep(RETRY_DELAY_MS);
               continue;
             }
             // 无可用 Key，继续原有重试逻辑
@@ -658,7 +658,7 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
           consecutiveFastFail = 0;
           console.log(`[${timestamp()}] 检测到 TPM 限流(进程已运行一段时间)，重置快速失败计数，${RETRY_DELAY_MS / 1000}s 后重试`);
         }
-        await baseUtil.sleep(RETRY_DELAY_MS);
+        await asyncUtil.sleep(RETRY_DELAY_MS);
         continue;
       }
     }

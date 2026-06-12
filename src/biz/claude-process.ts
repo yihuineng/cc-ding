@@ -17,6 +17,7 @@ import {
   settingLabel,
 } from './api-key-manager';
 import { resolveSecret } from './secrets';
+import { isWindows } from './platform';
 
 const MAX_FAST_FAIL = 20;
 const API_RETRY_DELAY_MS = 10_000;
@@ -227,7 +228,12 @@ export function interruptClaudeProcess(activeSession: IActiveSession, logReason:
   }
   console.log(`[${timestamp()}] ${logReason}`);
   activeSession.interrupted = true;
-  activeSession.currentProcess.kill('SIGINT');
+  // Windows 不支持 SIGINT，使用默认 kill（TerminateProcess）
+  if (isWindows()) {
+    activeSession.currentProcess.kill();
+  } else {
+    activeSession.currentProcess.kill('SIGINT');
+  }
   return true;
 }
 

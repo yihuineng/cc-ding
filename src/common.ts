@@ -34,7 +34,7 @@ export const helper = {
     const cookieInfo: {
       cookies: any[];
       date: string;
-    } = fileUtil.getJSON(cookieFile);
+    } = fileUtil.getJSON(cookieFile) as { cookies: any[]; date: string };
     return cookieInfo.cookies;
   },
 };

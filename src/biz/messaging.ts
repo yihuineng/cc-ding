@@ -1,4 +1,4 @@
-import { baseUtil } from 'utils-ok';
+import { asyncUtil } from 'utils-ok';
 import urllib from 'urllib';
 import type { DingClaude } from './cc-ding-cli';
 import { ISendMsgOpts, IDingUserDetail } from './types';
@@ -316,7 +316,7 @@ export async function sendClaudeResponseToDing(
         msgType: 'markdown',
       });
       if (i < chunks.length - 1) {
-        await baseUtil.sleep(500);
+        await asyncUtil.sleep(500);
       }
     }
   }

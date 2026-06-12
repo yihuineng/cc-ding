@@ -54,6 +54,7 @@ import { resetApiKeyCfg, scheduleApiKeyCfgDailyReset, startupCheck, saveClientCo
 import { resolveSecret } from './secrets';
 import { ICommandRoute, route } from './command-route';
 import { CronEngine, formatCronJobList, formatCronJobInfo, isValidCronExpression } from './cron';
+import { isWindows } from './platform';
 
 /** 工具版本号 */
 const TOOL_VERSION = projUtil().getPkgVersion();
@@ -199,7 +200,7 @@ export class DingClaude {
     try {
       const auditFile = path.join(this.getClientDir(), 'bash-audit.log');
       const line = `[${timestamp()}] conversation=${conversationId} user=${senderStaffId} cmd=${JSON.stringify(cmd)}\n`;
-      fs.appendFileSync(auditFile, line, { encoding: 'utf-8', mode: 0o600 });
+      fs.appendFileSync(auditFile, line, { encoding: 'utf-8', mode: isWindows() ? undefined : 0o600 });
     } catch (err) {
       console.error('写入 bash 审计日志失败:', err);
     }
@@ -1524,11 +1525,13 @@ export class DingClaude {
               msgType: 'markdown',
             });
           } else if (openTarget === 'code') {
-            exec('which code', (err) => {
+            // 跨平台检查 VS Code `code` 命令
+            const whichCmd = isWindows() ? 'where code' : 'which code';
+            exec(whichCmd, (err) => {
               if (err) {
                 this.sendDingMessage({
                   conversationId, sessionWebhook,
-                  content: '❌ 未检测到 VS Code `code` 命令\n请安装 VS Code 并通过 Command Palette 安装 Shell Command',
+                  content: '❌ 未检测到 VS Code `code` 命令\n请安装 VS Code 并将 `code` 添加到 PATH',
                   msgType: 'markdown',
                 });
                 return;
@@ -1543,8 +1546,11 @@ export class DingClaude {
           } else {
             if (platform === 'darwin') {
               exec(`open -a Terminal "${conversationDir}"`);
+            } else if (platform === 'win32') {
+              exec(`start "" cmd /k "cd /d "${conversationDir}""`, { shell: 'cmd.exe' });
             } else {
-              exec(`start cmd /k "cd /d ${conversationDir}"`, { shell: 'cmd.exe' });
+              // Linux: 尝试常见终端
+              exec(`xdg-open "${conversationDir}"`);
             }
             await this.sendDingMessage({
               conversationId, sessionWebhook,
@@ -1983,7 +1989,12 @@ export class DingClaude {
         if (activeSession.currentProcess) {
           console.log(`[${timestamp()}] /goon: 终止当前 Claude 进程`);
           activeSession.interrupted = true;
-          activeSession.currentProcess.kill('SIGINT');
+          // Windows 不支持 SIGINT，使用默认 kill
+          if (isWindows()) {
+            activeSession.currentProcess.kill();
+          } else {
+            activeSession.currentProcess.kill('SIGINT');
+          }
           await this.sendDingMessage({
             conversationId, sessionWebhook,
             content: '🔄 正在重启 Claude 进程...',
