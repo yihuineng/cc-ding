@@ -755,9 +755,10 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   saveActiveSession(self, conversationId);
 
   if (activeSession.conversationConfig.receiveReply !== false) {
+    const preview = message.length > 50 ? message.substring(0, 50) + '…' : message;
     await sendDingMessage(self, {
-      conversationId, sessionWebhook,
-      content: '✅ 收到，我来处理...',
+      conversationId, sessionWebhook, atUserId: senderStaffId,
+      content: `🚀 开始处理消息「${preview}」`,
     }).catch(() => {});
   }
 
@@ -840,7 +841,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
       const queuePos = activeSession.messageQueue.length;
       console.log(`会话 ${conversationId} 消息已入队，排队第 ${queuePos} 条`);
       await sendDingMessage(self, {
-        conversationId, sessionWebhook, atUserId: senderStaffId,
+        conversationId, sessionWebhook,
         content: `⏳ 正在处理中，已加入队列（排队第 ${queuePos} 条）`,
       });
       return;
