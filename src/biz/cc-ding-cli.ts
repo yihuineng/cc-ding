@@ -5,8 +5,8 @@ import os from 'os';
 import path from 'path';
 import { projUtil } from '../common';
 import { IConfig, IActiveSession, ISession, IRawCallbackData, IAuthRequest } from './types';
-import { extractQuoteInfo, formatPromptWithQuote } from './quote';
-import { fetchQuotedMessage, sendMessageToUser, sendOwnerMessage } from './messaging';
+import { extractQuoteInfo, formatPromptWithQuote, enrichQuoteInfo } from './quote';
+import { sendMessageToUser, sendOwnerMessage } from './messaging';
 import { processPictureMessage, processRichTextMessage, processFileMessage, extractDownloadCode } from './image';
 import {
   parseInfoCommand, formatConversationInfo, formatGlobalConfig, parseLogCommand,
@@ -883,13 +883,13 @@ export class DingClaude {
       prompt = textContent;
       // 引用消息只 @机器人（无额外文本）时 textContent 为空，但仍有引用内容需要处理
       if (!prompt) {
+        const conversationDir = this.getConversationDir(conversationId);
+        const useLocalOcr = conversationConfig?.useLocalOcr !== false;
         const quoteInfo = extractQuoteInfo(rawData);
         if (quoteInfo) {
           this.debugLog(`检测到引用消息(无正文): quoteMessageId=${quoteInfo.quoteMessageId}`);
-          if (quoteInfo.quoteMessageId && !quoteInfo.quoteText) {
-            const fetched = await fetchQuotedMessage(this, quoteInfo.quoteMessageId);
-            if (fetched) quoteInfo.quoteText = fetched;
-          }
+          // 增强引用：下载文件/图片、OCR 等
+          await enrichQuoteInfo(this, quoteInfo, rawData, conversationDir, useLocalOcr);
           if (quoteInfo.quoteText) {
             prompt = formatPromptWithQuote('', quoteInfo);
           }
@@ -900,14 +900,13 @@ export class DingClaude {
 
     // 提取引用消息（命令消息忽略引用）
     if (!prompt.startsWith('/') && msgtype === 'text' && textContent) {
+      const conversationDir = this.getConversationDir(conversationId);
+      const useLocalOcr = conversationConfig?.useLocalOcr !== false;
       const quoteInfo = extractQuoteInfo(rawData);
       if (quoteInfo) {
         this.debugLog(`检测到引用消息: quoteMessageId=${quoteInfo.quoteMessageId}`);
-        // 如有 messageId 但无文本内容,通过 API 获取
-        if (quoteInfo.quoteMessageId && !quoteInfo.quoteText) {
-          const fetched = await fetchQuotedMessage(this, quoteInfo.quoteMessageId);
-          if (fetched) quoteInfo.quoteText = fetched;
-        }
+        // 增强引用：下载文件/图片、OCR 等
+        await enrichQuoteInfo(this, quoteInfo, rawData, conversationDir, useLocalOcr);
         // 注入引用上下文到 prompt
         if (quoteInfo.quoteText) {
           prompt = formatPromptWithQuote(prompt, quoteInfo);
