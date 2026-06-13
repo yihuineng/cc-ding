@@ -16,7 +16,7 @@ import {
   parseCronCommand, parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
   parseBashCommand, parseMqCommand, parseRecorderCommandEnhanced,
   parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
-  parseRebootCommand, parseInterruptCommand, parseMenuCommand,
+  parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand,
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts } from './claude-process';
@@ -1186,6 +1186,80 @@ export class DingClaude {
 
     // 已注册群的命令路由表
     const commandRoutes: ICommandRoute[] = [
+      // /destroy 命令：注销当前群机器人，删除工作目录和配置（仅 owner 可用）
+      route('/destroy', () => parseDestroyCommand(prompt), async destroyOpts => {
+        if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
+
+        const targetConvId = destroyOpts.conversationId || conversationId;
+        const isTargetOther = targetConvId !== conversationId;
+        if (isTargetOther && !this.isOwner(senderStaffId)) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '❌ 只有 owner 才能操作其他群的配置',
+            msgType: 'markdown',
+          });
+          return;
+        }
+
+        const convIndex = this.config.conversations.findIndex(c => c.conversationId === targetConvId);
+        if (convIndex < 0) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '⚠️ 该群未在配置中注册，无需注销',
+            msgType: 'markdown',
+          });
+          return;
+        }
+
+        const conv = this.config.conversations[convIndex];
+        const convTitle = conv.conversationTitle || targetConvId;
+
+        // 从配置中移除
+        this.config.conversations.splice(convIndex, 1);
+
+        // 删除工作目录
+        const workDir = this.getConversationDir(targetConvId);
+        let dirDeleted = false;
+        try {
+          if (fs.existsSync(workDir)) {
+            fs.rmSync(workDir, { recursive: true, force: true });
+            dirDeleted = true;
+          }
+        } catch (err) {
+          console.error(`[${timestamp()}] 删除工作目录失败:`, err);
+        }
+
+        // 清除内存状态
+        const activeSession = this.activeSessions.get(targetConvId);
+        if (activeSession?.currentProcess) {
+          try { activeSession.currentProcess.kill('SIGTERM'); } catch { /* ignore */ }
+        }
+        this.activeSessions.delete(targetConvId);
+        this.recorderModeConversations.delete(targetConvId);
+
+        // 持久化配置
+        saveClientConfig(this);
+
+        console.log(`[${timestamp()}] 已注销群: ${convTitle}(${targetConvId})`);
+
+        const parts: string[] = [
+          '✅ 群机器人已注销',
+          `- **群名称:** ${convTitle}`,
+          `- **群ID:** ${targetConvId}`,
+        ];
+        if (dirDeleted) parts.push('- **工作目录:** 已删除');
+        else parts.push('- **工作目录:** (不存在或无法删除)');
+        if (activeSession) parts.push('- **活跃会话:** 已清除');
+        parts.push('\n⚠️ 该群下次发送消息时将收到"未注册"提示');
+        parts.push('💡 如需重新注册，请使用 `/cfg` 命令');
+
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: parts.join('\n'),
+          msgType: 'markdown',
+        });
+      }),
+
       // /clean 命令：清除历史会话和缓存（单聊模式也允许操作）
       route('/clean', () => parseCleanCommand(prompt), async cleanType => {
       // 单聊模式仅限 clean 当前群

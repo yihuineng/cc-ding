@@ -8,6 +8,7 @@ import {
   parseGoonCommand, parseCcCommand,
   parseClaudeMdCommand, parseInterruptCommand, parseTodoCommand,
   parseMenuCommand, parseRebootCommand, parseRecorderCommandEnhanced,
+  parseDestroyCommand,
 } from '../src/biz/commands';
 
 describe('commands parsers', () => {
@@ -306,6 +307,19 @@ describe('commands parsers', () => {
       assert.deepStrictEqual(parseRebootCommand('/reboot --update'), { update: true, tag: undefined });
       assert.deepStrictEqual(parseRebootCommand('/reboot --update beta'), { update: true, tag: 'beta' });
       assert.strictEqual(parseRebootCommand('/reboot now'), null);
+    });
+  });
+
+  describe('parseDestroyCommand', () => {
+    it('无参数返回空对象', () => {
+      assert.deepStrictEqual(parseDestroyCommand('/destroy'), {});
+    });
+    it('解析 --conversationId', () => {
+      assert.deepStrictEqual(parseDestroyCommand('/destroy --conversationId abc123'), { conversationId: 'abc123' });
+    });
+    it('非 /destroy 返回 null', () => {
+      assert.strictEqual(parseDestroyCommand('hello'), null);
+      assert.strictEqual(parseDestroyCommand('/destroyer'), null);
     });
   });
 });

@@ -202,6 +202,14 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     category: '管理',
     ownerOnly: true,
   },
+  {
+    name: '/destroy',
+    description: '注销当前群机器人，删除工作目录和配置',
+    usage: '/destroy [--conversationId xxx]',
+    examples: [ '/destroy', '/destroy --conversationId targetConvId' ],
+    category: '管理',
+    ownerOnly: true,
+  },
 ];
 
 /** 命令分类的显示顺序和图标 */
@@ -772,6 +780,35 @@ export function parseClaudeMdCommand(text: string): boolean {
 export function parseInterruptCommand(text: string): boolean {
   const trimmed = text.trim();
   return trimmed === '/!' || trimmed === '/！' || trimmed === '!' || trimmed === '！';
+}
+
+/**
+ * 解析 /destroy 命令
+ * - /destroy                           -> 注销当前群
+ * - /destroy --conversationId xxx       -> 注销指定群（owner 专用）
+ */
+export interface IDestroyOptions {
+  conversationId?: string;
+}
+
+export function parseDestroyCommand(text: string): IDestroyOptions | null {
+  const trimmed = text.trim();
+  if (!/^\/destroy(\b|$)/.test(trimmed)) return null;
+
+  const rest = trimmed.substring(8).trim();
+  if (!rest) return {};
+
+  if (/^--help$/i.test(rest)) return null;
+
+  const result: IDestroyOptions = {};
+  const tokens = rest.split(/\s+/);
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--conversationId' && tokens[i + 1]) {
+      result.conversationId = tokens[++i];
+    }
+  }
+  return result;
 }
 
 /**
