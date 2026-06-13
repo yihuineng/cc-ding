@@ -662,14 +662,12 @@ export function parseBashCommand(text: string): string | null {
  * - /mq rm <n>     -> { type: 'rm', indices: [n] } (按序号删除)
  * - /mq rm <1-3>   -> { type: 'rm', indices: [1,2,3] } (范围删除)
  * - /mq rm 1 3 5   -> { type: 'rm', indices: [1,3,5] } (多序号删除)
- * - /mq -n 3        -> { type: 'cancel', count: 3 } (取消前N条)
  * - 其他 -> null
  */
 export type MqCommand =
   | { type: 'list' }
   | { type: 'front' }
-  | { type: 'rm'; all?: boolean; indices?: number[] }
-  | { type: 'cancel'; count: number };
+  | { type: 'rm'; all?: boolean; indices?: number[] };
 
 export function parseMqCommand(text: string): MqCommand | null {
   const trimmed = text.trim();
@@ -705,12 +703,6 @@ export function parseMqCommand(text: string): MqCommand | null {
       if (n > 0) indices.push(n);
     }
     if (indices.length > 0) return { type: 'rm', indices };
-  }
-
-  const match = rest.match(/^-n\s+(\d+)$/i);
-  if (match) {
-    const n = parseInt(match[1], 10);
-    return n > 0 ? { type: 'cancel', count: n } : { type: 'list' };
   }
 
   return null;

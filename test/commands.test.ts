@@ -207,9 +207,6 @@ describe('commands parsers', () => {
       assert.deepStrictEqual(parseMqCommand('/mq rm 1-3'), { type: 'rm', indices: [ 1, 2, 3 ] });
       assert.deepStrictEqual(parseMqCommand('/mq rm 1 3 5'), { type: 'rm', indices: [ 1, 3, 5 ] });
     });
-    it('-n 取消前 N 条', () => {
-      assert.deepStrictEqual(parseMqCommand('/mq -n 3'), { type: 'cancel', count: 3 });
-    });
     it('非法输入返回 null', () => {
       assert.strictEqual(parseMqCommand('/mq xx'), null);
       assert.strictEqual(parseMqCommand('/mqx'), null);

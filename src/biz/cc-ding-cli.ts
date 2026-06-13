@@ -1948,28 +1948,6 @@ export class DingClaude {
             });
             return;
           }
-
-          case 'cancel': {
-            if (queue.length === 0) {
-              await this.sendDingMessage({
-                conversationId, sessionWebhook,
-                content: '📭 当前无排队消息',
-                msgType: 'markdown',
-              });
-              return;
-            }
-            const removeCount = Math.min(mqCmd.count, queue.length);
-            const removed = queue.splice(queue.length - removeCount, removeCount);
-            const removedLines = removed.map((entry, i) =>
-              `${i + 1}. **${entry.senderNick || entry.senderStaffId}:** ${this.truncateMsg(entry.message)}`,
-            );
-            await this.sendDingMessage({
-              conversationId, sessionWebhook,
-              content: `✅ 已从队尾移除 ${removeCount} 条消息\n${removedLines.join('\n')}`,
-              msgType: 'markdown',
-            });
-            return;
-          }
         }
       }),
 
