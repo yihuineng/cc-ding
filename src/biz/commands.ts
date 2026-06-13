@@ -658,19 +658,18 @@ export function parseBashCommand(text: string): string | null {
  * 解析 /mq 命令
  * - /mq           -> { type: 'list' }
  * - /mq front      -> { type: 'front' } (插队到队列头部)
+ * - /mq rm         -> { type: 'rm', all: true } (清空全部)
  * - /mq rm <n>     -> { type: 'rm', indices: [n] } (按序号删除)
  * - /mq rm <1-3>   -> { type: 'rm', indices: [1,2,3] } (范围删除)
  * - /mq rm 1 3 5   -> { type: 'rm', indices: [1,3,5] } (多序号删除)
  * - /mq -n 3        -> { type: 'cancel', count: 3 } (取消前N条)
- * - /mq -all        -> { type: 'cancelAll' }
  * - 其他 -> null
  */
 export type MqCommand =
   | { type: 'list' }
   | { type: 'front' }
-  | { type: 'rm'; indices: number[] }
-  | { type: 'cancel'; count: number }
-  | { type: 'cancelAll' };
+  | { type: 'rm'; all?: boolean; indices?: number[] }
+  | { type: 'cancel'; count: number };
 
 export function parseMqCommand(text: string): MqCommand | null {
   const trimmed = text.trim();
@@ -682,11 +681,11 @@ export function parseMqCommand(text: string): MqCommand | null {
   // /mq front
   if (/^front$/i.test(rest)) return { type: 'front' };
 
-  // /mq rm <序号列表> (支持: rm 1 / rm 1-3 / rm 1 3 5 / rm all)
+  // /mq rm (无参数=清空全部; 有参数=按序号/范围删除)
+  if (/^rm$/i.test(rest)) return { type: 'rm', all: true };
   const rmMatch = rest.match(/^rm\s+(.+)$/i);
   if (rmMatch) {
     const rmArg = rmMatch[1].trim();
-    if (/^all$/i.test(rmArg)) return { type: 'cancelAll' };
 
     const indices: number[] = [];
     // 先检查是否有范围格式 (如 1-3)
@@ -713,8 +712,6 @@ export function parseMqCommand(text: string): MqCommand | null {
     const n = parseInt(match[1], 10);
     return n > 0 ? { type: 'cancel', count: n } : { type: 'list' };
   }
-
-  if (/^-all$/i.test(rest)) return { type: 'cancelAll' };
 
   return null;
 }

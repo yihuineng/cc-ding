@@ -196,13 +196,13 @@ describe('commands parsers', () => {
   });
 
   describe('parseMqCommand', () => {
-    it('list / front / cancelAll', () => {
+    it('list / front', () => {
       assert.deepStrictEqual(parseMqCommand('/mq'), { type: 'list' });
       assert.deepStrictEqual(parseMqCommand('/mq front'), { type: 'front' });
-      assert.deepStrictEqual(parseMqCommand('/mq -all'), { type: 'cancelAll' });
-      assert.deepStrictEqual(parseMqCommand('/mq rm all'), { type: 'cancelAll' });
+      assert.strictEqual(parseMqCommand('/mq -all'), null);
     });
-    it('rm 单个/范围/多个', () => {
+    it('rm 默认清空/单个/范围/多个', () => {
+      assert.deepStrictEqual(parseMqCommand('/mq rm'), { type: 'rm', all: true });
       assert.deepStrictEqual(parseMqCommand('/mq rm 2'), { type: 'rm', indices: [ 2 ] });
       assert.deepStrictEqual(parseMqCommand('/mq rm 1-3'), { type: 'rm', indices: [ 1, 2, 3 ] });
       assert.deepStrictEqual(parseMqCommand('/mq rm 1 3 5'), { type: 'rm', indices: [ 1, 3, 5 ] });

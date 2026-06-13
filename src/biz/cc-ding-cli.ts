@@ -1907,6 +1907,17 @@ export class DingClaude {
               });
               return;
             }
+            // /mq rm 无参数：清空全部
+            if (mqCmd.all) {
+              const removedCount = queue.length;
+              queue.length = 0;
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: `✅ 已清空消息队列，共移除 ${removedCount} 条消息`,
+                msgType: 'markdown',
+              });
+              return;
+            }
             const unique = [ ...new Set(mqCmd.indices) ];
             const valid = unique.filter(n => n >= 1 && n <= queue.length).sort((a, b) => b - a);
             const invalid = unique.filter(n => n < 1 || n > queue.length);
@@ -1955,25 +1966,6 @@ export class DingClaude {
             await this.sendDingMessage({
               conversationId, sessionWebhook,
               content: `✅ 已从队尾移除 ${removeCount} 条消息\n${removedLines.join('\n')}`,
-              msgType: 'markdown',
-            });
-            return;
-          }
-
-          case 'cancelAll': {
-            if (queue.length === 0) {
-              await this.sendDingMessage({
-                conversationId, sessionWebhook,
-                content: '📭 当前无排队消息',
-                msgType: 'markdown',
-              });
-              return;
-            }
-            const removedCount = queue.length;
-            queue.length = 0;
-            await this.sendDingMessage({
-              conversationId, sessionWebhook,
-              content: `✅ 已清空消息队列，共移除 ${removedCount} 条消息`,
               msgType: 'markdown',
             });
             return;
