@@ -151,7 +151,11 @@ describe('commands parsers', () => {
     });
     it('parseInterruptCommand', () => {
       assert.strictEqual(parseInterruptCommand('/!'), true);
+      assert.strictEqual(parseInterruptCommand('/！'), true);
+      assert.strictEqual(parseInterruptCommand('!'), true);
+      assert.strictEqual(parseInterruptCommand('！'), true);
       assert.strictEqual(parseInterruptCommand('/! now'), false);
+      assert.strictEqual(parseInterruptCommand('!!'), false);
     });
   });
 

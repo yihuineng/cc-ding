@@ -189,9 +189,9 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/!',
-    description: '中断当前任务并立即处理新消息',
-    usage: '/!',
-    examples: [ '/!' ],
+    description: '中断当前任务并立即处理新消息（支持 /! /！ ! ！）',
+    usage: '/! | /！ | ! | ！',
+    examples: [ '/!', '!' ],
     category: '会话',
   },
   {
@@ -767,10 +767,11 @@ export function parseClaudeMdCommand(text: string): boolean {
 }
 
 /**
- * 解析 /! 中断命令
+ * 解析 /! 中断命令，支持四种触发方式：/! /！ ! ！
  */
 export function parseInterruptCommand(text: string): boolean {
-  return text.trim() === '/!';
+  const trimmed = text.trim();
+  return trimmed === '/!' || trimmed === '/！' || trimmed === '!' || trimmed === '！';
 }
 
 /**
