@@ -58,6 +58,8 @@ export interface IConversation {
   preBash?: string;
   /** Claude 进程权限模式，默认 acceptEdits（bypassPermissions 需显式配置，启动时会告警）。可选值: default | acceptEdits | plan | auto | bypassPermissions | dontAsk */
   permissionMode?: string;
+  /** 自由模式：开启后跳过群用户白名单限制，所有群成员均可使用，默认 false */
+  freedomMode?: boolean;
   sessionCfg?: {
     // task 功能默认开启，无需配置开关
   }; // 群维度session相关配置

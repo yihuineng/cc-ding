@@ -166,10 +166,9 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/recorder',
-    aliases: [ '/r' ],
-    description: 'Recorder 模式：记录所有消息到本地（仅 owner 单聊，录制中可发送 /exit 或 /e 快捷退出）',
+    description: 'Recorder 模式：记录所有消息到本地（仅 owner 单聊，发送 /recorder exit 退出）',
     usage: '/recorder [on|exit]',
-    examples: [ '/recorder on', '/recorder exit', '/r on', '/r exit' ],
+    examples: [ '/recorder on', '/recorder exit' ],
     category: '管理',
     ownerOnly: true,
   },
@@ -207,6 +206,14 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     description: '注销当前群机器人，删除工作目录和配置',
     usage: '/destroy [--conversationId xxx]',
     examples: [ '/destroy', '/destroy --conversationId targetConvId' ],
+    category: '管理',
+    ownerOnly: true,
+  },
+  {
+    name: '/freedom',
+    description: '自由模式：开启后所有群成员均可使用机器人（跳过白名单限制）',
+    usage: '/freedom | /freedom exit',
+    examples: [ '/freedom', '/freedom exit' ],
     category: '管理',
     ownerOnly: true,
   },
@@ -341,6 +348,7 @@ export function formatConversationInfo(
   }
   if (conv.atSender === false) lines.push(`- **atSender:** false`);
   if (conv.receiveReply === false) lines.push(`- **receiveReply:** false (不回复确认消息)`);
+  if (conv.freedomMode) lines.push(`- **freedomMode:** 已开启（跳过白名单限制）`);
   if (conv.useLocalOcr === false) lines.push(`- **本地OCR:** 关闭`);
   if (conv.permissionMode) lines.push(`- **permissionMode:** ${conv.permissionMode}`);
   if (conv.taskCfg?.skill) lines.push(`- **taskSkill:** ${conv.taskCfg.skill}`);
@@ -812,6 +820,27 @@ export function parseDestroyCommand(text: string): IDestroyOptions | null {
 }
 
 /**
+ * 解析 /freedom 命令
+ * - /freedom             -> 进入自由模式（60s 内回复"确认"或"confirm"即可开启）
+ * - /freedom exit        -> 退出自由模式
+ */
+export type FreedomAction = 'enter' | 'exit';
+
+export interface IFreedomOptions {
+  action: FreedomAction;
+}
+
+export function parseFreedomCommand(text: string): IFreedomOptions | null {
+  const trimmed = text.trim();
+  if (!/^\/freedom(\b|$)/i.test(trimmed)) return null;
+
+  const rest = trimmed.substring(8).trim().toLowerCase();
+  if (!rest) return { action: 'enter' };
+  if (rest === 'exit') return { action: 'exit' };
+  return null;
+}
+
+/**
  * 解析 /todo 命令
  * - /todo <内容> [@人] [ddl 截止]  -> add
  * - /todo done <序号>              -> done
@@ -975,13 +1004,11 @@ export function parseRebootCommand(text: string): IRebootCommand | null {
 }
 
 /**
- * 解析 /recorder 或 /r 快捷命令（增强版，支持 /exit /e 退出别名）
+ * 解析 /recorder 命令
  */
 export function parseRecorderCommandEnhanced(text: string): 'on' | 'exit' | null {
-  const trimmed = text.trim().toLowerCase();
-  // /recorder on / /r on
-  if (/^\/(?:recorder|r)\s+on$/i.test(trimmed)) return 'on';
-  // /recorder exit / /r exit / /recorder e / /r e / /exit / /e
-  if (/^\/(?:recorder|r)\s+(?:exit|e)$/i.test(trimmed) || /^\/(?:exit|e)$/i.test(trimmed)) return 'exit';
+  const trimmed = text.trim();
+  if (/^\/recorder\s+on$/i.test(trimmed)) return 'on';
+  if (/^\/recorder\s+exit$/i.test(trimmed)) return 'exit';
   return null;
 }

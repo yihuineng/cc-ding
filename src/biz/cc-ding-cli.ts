@@ -16,7 +16,7 @@ import {
   parseCronCommand, parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
   parseBashCommand, parseMqCommand, parseRecorderCommandEnhanced,
   parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
-  parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand,
+  parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand, parseFreedomCommand,
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts } from './claude-process';
@@ -80,6 +80,9 @@ export class DingClaude {
 
   /** Recorder 模式已开启的会话 ID 集合（运行时状态，不持久化） */
   recorderModeConversations = new Set<string>();
+
+  /** 等待确认开启自由模式的会话 ID -> 发起时间戳（60s 超时，不持久化） */
+  pendingFreedomConvs = new Map<string, number>();
 
   /** 定时任务引擎 */
   cronEngine!: CronEngine;
@@ -778,11 +781,7 @@ export class DingClaude {
     const conversationConfig = this.getConversationConfig(conversationId);
 
     // ==================== Recorder 模式处理 ====================
-    let recorderCmd = parseRecorderCommandEnhanced(textContent);
-    // 裸 /exit、/e 仅在 recorder 模式开启时作为退出快捷方式，避免拦截普通会话消息
-    if (recorderCmd === 'exit' && /^\/(?:exit|e)$/i.test(textContent) && !this.recorderModeConversations.has(conversationId)) {
-      recorderCmd = null;
-    }
+    const recorderCmd = parseRecorderCommandEnhanced(textContent);
     if (recorderCmd !== null) {
       if (!this.isOwner(senderStaffId) || conversationType !== '1') {
         await this.sendDingMessage({
@@ -812,6 +811,29 @@ export class DingClaude {
         });
       }
       return;
+    }
+
+    // ==================== 自由模式确认拦截 ====================
+    const pendingTime = this.pendingFreedomConvs.get(conversationId);
+    if (pendingTime && Date.now() - pendingTime < 60_000) {
+      const normalizedText = textContent.trim().toLowerCase();
+      if (normalizedText === '确认' || normalizedText === 'confirm') {
+        this.pendingFreedomConvs.delete(conversationId);
+        const convConfig = this.getConversationConfig(conversationId);
+        if (convConfig) {
+          convConfig.freedomMode = true;
+          saveClientConfig(this);
+        }
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '✅ 自由模式已开启\n💡 所有群成员现在均可使用机器人',
+          msgType: 'markdown',
+        });
+        return;
+      }
+    } else if (pendingTime && Date.now() - pendingTime >= 60_000) {
+      // 超时清理
+      this.pendingFreedomConvs.delete(conversationId);
     }
 
     // Recorder 模式拦截：开启时所有消息都记录，不执行正常处理
@@ -1258,6 +1280,46 @@ export class DingClaude {
           content: parts.join('\n'),
           msgType: 'markdown',
         });
+      }),
+
+      // /freedom 命令：自由模式，跳过群用户白名单限制（仅 owner 可用）
+      route('/freedom', () => parseFreedomCommand(prompt), async freedomOpts => {
+        if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
+
+        if (freedomOpts.action === 'enter') {
+          if (conversationConfig?.freedomMode) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: 'ℹ️ 当前已处于自由模式',
+              msgType: 'markdown',
+            });
+            return;
+          }
+          // 记录发起时间，60s 内回复"确认"或"confirm"即可开启
+          this.pendingFreedomConvs.set(conversationId, Date.now());
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '⚠️ 开启自由模式后，所有群成员均可使用机器人（跳过白名单限制）\n\n60 秒内回复「确认」或「confirm」即可开启',
+            msgType: 'markdown',
+          });
+        } else if (freedomOpts.action === 'exit') {
+          if (!conversationConfig?.freedomMode) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: 'ℹ️ 当前未开启自由模式',
+              msgType: 'markdown',
+            });
+            return;
+          }
+          conversationConfig.freedomMode = false;
+          saveClientConfig(this);
+          this.pendingFreedomConvs.delete(conversationId);
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '✅ 自由模式已关闭\n🔒 已恢复白名单限制',
+            msgType: 'markdown',
+          });
+        }
       }),
 
       // /clean 命令：清除历史会话和缓存（单聊模式也允许操作）

@@ -93,6 +93,8 @@ export function authCheck(self: DingClaude, userId: string, conversationId?: str
 
   if (conversationId) {
     const conv = self.config.conversations.find(it => it.conversationId === conversationId);
+    // 自由模式：跳过群用户白名单限制
+    if (conv?.freedomMode) return true;
     if (conv?.whiteUserList && conv.whiteUserList.length > 0) {
       return conv.whiteUserList.some(item => resolveToUserId(self, item) === userId);
     }

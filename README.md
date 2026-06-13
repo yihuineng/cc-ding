@@ -110,6 +110,10 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `/reset-apikeycfg` | 重置 API Key 配置 |
 | `/cfg` | 注册当前群到配置（支持 `--permissionMode` 设置权限模式） |
 | `/auth [add\|del <用户>]` | 管理群级白名单 |
+| `/destroy` | 注销当前群机器人，删除工作目录和配置 |
+| `/freedom` | 自由模式：开启后所有群成员均可使用机器人（跳过白名单限制，60s 内回复"确认"即可开启） |
+| `/recorder [on\|exit]` | Recorder 模式：记录所有消息到本地（仅 owner 单聊） |
+| `/reboot [--update]` | 重启 cc-ding 应用 |
 
 ### 配置说明
 
@@ -131,7 +135,8 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
       "agent": "指定agent（可选）",
       "useLocalOcr": true,
       "permissionMode": "bypassPermissions",
-      "taskCfg": { "skill": "指定技能（可选）" }
+      "taskCfg": { "skill": "指定技能（可选）" },
+      "freedomMode": false
     }
   ],
   "taskQueueSize": 50,
@@ -153,6 +158,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `useLocalOcr` | 图片本地 OCR（默认 `true`），模型支持图片时可设 `false` |
 | `linkConversationId` | 关联群 ID，多群共享同一 Claude 会话上下文 |
 | `permissionMode` | Claude 进程权限模式（默认 `acceptEdits`；`bypassPermissions` 需显式配置，启动时会告警），可选: `default`、`acceptEdits`、`plan`、`auto`、`bypassPermissions`、`dontAsk` |
+| `freedomMode` | 自由模式开关（默认 `false`，开启后跳过群用户白名单限制） |
 | `preBash` | 全局 `/bash` 前置命令 |
 
 #### 安全说明
@@ -282,6 +288,10 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `/reset-apikeycfg` | Reset API Key configuration |
 | `/cfg` | Register current group to config (supports `--permissionMode` to set permission mode) |
 | `/auth [add\|del <user>]` | Manage group whitelist |
+| `/destroy` | Unregister group bot, delete working directory and config |
+| `/freedom` | Freedom mode: all group members can use the bot (skip whitelist, reply "confirm" within 60s to activate) |
+| `/recorder [on\|exit]` | Recorder mode: log all messages locally (owner single-chat only) |
+| `/reboot [--update]` | Restart cc-ding application |
 
 ### Configuration
 
@@ -303,7 +313,8 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
       "agent": "specified_agent (optional)",
       "useLocalOcr": true,
       "permissionMode": "bypassPermissions",
-      "taskCfg": { "skill": "specified_skill (optional)" }
+      "taskCfg": { "skill": "specified_skill (optional)" },
+      "freedomMode": false
     }
   ],
   "taskQueueSize": 50,
@@ -325,6 +336,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `useLocalOcr` | Local image OCR (default `true`); set `false` if model supports images natively |
 | `linkConversationId` | Link groups to share one Claude session context |
 | `permissionMode` | Claude process permission mode (default `acceptEdits`; `bypassPermissions` must be set explicitly and warns at startup), options: `default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk` |
+| `freedomMode` | Freedom mode toggle (default `false`; when enabled, skips group whitelist check) |
 | `preBash` | Global pre-bash command for `/bash` |
 
 #### Security Notes
