@@ -1171,7 +1171,6 @@ export class DingClaude {
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          atUserId: senderStaffId,
           content: `⚠️ 该群未注册，请先使用 \`/cfg\` 命令注册`,
           msgType: 'markdown',
         });
@@ -1179,7 +1178,6 @@ export class DingClaude {
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          atUserId: senderStaffId,
           content: `抱歉,该群的机器人未在服务端注册,请联系应用机器人owner注册(${conversationId})...`,
         });
       }
@@ -1681,7 +1679,6 @@ export class DingClaude {
           await this.sendDingMessage({
             conversationId,
             sessionWebhook,
-            atUserId: senderStaffId,
             content: '🚀 请输入您的问题开始新会话',
           });
         }
@@ -1697,7 +1694,6 @@ export class DingClaude {
             await this.sendDingMessage({
               conversationId,
               sessionWebhook,
-              atUserId: senderStaffId,
               content: '⚠️ 未找到已结束的会话',
               msgType: 'markdown',
             });
@@ -1826,7 +1822,6 @@ export class DingClaude {
           await this.sendDingMessage({
             conversationId,
             sessionWebhook,
-            atUserId: senderStaffId,
             content: '📋 任务已收到,完成后我会回复',
           });
           await this.saveTask({
@@ -2050,7 +2045,6 @@ export class DingClaude {
           if (activeSession.conversationConfig.receiveReply !== false) {
             await this.sendDingMessage({
               conversationId, sessionWebhook,
-              atUserId: senderStaffId,
               content: '📥 已收到，正在处理...',
             }).catch(() => {});
           }

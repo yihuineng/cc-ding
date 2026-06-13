@@ -584,7 +584,6 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
   await sendDingMessage(self, {
     conversationId,
     sessionWebhook,
-    atUserId: session.startStaffId,
     content: `💬 会话已结束\n🆔 ${sessionId}${queueLen > 0 ? `\n🗑️ 已清空消息队列，丢弃${queueLen}条待处理消息` : ''}`,
   });
 
@@ -609,7 +608,7 @@ export async function switchToSession(
   const targetSession = findHistorySession(self, conversationId, targetSessionId);
   if (!targetSession) {
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
+      conversationId, sessionWebhook,
       content: `❌ 未找到会话 ${targetSessionId}，该会话可能已被清理，请发送新消息开始新会话`,
     });
     return false;
@@ -618,7 +617,7 @@ export async function switchToSession(
   const sessionDir = getSessionDir(self, targetSession);
   if (!fs.existsSync(sessionDir)) {
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
+      conversationId, sessionWebhook,
       content: `❌ 会话 ${targetSessionId} 的数据已被清理，无法恢复，请发送新消息开始新会话`,
     });
     return false;
@@ -649,7 +648,7 @@ export async function switchToSession(
   const hasClaudeSession = !!targetSession.claudeSessionId;
   const displayId = getSessionId(targetSession);
   await sendDingMessage(self, {
-    conversationId, sessionWebhook, atUserId: senderStaffId,
+    conversationId, sessionWebhook,
     content: `✅ 已切换到历史会话 (🆔 ${displayId})\n${hasClaudeSession ? '🔄 已恢复对话上下文' : '⚠️ 该会话无历史上下文，将从头开始'}\n💡 回复 /end 可结束本轮对话`,
   });
 
@@ -671,7 +670,7 @@ export async function startNewSession(self: DingClaude, opts: {
   if (self.activeSessions.size >= maxConcurrency) {
     console.log(`达到最大并发数 (${maxConcurrency})，拒绝新会话: 群=${conversationId}`);
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
+      conversationId, sessionWebhook,
       content: '🤯 当前繁忙，请稍后再试...',
     });
     return;

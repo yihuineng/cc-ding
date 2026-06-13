@@ -450,7 +450,7 @@ function runClaudeOnce(
           conversationId: getReplyConversationId(session),
           sessionWebhook: getReplyWebhook(session),
           atUserId,
-          content: '⚠️ Claude 处理完成但未返回任何内容，请重试或换种方式提问',
+          content: '⚠️ Claude 处理完成但未返回任何内容',
         }).catch(err => console.error('发送钉钉消息失败:', err));
       }
 
