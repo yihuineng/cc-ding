@@ -1,10 +1,12 @@
 /**
- * Claude Agent SDK 封装
- * 用于替代「spawn claude CLI + 手工解析 stream-json」的调用方式。
- * 当前覆盖单次纯文本生成场景（cron 分析、任务预处理等无工具调用的 one-shot 请求），
- * 结构化消息流由 SDK 保证，无需再逐行解析 stdout。
+ * Claude 子进程封装（one-shot 模式）
+ * 通过 spawn `claude` CLI + stream-json 解析实现单次纯文本生成。
+ * 无工具调用、单轮请求场景（cron 分析、任务预处理等）。
+ * 不抛异常：所有失败通过返回值的 ok/errorOutput/timedOut 表达。
  */
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import readline from 'readline';
+import { commandExists, formatClaudeCommandMissingMessage, spawnCommand } from './platform';
+import { parseClaudeStreamLine } from './claude-process';
 
 export interface IOneShotOpts {
   /** 工作目录 */
@@ -32,48 +34,88 @@ export interface IOneShotResult {
  */
 export async function runOneShotPrompt(prompt: string, opts: IOneShotOpts): Promise<IOneShotResult> {
   const { cwd, settingsPath, timeoutMs = 60_000 } = opts;
-  const abortController = new AbortController();
-  const timer = setTimeout(() => abortController.abort(), timeoutMs);
-  timer.unref?.();
+
+  if (!commandExists('claude')) {
+    return {
+      ok: false,
+      text: '',
+      errorOutput: formatClaudeCommandMissingMessage('claude'),
+      timedOut: false,
+    };
+  }
+
+  const cmdArgs = [
+    '--output-format', 'stream-json',
+    '--max-turns', '1',
+    '--permission-mode', 'default',
+  ];
+  if (settingsPath) {
+    cmdArgs.push('--settings', settingsPath);
+  }
 
   let stderrOutput = '';
   let resultText = '';
   let resultOk = false;
   let errorMessage = '';
+  let timedOut = false;
 
   try {
-    const q = query({
-      prompt,
-      options: {
-        cwd,
-        permissionMode: 'default',
-        allowedTools: [],
-        maxTurns: 1,
-        abortController,
-        stderr: (data: string) => { stderrOutput += data; },
-        ...(settingsPath ? { extraArgs: { settings: settingsPath } } : {}),
-      },
+    const child = spawnCommand('claude', cmdArgs, {
+      cwd,
+      stdio: [ 'pipe', 'pipe', 'pipe' ],
     });
-    for await (const msg of q) {
-      if (msg.type === 'result') {
-        if (msg.subtype === 'success') {
-          resultText = msg.result;
-          resultOk = true;
-        } else {
-          errorMessage = `result: ${msg.subtype}`;
-        }
+
+    // 写入 prompt 到 stdin 并关闭
+    child.stdin!.write(`${prompt}\n`);
+    child.stdin!.end();
+
+    // 超时控制
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+    }, timeoutMs);
+    timer.unref?.();
+
+    // 累积 stderr
+    child.stderr!.on('data', (chunk: Buffer) => {
+      stderrOutput += chunk.toString();
+    });
+
+    // 逐行解析 stdout
+    const rl = readline.createInterface({ input: child.stdout! });
+    for await (const line of rl) {
+      const parsed = parseClaudeStreamLine(line);
+      if (parsed?.type === 'result') {
+        resultText = parsed.content || '';
+        resultOk = true;
       }
+    }
+
+    // 等待进程退出
+    const exitCode = await new Promise<number | null>((resolve) => {
+      child.on('close', (code) => {
+        resolve(code);
+      });
+      child.on('error', () => {
+        resolve(1);
+      });
+    });
+
+    clearTimeout(timer);
+
+    if (timedOut) {
+      errorMessage = 'One-shot prompt 超时';
+    } else if (!resultOk && exitCode !== 0) {
+      errorMessage = stderrOutput.trim() || `子进程退出码: ${exitCode}`;
     }
   } catch (err) {
     errorMessage = err instanceof Error ? err.message : String(err);
-  } finally {
-    clearTimeout(timer);
   }
 
   return {
     ok: resultOk,
     text: resultText,
     errorOutput: [ stderrOutput, errorMessage ].filter(Boolean).join('\n'),
-    timedOut: abortController.signal.aborted,
+    timedOut,
   };
 }

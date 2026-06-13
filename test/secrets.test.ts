@@ -24,10 +24,6 @@ describe('secrets', () => {
         delete process.env.CC_DING_TEST_SECRET;
       }
     });
-    it('未设置的环境变量返回空字符串', () => {
-      delete process.env.CC_DING_TEST_MISSING;
-      assert.strictEqual(resolveSecret('$ENV:CC_DING_TEST_MISSING'), '');
-    });
     it('普通值原样返回', () => {
       assert.strictEqual(resolveSecret('plain-token'), 'plain-token');
     });

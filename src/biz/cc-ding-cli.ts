@@ -1,6 +1,7 @@
 import { exec as childExec } from 'child_process';
 import { DingStreamClient, DWClientDownStream, dateUtil } from 'utils-ok';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { projUtil } from '../common';
 import { IConfig, IActiveSession, ISession, IRawCallbackData, IAuthRequest } from './types';
@@ -1067,10 +1068,29 @@ export class DingClaude {
 
       // /version 命令：查看工具版本
       route('/version', () => parseVersionCommand(prompt), async () => {
+        let claudeCliVersion = '未安装';
+        try {
+          const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+            childExec('claude --version', { timeout: 5000 }, (err, stdout, _stderr) => {
+              if (err) reject(err);
+              else resolve({ stdout });
+            });
+          });
+          claudeCliVersion = stdout.trim() || '未知';
+        } catch { /* ignore */ }
+
+        const md = [
+          '### 📦 cc-ding 版本信息',
+          '',
+          `- **cc-ding:** ${TOOL_VERSION}`,
+          `- **Claude CLI:** ${claudeCliVersion}`,
+          `- **Node.js:** ${process.version}`,
+          `- **系统:** ${os.platform()} ${os.release()}`,
+        ].join('\n');
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: `**版本:** ${TOOL_VERSION}`,
+          content: md,
           msgType: 'markdown',
         });
       }),
@@ -1109,7 +1129,7 @@ export class DingClaude {
           return;
         }
 
-        const tag = rebootCmd.tag ? `@${rebootCmd.tag}` : '';
+        const tag = rebootCmd.tag ? `@${rebootCmd.tag}` : '@latest';
         const cmd = rebootCmd.update
           ? `pnpm add -g cc-ding${tag}`
           : null;

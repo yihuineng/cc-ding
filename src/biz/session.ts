@@ -74,7 +74,7 @@ export function ensureClientDir(clientId: string): void {
 }
 
 export function getClientConfig(self: DingClaude): IConfig {
-  const appCfgFile = `${getClientDir(self)}/config.json`;
+  const appCfgFile = path.join(getClientDir(self), 'config.json');
   assert(fs.existsSync(appCfgFile), `Could not find client config file: ${appCfgFile}`);
   const cfg = fileUtil.getJSON(appCfgFile) as IConfig;
   assert(cfg.clientSecret, 'config.json missing required field: clientSecret');
@@ -334,24 +334,24 @@ export function getConversationConfig(self: DingClaude, conversationId: string):
 
 export function getConversationDir(self: DingClaude, conversationId: string): string {
   const hashedId = hashConversationId(self, conversationId);
-  return `${getClientDir(self)}/${hashedId}`;
+  return path.join(getClientDir(self), hashedId);
 }
 
 export function getSessionsDir(self: DingClaude, conversationId: string): string {
-  return `${getConversationDir(self, conversationId)}/.sessions`;
+  return path.join(getConversationDir(self, conversationId), '.sessions');
 }
 
 export function getTasksDir(self: DingClaude, conversationId: string): string {
-  return `${getConversationDir(self, conversationId)}/.tasks`;
+  return path.join(getConversationDir(self, conversationId), '.tasks');
 }
 
 export function getImagesDir(self: DingClaude, conversationId: string): string {
-  return `${getConversationDir(self, conversationId)}/.images`;
+  return path.join(getConversationDir(self, conversationId), '.images');
 }
 
 export function getSessionDir(self: DingClaude, session: ISession): string {
   const dirName = session.claudeSessionId || session.startTimeStr;
-  return `${getSessionsDir(self, session.conversationId)}/${dirName}`;
+  return path.join(getSessionsDir(self, session.conversationId), dirName);
 }
 
 export function getSessionId(session: ISession): string {
@@ -585,7 +585,7 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
     conversationId,
     sessionWebhook,
     atUserId: session.startStaffId,
-    content: `💬 会话已结束\n🆔 会话ID: ${sessionId}${queueLen > 0 ? `\n🗑️ 已清空消息队列，丢弃${queueLen}条待处理消息` : ''}`,
+    content: `💬 会话已结束\n🆔 ${sessionId}${queueLen > 0 ? `\n🗑️ 已清空消息队列，丢弃${queueLen}条待处理消息` : ''}`,
   });
 
   self.activeSessions.delete(sessionKey);
@@ -650,7 +650,7 @@ export async function switchToSession(
   const displayId = getSessionId(targetSession);
   await sendDingMessage(self, {
     conversationId, sessionWebhook, atUserId: senderStaffId,
-    content: `✅ 已切换到历史会话 (会话ID: ${displayId})\n${hasClaudeSession ? '🔄 已恢复对话上下文' : '⚠️ 该会话无历史上下文，将从头开始'}\n💡 回复 /end 可结束本轮对话`,
+    content: `✅ 已切换到历史会话 (🆔 ${displayId})\n${hasClaudeSession ? '🔄 已恢复对话上下文' : '⚠️ 该会话无历史上下文，将从头开始'}\n💡 回复 /end 可结束本轮对话`,
   });
 
   console.log(`已切换到历史会话: 群=${conversationId}, 会话ID=${displayId}, 有Claude上下文=${hasClaudeSession}`);
@@ -705,8 +705,8 @@ export async function startNewSession(self: DingClaude, opts: {
 
   if (conversationConfig.receiveReply !== false) {
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
-      content: `✅ 收到，我来处理...\n🆔 会话 ID: ${newSessionId}`,
+      conversationId, sessionWebhook,
+      content: `✅ 收到，我来处理...\n🆔 ${newSessionId}`,
     });
   }
 
@@ -757,7 +757,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
 
   if (activeSession.conversationConfig.receiveReply !== false) {
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
+      conversationId, sessionWebhook,
       content: '✅ 收到，我来处理...',
     }).catch(() => {});
   }
@@ -865,7 +865,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
 
     if (conversationConfig.receiveReply !== false) {
       await sendDingMessage(self, {
-        conversationId, sessionWebhook, atUserId: senderStaffId,
+        conversationId, sessionWebhook,
         content: '✅ 收到，我来处理...',
       });
     }

@@ -713,8 +713,8 @@ export async function executeClaudeQuery(
     });
     return;
   }
-  // 默认 acceptEdits（安全默认值）；如需绕过所有权限确认，需在配置中显式设置 bypassPermissions
-  const permissionMode = opts?.permissionMode ?? 'acceptEdits';
+  // 默认 bypassPermissions（cc-ding 通过钉钉交互，无终端审批能力）；如需更严格权限可在配置中显式设置 acceptEdits
+  const permissionMode = opts?.permissionMode ?? 'bypassPermissions';
   const fixedCmdArgs = [
     '--permission-mode', permissionMode,
     '--print',
