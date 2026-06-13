@@ -262,7 +262,7 @@ export class DingClaude {
         content: [
           '抱歉,您暂无使用权限',
           '请将以下信息发送给机器人管理员,由管理员通过命令注册:',
-          `- **会话ID:** \`${conversationId}\``,
+          `- **群ID:** \`${conversationId}\``,
           `- **注册命令:** \`/cfg --conversationId ${conversationId}\``,
         ].join('\n'),
         msgType: 'markdown',

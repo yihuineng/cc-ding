@@ -657,9 +657,9 @@ export async function executeClaudeQuery(
   self: DingClaude,
   session: ISession,
   message: string,
-  opts?: { skill?: string; agent?: string; settings?: string; senderNick?: string; senderStaffId?: string; permissionMode?: string },
+  opts?: { skill?: string; agent?: string; settings?: string; senderNick?: string; senderStaffId?: string; permissionMode?: string; newSessionId?: string },
 ): Promise<void> {
-  const { skill, agent, senderNick, senderStaffId } = opts || {};
+  const { skill, agent, senderNick, senderStaffId, newSessionId } = opts || {};
   let sessionDir = self.getSessionDir(session);
   let sessionLog = `${sessionDir}/session.log`;
   const dingGroupDir = self.getConversationDir(session.conversationId);
@@ -780,12 +780,13 @@ export async function executeClaudeQuery(
         console.log(`[${timestamp()}] 恢复 Claude 会话: ${session.claudeSessionId}`);
       }
     } else if (!isRetry) {
-      // 首轮会话：显式指定 session-id，确保 session 从开始就被持久化到磁盘，
+      // 首轮新会话：显式指定 session-id，确保 session 从开始就被持久化到磁盘，
       // 这样后续 --resume 一定能找到该会话。不预先设置 claudeSessionId，
       // 因为 Claude 可能在内部使用不同的 UUID；改为依赖 stream 中返回的真实 session_id。
-      const explicitSessionId = randomUUID();
+      const explicitSessionId = newSessionId || randomUUID();
       cmdArgs.push('--session-id', explicitSessionId);
-      cmdArgs.push('--name', `cc-ding-${session.startTimeStr}`);
+      // 使用 UUID 前缀作为 name，避免时间戳被 Claude 误认为 session ID
+      cmdArgs.push('--name', `cc-ding-${explicitSessionId.substring(0, 8)}`);
       console.log(`[${timestamp()}] 创建 Claude 会话(显式 session-id): ${explicitSessionId}`);
     }
     const settingsPath = resolveClaudeSettingsPath(self, dingGroupDir, opts?.settings);

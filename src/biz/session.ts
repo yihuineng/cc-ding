@@ -552,6 +552,11 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
   const found = findActiveSession(self, conversationId);
   if (!found) {
     console.log(`群 ${conversationId} 无活跃会话`);
+    await sendDingMessage(self, {
+      conversationId,
+      sessionWebhook,
+      content: '⚠️ 当前没有活跃的会话，无需结束。\n可以通过 /new 开始新会话。',
+    });
     return;
   }
 
@@ -580,7 +585,7 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
     conversationId,
     sessionWebhook,
     atUserId: session.startStaffId,
-    content: `💬 会话已结束\n📋 会话ID: ${sessionId}${queueLen > 0 ? `\n🗑️ 已清空消息队列，丢弃${queueLen}条待处理消息` : ''}`,
+    content: `💬 会话已结束\n🆔 会话ID: ${sessionId}${queueLen > 0 ? `\n🗑️ 已清空消息队列，丢弃${queueLen}条待处理消息` : ''}`,
   });
 
   self.activeSessions.delete(sessionKey);
@@ -673,6 +678,7 @@ export async function startNewSession(self: DingClaude, opts: {
   }
 
   const now = Date.now();
+  const newSessionId = crypto.randomUUID();
   const session: ISession = {
     conversationId,
     sessionWebhook,
@@ -682,7 +688,7 @@ export async function startNewSession(self: DingClaude, opts: {
     startNickName: senderNick,
   };
 
-  console.log(`创建新会话: 群=${conversationId}, 会话ID=${getSessionId(session)}, 发起者=${senderStaffId}, 当前并发=${self.activeSessions.size + 1}/${maxConcurrency}`);
+  console.log(`创建新会话: 群=${conversationId}, 会话ID=${newSessionId}, 发起者=${senderStaffId}, 当前并发=${self.activeSessions.size + 1}/${maxConcurrency}`);
 
   const sessionDir = getSessionDir(self, session);
   fs.mkdirSync(sessionDir, { recursive: true });
@@ -700,7 +706,7 @@ export async function startNewSession(self: DingClaude, opts: {
   if (conversationConfig.receiveReply !== false) {
     await sendDingMessage(self, {
       conversationId, sessionWebhook, atUserId: senderStaffId,
-      content: `🚀 会话已开始！\n处理中...\n💡 回复 /end 可结束本轮对话`,
+      content: `✅ 收到，我来处理...\n🆔 会话 ID: ${newSessionId}`,
     });
   }
 
@@ -711,6 +717,7 @@ export async function startNewSession(self: DingClaude, opts: {
       senderNick,
       senderStaffId,
       permissionMode: conversationConfig.permissionMode,
+      newSessionId,
     });
   } catch (err) {
     console.error('执行 Claude 查询失败:', err);

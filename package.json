@@ -1,6 +1,6 @@
 {
   "name": "cc-ding",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "本地Claude对接钉钉机器人工具套件",
   "keywords": [
     "cli",
