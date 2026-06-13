@@ -2114,6 +2114,12 @@ export class DingClaude {
       }
     }
 
+    // 防止 / 开头的非 /cc 命令被 Claude CLI 误识别为未知命令
+    // 在 / 前加空格，让 Claude 当作普通文本处理
+    if (finalPrompt.startsWith('/') && !finalPrompt.startsWith('/cc ')) {
+      finalPrompt = ` ${finalPrompt}`;
+    }
+
     await this.handleSessionMessage({
       conversationId,
       sessionWebhook,
