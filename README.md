@@ -31,7 +31,7 @@
 #### 安装
 
 ```bash
-pnpm i cc-ding -g
+npm i cc-ding -g
 ```
 
 #### 初始化
@@ -208,7 +208,7 @@ Connect Claude Code to DingTalk for bidirectional communication. Supports multi-
 #### Install
 
 ```bash
-pnpm i cc-ding -g
+npm i cc-ding -g
 ```
 
 #### Initialize

@@ -1150,7 +1150,7 @@ export class DingClaude {
 
         const tag = rebootCmd.tag ? `@${rebootCmd.tag}` : '@latest';
         const cmd = rebootCmd.update
-          ? `pnpm add -g cc-ding${tag}`
+          ? `npm install -g cc-ding${tag}`
           : null;
         const processName = `cc-ding-${this.clientId}`;
 
