@@ -265,9 +265,7 @@ export class DingClaude {
         conversationId, sessionWebhook,
         content: [
           '抱歉,您暂无使用权限',
-          '请将以下信息发送给机器人管理员,由管理员通过命令注册:',
-          `- **群ID:** \`${conversationId}\``,
-          `- **注册命令:** \`/cfg --conversationId ${conversationId}\``,
+          '请联系机器人 owner 申请授权',
         ].join('\n'),
         msgType: 'markdown',
       });
@@ -1104,9 +1102,9 @@ export class DingClaude {
           '### 📦 cc-ding 版本信息',
           '',
           `- **cc-ding:** ${TOOL_VERSION}`,
-          `- **Claude CLI:** ${claudeCliVersion}`,
-          `- **Node.js:** ${process.version}`,
-          `- **系统:** ${os.platform()} ${os.release()}`,
+          `- **claude:** ${claudeCliVersion}`,
+          `- **os:** ${os.platform()} ${os.release()}`,
+          `- **node:** ${process.version}`,
         ].join('\n');
         await this.sendDingMessage({
           conversationId,

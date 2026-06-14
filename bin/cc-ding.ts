@@ -27,7 +27,7 @@ program
   `)
   .addHelpText('after', `
 Examples:
-  $ cc-ding init -ci {clientId} -cs {clientSecret} -m {mobile}
+  $ cc-ding init -ci {clientId} -cs {clientSecret} -u {user} -dt {defaultDingToken}
   $ cc-ding run -ci {clientId}
 `)
   .version(projUtil().getPkgVersion());
@@ -37,7 +37,8 @@ program
   .description('初始化cc-ding配置文件, 生成最简config.json')
   .requiredOption('-ci, --clientId <value>', 'clientId')
   .requiredOption('-cs, --clientSecret <value>', 'clientSecret (钉钉Stream连接密钥)')
-  .requiredOption('-m, --mobile <value>', 'mobile (自己的手机号, 自动加入白名单)')
+  .requiredOption('-u, --user <value>', 'user (自己的手机号或工号, 自动设为owner并加入白名单)')
+  .requiredOption('-dt, --defaultDingToken <value>', 'defaultDingToken (兜底钉钉机器人Token)')
   .option('-cn, --clientName <value>', 'clientName (机器人名称, 可选)')
   .action(async (opts) => {
     // init 命令执行前检查 Node 版本
@@ -62,10 +63,10 @@ program
 
     const config: IConfig = {
       clientName: opts.clientName || 'cc助手',
-      owner: opts.mobile,
-      whiteUserList: [ opts.mobile ],
+      owner: opts.user,
+      whiteUserList: [ opts.user ],
       clientSecret: opts.clientSecret,
-      defaultDingToken: '<兜底钉钉机器人Token-用于无dingToken群的消息接收>',
+      defaultDingToken: opts.defaultDingToken,
       conversations: [],
       includeThinking: false,
       resultOnly: true,

@@ -37,14 +37,15 @@ pnpm i cc-ding -g
 #### 初始化
 
 ```bash
-cc-ding init -ci {clientId} -cs {clientSecret} -m {手机号}
+cc-ding init -ci {clientId} -cs {clientSecret} -u {手机号或工号} -dt {defaultDingToken}
 ```
 
 | 参数 | 说明 |
 |------|------|
 | `-ci, --clientId` | 钉钉应用 ClientId |
 | `-cs, --clientSecret` | 钉钉 Stream 连接密钥 |
-| `-m, --mobile` | 管理员手机号（自动加入白名单） |
+| `-u, --user` | 管理员手机号或工号（自动设为 owner 并加入白名单） |
+| `-dt, --defaultDingToken` | 兜底钉钉机器人 Token（必填） |
 | `-cn, --clientName` | 机器人名称（可选，默认 "cc助手"） |
 
 #### 编辑配置
@@ -152,8 +153,8 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 
 | 配置 | 说明 |
 |------|------|
-| `whiteUserList` | 全局白名单（手机号或 userId） |
-| `conversations[].whiteUserList` | 群级白名单，优先级高于全局 |
+| `whiteUserList` | 全局白名单（手机号、工号或 userId） |
+| `conversations[].whiteUserList` | 群级白名单，优先级高于全局（手机号、工号或 userId） |
 | `apiKeyCfg` | API Key 池化：429 自动切换、每日 0 点重置 |
 | `useLocalOcr` | 图片本地 OCR（默认 `true`），模型支持图片时可设 `false` |
 | `linkConversationId` | 关联群 ID，多群共享同一 Claude 会话上下文 |
@@ -177,7 +178,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | 任务 | `{MD5}/.tasks/{时间戳}/task.{json,log}` |
 | 定时任务 | `cron.json` |
 | 图片缓存 | `{MD5}/.images/` |
-| 手机号映射 | `phone-map.json` |
+| 用户映射 | `user-map.json` |
 
 ### 开发
 
@@ -187,8 +188,6 @@ pnpm run lint
 pnpm run test
 pnpm run build
 ```
-
-**系统要求：** Node.js >= 24
 
 ---
 
@@ -215,14 +214,15 @@ pnpm i cc-ding -g
 #### Initialize
 
 ```bash
-cc-ding init -ci {clientId} -cs {clientSecret} -m {phone_number}
+cc-ding init -ci {clientId} -cs {clientSecret} -u {phone_or_emp_id} -dt {defaultDingToken}
 ```
 
 | Parameter | Description |
 |-----------|-------------|
 | `-ci, --clientId` | DingTalk app ClientId |
 | `-cs, --clientSecret` | DingTalk Stream connection secret |
-| `-m, --mobile` | Admin phone number (auto-added to whitelist) |
+| `-u, --user` | Admin phone number or employee ID (set as owner and added to whitelist) |
+| `-dt, --defaultDingToken` | Fallback DingTalk bot Token (required) |
 | `-cn, --clientName` | Bot name (optional, default "cc助手") |
 
 #### Edit Config
@@ -330,8 +330,8 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 
 | Config | Description |
 |--------|-------------|
-| `whiteUserList` | Global whitelist (phone or userId) |
-| `conversations[].whiteUserList` | Group-level whitelist, higher priority than global |
+| `whiteUserList` | Global whitelist (phone, employee ID, or userId) |
+| `conversations[].whiteUserList` | Group-level whitelist, higher priority than global (phone, employee ID, or userId) |
 | `apiKeyCfg` | API Key pooling: auto-switch on 429, daily reset at midnight |
 | `useLocalOcr` | Local image OCR (default `true`); set `false` if model supports images natively |
 | `linkConversationId` | Link groups to share one Claude session context |
@@ -355,7 +355,7 @@ All data is stored under `~/.cc-ding/{clientId}/`:
 | Tasks | `{MD5}/.tasks/{timestamp}/task.{json,log}` |
 | Cron jobs | `cron.json` |
 | Image cache | `{MD5}/.images/` |
-| Phone mapping | `phone-map.json` |
+| User mapping | `user-map.json` |
 
 ### Development
 
@@ -365,8 +365,6 @@ pnpm run lint
 pnpm run test
 pnpm run build
 ```
-
-**Requirements:** Node.js >= 24
 
 ---
 

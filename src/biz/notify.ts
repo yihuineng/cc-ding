@@ -23,12 +23,12 @@ function getClientDir(clientId: string): string {
   return path.join(os.homedir(), '.cc-ding', clientId);
 }
 
-/** 获取 phone-map.json 路径 */
+/** 获取 user-map.json 路径 */
 function getPhoneMapFile(clientId: string): string {
-  return path.join(getClientDir(clientId), 'phone-map.json');
+  return path.join(getClientDir(clientId), 'user-map.json');
 }
 
-/** 加载 phone-map.json 缓存 */
+/** 加载 user-map.json 缓存 */
 function loadPhoneMap(clientId: string): Record<string, string> {
   const file = getPhoneMapFile(clientId);
   if (!fs.existsSync(file)) return {};
@@ -39,7 +39,7 @@ function loadPhoneMap(clientId: string): Record<string, string> {
   return {};
 }
 
-/** 保存 phone-map.json 缓存 */
+/** 保存 user-map.json 缓存 */
 function savePhoneMap(clientId: string, map: Record<string, string>): void {
   const file = getPhoneMapFile(clientId);
   try {
@@ -134,7 +134,7 @@ export async function sendNotify(opts: NotifyOpts): Promise<{ success: number; f
   let success = 0;
   let fail = 0;
 
-  // 缓存 accessToken 和 phone-map（单聊用，首次使用时获取）
+  // 缓存 accessToken 和 user-map（单聊用，首次使用时获取）
   let cachedToken: string | null = null;
   const mobileCache = loadPhoneMap(clientId);
 

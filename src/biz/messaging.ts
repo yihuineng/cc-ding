@@ -140,6 +140,43 @@ export async function queryUserIdByMobile(self: DingClaude, mobile: string): Pro
   }
 }
 
+/**
+ * 根据工号查询 userId
+ * POST /topapi/v2/user/getbyjobnumber
+ * @see https://open.dingtalk.com/document/orgapp/query-users-by-job-number
+ */
+export async function queryUserIdByJobNumber(self: DingClaude, jobNumber: string): Promise<string | null> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `${DING_OAPI_BASE}/topapi/v2/user/getbyjobnumber?access_token=${accessToken}`;
+
+    const result = await urllib.request(url, {
+      method: 'POST',
+      data: { job_number: jobNumber },
+      contentType: 'json',
+      dataType: 'json',
+      timeout: 5000,
+    });
+
+    if (result.status !== 200 || !result.data) {
+      self.debugLog(`queryUserIdByJobNumber API 返回非200: status=${result.status}, data=${JSON.stringify(result.data)}`);
+      return null;
+    }
+
+    const body = result.data as Record<string, unknown>;
+    if (body.errcode !== 0) {
+      console.warn(`queryUserIdByJobNumber 接口返回错误: errcode=${body.errcode}, errmsg=${body.errmsg}`);
+      return null;
+    }
+
+    const resultObj = body.result as Record<string, unknown> | undefined;
+    return (resultObj?.userid as string) || null;
+  } catch (err) {
+    console.warn('queryUserIdByJobNumber 请求失败:', err);
+    return null;
+  }
+}
+
 // Claude 工具调用标签名列表（用于过滤钉钉消息输出）
 const TOOL_TAGS = [
   'Write', 'Read', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent', 'Skill',
