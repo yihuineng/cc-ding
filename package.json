@@ -1,6 +1,6 @@
 {
   "name": "cc-ding",
-  "version": "0.4.0",
+  "version": "1.0.3",
   "description": "本地Claude对接钉钉机器人工具套件",
   "keywords": [
     "cli",
@@ -9,7 +9,6 @@
   ],
   "main": "dist/index",
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.173",
     "commander": "^7.2.0",
     "dotenv": "^16.6.1",
     "shelljs": "^0.10.0",
@@ -35,7 +34,7 @@
   "license": "MIT",
   "author": "yhn",
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "bin": {
     "cc-ding": "./dist/bin/cc-ding.js"

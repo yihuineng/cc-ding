@@ -4,9 +4,9 @@ import { RobotTextMessage } from 'utils-ok';
 // config.json
 export interface IConfig {
   clientName?: string;
-  whiteUserList: string[]; // 白名单
-  owner: string; // 机器人 owner（手机号，可执行敏感操作如 /clean）
-  /** 管理员列表（手机号或userId），除 /reboot、/open、/cfg 注册外与 owner 同权 */
+  whiteUserList: string[]; // 白名单（手机号或工号）
+  owner: string; // 机器人 owner（手机号或工号，可执行敏感操作如 /clean）
+  /** 管理员列表（手机号、工号或userId），除 /reboot、/open、/cfg 注册外与 owner 同权 */
   adminUserList?: string[];
   clientSecret: string; // 钉钉 Stream Client 密钥
   dingSecret?: string; // 搭配 dingToken 发送群消息的签名密钥
@@ -46,7 +46,7 @@ export interface IConversation {
   linkConversationId?: string; // 关联会话ID, 指定时共用该id的工作目录(多个群机器人记忆共享场景, 同时也需要注意并发控制避免文件操作冲突)
   conversationTitle?: string;
   dingToken?: string; // 机器人单聊时, 不存在
-  /** 单聊目标用户手机号（通过 phone-map.json 缓存解析为 userId） */
+  /** 单聊目标用户手机号或工号（通过 user-map.json 缓存解析为 userId） */
   mobile?: string;
   whiteUserList?: string[]; // 机器人实例维度白名单, 定义时优先级高于Client维度
   agent?: string; // 指定agent
@@ -58,6 +58,8 @@ export interface IConversation {
   preBash?: string;
   /** Claude 进程权限模式，默认 acceptEdits（bypassPermissions 需显式配置，启动时会告警）。可选值: default | acceptEdits | plan | auto | bypassPermissions | dontAsk */
   permissionMode?: string;
+  /** 自由模式：开启后跳过群用户白名单限制，所有群成员均可使用，默认 false */
+  freedomMode?: boolean;
   sessionCfg?: {
     // task 功能默认开启，无需配置开关
   }; // 群维度session相关配置

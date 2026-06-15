@@ -8,6 +8,7 @@ import {
   parseGoonCommand, parseCcCommand,
   parseClaudeMdCommand, parseInterruptCommand, parseTodoCommand,
   parseMenuCommand, parseRebootCommand, parseRecorderCommandEnhanced,
+  parseDestroyCommand, parseFreedomCommand,
 } from '../src/biz/commands';
 
 describe('commands parsers', () => {
@@ -33,7 +34,6 @@ describe('commands parsers', () => {
     });
     it('getCommandByName 支持别名', () => {
       assert.strictEqual(getCommandByName('/recorder')?.name, '/recorder');
-      assert.strictEqual(getCommandByName('/r')?.name, '/recorder');
       assert.strictEqual(getCommandByName('/nope'), undefined);
     });
   });
@@ -151,7 +151,11 @@ describe('commands parsers', () => {
     });
     it('parseInterruptCommand', () => {
       assert.strictEqual(parseInterruptCommand('/!'), true);
+      assert.strictEqual(parseInterruptCommand('/！'), true);
+      assert.strictEqual(parseInterruptCommand('!'), true);
+      assert.strictEqual(parseInterruptCommand('！'), true);
       assert.strictEqual(parseInterruptCommand('/! now'), false);
+      assert.strictEqual(parseInterruptCommand('!!'), false);
     });
   });
 
@@ -196,19 +200,16 @@ describe('commands parsers', () => {
   });
 
   describe('parseMqCommand', () => {
-    it('list / front / cancelAll', () => {
+    it('list / front', () => {
       assert.deepStrictEqual(parseMqCommand('/mq'), { type: 'list' });
       assert.deepStrictEqual(parseMqCommand('/mq front'), { type: 'front' });
-      assert.deepStrictEqual(parseMqCommand('/mq -all'), { type: 'cancelAll' });
-      assert.deepStrictEqual(parseMqCommand('/mq rm all'), { type: 'cancelAll' });
+      assert.strictEqual(parseMqCommand('/mq -all'), null);
     });
-    it('rm 单个/范围/多个', () => {
+    it('rm 默认清空/单个/范围/多个', () => {
+      assert.deepStrictEqual(parseMqCommand('/mq rm'), { type: 'rm', all: true });
       assert.deepStrictEqual(parseMqCommand('/mq rm 2'), { type: 'rm', indices: [ 2 ] });
       assert.deepStrictEqual(parseMqCommand('/mq rm 1-3'), { type: 'rm', indices: [ 1, 2, 3 ] });
       assert.deepStrictEqual(parseMqCommand('/mq rm 1 3 5'), { type: 'rm', indices: [ 1, 3, 5 ] });
-    });
-    it('-n 取消前 N 条', () => {
-      assert.deepStrictEqual(parseMqCommand('/mq -n 3'), { type: 'cancel', count: 3 });
     });
     it('非法输入返回 null', () => {
       assert.strictEqual(parseMqCommand('/mq xx'), null);
@@ -240,12 +241,8 @@ describe('commands parsers', () => {
       assert.strictEqual(parseRecorderCommandEnhanced('/recorder on'), 'on');
       assert.strictEqual(parseRecorderCommandEnhanced('/recorder exit'), 'exit');
       assert.strictEqual(parseRecorderCommandEnhanced('/recorder'), null);
-    });
-    it('支持 /r 和 /exit /e 别名', () => {
-      assert.strictEqual(parseRecorderCommandEnhanced('/r on'), 'on');
-      assert.strictEqual(parseRecorderCommandEnhanced('/r e'), 'exit');
-      assert.strictEqual(parseRecorderCommandEnhanced('/exit'), 'exit');
-      assert.strictEqual(parseRecorderCommandEnhanced('/e'), 'exit');
+      assert.strictEqual(parseRecorderCommandEnhanced('/r on'), null);
+      assert.strictEqual(parseRecorderCommandEnhanced('/r exit'), null);
     });
   });
 
@@ -305,6 +302,33 @@ describe('commands parsers', () => {
       assert.deepStrictEqual(parseRebootCommand('/reboot --update'), { update: true, tag: undefined });
       assert.deepStrictEqual(parseRebootCommand('/reboot --update beta'), { update: true, tag: 'beta' });
       assert.strictEqual(parseRebootCommand('/reboot now'), null);
+    });
+  });
+
+  describe('parseDestroyCommand', () => {
+    it('无参数返回空对象', () => {
+      assert.deepStrictEqual(parseDestroyCommand('/destroy'), {});
+    });
+    it('解析 --conversationId', () => {
+      assert.deepStrictEqual(parseDestroyCommand('/destroy --conversationId abc123'), { conversationId: 'abc123' });
+    });
+    it('非 /destroy 返回 null', () => {
+      assert.strictEqual(parseDestroyCommand('hello'), null);
+      assert.strictEqual(parseDestroyCommand('/destroyer'), null);
+    });
+  });
+
+  describe('parseFreedomCommand', () => {
+    it('无参数返回 enter', () => {
+      assert.deepStrictEqual(parseFreedomCommand('/freedom'), { action: 'enter' });
+    });
+    it('exit 返回 exit', () => {
+      assert.deepStrictEqual(parseFreedomCommand('/freedom exit'), { action: 'exit' });
+    });
+    it('非 /freedom 返回 null', () => {
+      assert.strictEqual(parseFreedomCommand('hello'), null);
+      assert.strictEqual(parseFreedomCommand('/freedomxx'), null);
+      assert.strictEqual(parseFreedomCommand('/freedom unknown'), null);
     });
   });
 });

@@ -7,7 +7,7 @@ import path from 'path';
 import type { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IActiveSessionPersist, IConfig, ISession } from './types';
 import { parseEndCommand } from './commands';
-import { sendDingMessage, queryUserIdByMobile, queryDingUser } from './messaging';
+import { sendDingMessage, queryUserIdByMobile, queryUserIdByJobNumber, queryDingUser } from './messaging';
 import { interruptClaudeProcess, executeClaudeQuery } from './claude-process';
 import { isWindows } from './platform';
 
@@ -74,7 +74,7 @@ export function ensureClientDir(clientId: string): void {
 }
 
 export function getClientConfig(self: DingClaude): IConfig {
-  const appCfgFile = `${getClientDir(self)}/config.json`;
+  const appCfgFile = path.join(getClientDir(self), 'config.json');
   assert(fs.existsSync(appCfgFile), `Could not find client config file: ${appCfgFile}`);
   const cfg = fileUtil.getJSON(appCfgFile) as IConfig;
   assert(cfg.clientSecret, 'config.json missing required field: clientSecret');
@@ -93,6 +93,8 @@ export function authCheck(self: DingClaude, userId: string, conversationId?: str
 
   if (conversationId) {
     const conv = self.config.conversations.find(it => it.conversationId === conversationId);
+    // 自由模式：跳过群用户白名单限制
+    if (conv?.freedomMode) return true;
     if (conv?.whiteUserList && conv.whiteUserList.length > 0) {
       return conv.whiteUserList.some(item => resolveToUserId(self, item) === userId);
     }
@@ -101,11 +103,11 @@ export function authCheck(self: DingClaude, userId: string, conversationId?: str
 }
 
 /**
- * 检查用户是否为机器人 owner（owner 只能填手机号）
+ * 检查用户是否为机器人 owner（owner 可填手机号或工号）
  */
 export function isOwner(self: DingClaude, userId: string): boolean {
   const owner = self.config.owner;
-  if (!owner || !isMobile(owner)) return false;
+  if (!owner) return false;
   const ownerUserId = self.resolvedPhones[owner];
   return !!ownerUserId && ownerUserId === userId;
 }
@@ -140,8 +142,14 @@ export function isMobile(value: string): boolean {
   return PHONE_RE.test(value);
 }
 
+/** 判断是否为工号格式（非手机号且非userId的纯数字/字母数字组合） */
+export function isJobNumber(value: string): boolean {
+  // 工号通常为数字或字母数字组合，不是手机号，也不是userId格式
+  return !isMobile(value) && !value.includes('_') && /^[A-Za-z0-9]+$/.test(value);
+}
+
 export function getPhoneMapFile(self: DingClaude): string {
-  return path.join(getClientDir(self), 'phone-map.json');
+  return path.join(getClientDir(self), 'user-map.json');
 }
 
 export function loadPhoneMap(self: DingClaude): Record<string, string> {
@@ -159,7 +167,7 @@ export function savePhoneMap(self: DingClaude, map: Record<string, string>): voi
   try {
     fs.writeFileSync(file, JSON.stringify(map, null, 2), 'utf-8');
   } catch (err) {
-    console.error('保存 phone-map.json 失败:', err);
+    console.error('保存 user-map.json 失败:', err);
   }
 }
 
@@ -211,15 +219,21 @@ export async function resolveUserIdName(self: DingClaude, userId: string): Promi
   return null;
 }
 
-/** 解析单个值：手机号走 API 解析并缓存，userId 直接返回 */
+/** 解析单个值：手机号/工号走 API 解析并缓存，userId 直接返回 */
 export async function resolveUserId(
   self: DingClaude,
   value: string,
 ): Promise<string | null> {
   if (!value) return null;
-  if (!isMobile(value)) return value;
+  // userId 格式（含下划线等）直接返回
+  if (!isMobile(value) && !isJobNumber(value)) return value;
   if (self.resolvedPhones[value]) return self.resolvedPhones[value];
-  const userId = await queryUserIdByMobile(self, value);
+  let userId: string | null = null;
+  if (isMobile(value)) {
+    userId = await queryUserIdByMobile(self, value);
+  } else if (isJobNumber(value)) {
+    userId = await queryUserIdByJobNumber(self, value);
+  }
   if (userId) {
     self.resolvedPhones[value] = userId;
     savePhoneMap(self, self.resolvedPhones);
@@ -227,38 +241,43 @@ export async function resolveUserId(
   return userId;
 }
 
-/** 启动时批量解析 config 中的手机号，填充到 self.resolvedPhones */
+/** 启动时批量解析 config 中的手机号/工号，填充到 self.resolvedPhones */
 export async function resolveAllPhonesInConfig(self: DingClaude): Promise<void> {
   self.resolvedPhones = loadPhoneMap(self);
   const newEntries: string[] = [];
 
-  const ensureResolved = async (phone: string) => {
-    if (self.resolvedPhones[phone]) return;
-    const userId = await queryUserIdByMobile(self, phone);
+  const ensureResolved = async (value: string) => {
+    if (self.resolvedPhones[value]) return;
+    let userId: string | null = null;
+    if (isMobile(value)) {
+      userId = await queryUserIdByMobile(self, value);
+    } else if (isJobNumber(value)) {
+      userId = await queryUserIdByJobNumber(self, value);
+    }
     if (userId) {
-      self.resolvedPhones[phone] = userId;
-      newEntries.push(phone);
+      self.resolvedPhones[value] = userId;
+      newEntries.push(value);
     }
   };
 
-  // 解析 owner（必须是手机号）
+  // 解析 owner（手机号或工号）
   if (self.config.owner) {
-    if (isMobile(self.config.owner)) {
+    if (isMobile(self.config.owner) || isJobNumber(self.config.owner)) {
       await ensureResolved(self.config.owner);
       if (!self.resolvedPhones[self.config.owner]) {
-        console.warn(`[WARN] 无法解析 owner 手机号: ${self.config.owner}`);
+        console.warn(`[WARN] 无法解析 owner: ${self.config.owner}`);
       }
     } else {
-      console.warn(`[WARN] owner 必须为手机号，当前值无效: ${self.config.owner}`);
+      console.warn(`[WARN] owner 格式无效(需为手机号或工号): ${self.config.owner}`);
     }
   }
 
   // 解析全局 whiteUserList
   for (const item of self.config.whiteUserList) {
-    if (isMobile(item)) {
+    if (isMobile(item) || isJobNumber(item)) {
       await ensureResolved(item);
       if (!self.resolvedPhones[item]) {
-        console.warn(`[WARN] 无法解析 whiteUserList 手机号: ${item}`);
+        console.warn(`[WARN] 无法解析 whiteUserList: ${item}`);
       }
     }
   }
@@ -267,10 +286,10 @@ export async function resolveAllPhonesInConfig(self: DingClaude): Promise<void> 
   for (const conv of self.config.conversations) {
     if (conv.whiteUserList) {
       for (const item of conv.whiteUserList) {
-        if (isMobile(item)) {
+        if (isMobile(item) || isJobNumber(item)) {
           await ensureResolved(item);
           if (!self.resolvedPhones[item]) {
-            console.warn(`[WARN] 无法解析群白名单手机号: ${item}`);
+            console.warn(`[WARN] 无法解析群白名单: ${item}`);
           }
         }
       }
@@ -280,7 +299,7 @@ export async function resolveAllPhonesInConfig(self: DingClaude): Promise<void> 
   if (newEntries.length > 0) {
     savePhoneMap(self, self.resolvedPhones);
   }
-  console.log(`[手机解析] 已加载 ${Object.keys(self.resolvedPhones).length} 条记录 (${newEntries.length} 条新解析)`);
+  console.log(`[用户解析] 已加载 ${Object.keys(self.resolvedPhones).length} 条记录 (${newEntries.length} 条新解析)`);
 }
 
 export function hashConversationId(self: DingClaude, conversationId: string): string {
@@ -334,24 +353,24 @@ export function getConversationConfig(self: DingClaude, conversationId: string):
 
 export function getConversationDir(self: DingClaude, conversationId: string): string {
   const hashedId = hashConversationId(self, conversationId);
-  return `${getClientDir(self)}/${hashedId}`;
+  return path.join(getClientDir(self), hashedId);
 }
 
 export function getSessionsDir(self: DingClaude, conversationId: string): string {
-  return `${getConversationDir(self, conversationId)}/.sessions`;
+  return path.join(getConversationDir(self, conversationId), '.sessions');
 }
 
 export function getTasksDir(self: DingClaude, conversationId: string): string {
-  return `${getConversationDir(self, conversationId)}/.tasks`;
+  return path.join(getConversationDir(self, conversationId), '.tasks');
 }
 
 export function getImagesDir(self: DingClaude, conversationId: string): string {
-  return `${getConversationDir(self, conversationId)}/.images`;
+  return path.join(getConversationDir(self, conversationId), '.images');
 }
 
 export function getSessionDir(self: DingClaude, session: ISession): string {
   const dirName = session.claudeSessionId || session.startTimeStr;
-  return `${getSessionsDir(self, session.conversationId)}/${dirName}`;
+  return path.join(getSessionsDir(self, session.conversationId), dirName);
 }
 
 export function getSessionId(session: ISession): string {
@@ -552,6 +571,11 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
   const found = findActiveSession(self, conversationId);
   if (!found) {
     console.log(`群 ${conversationId} 无活跃会话`);
+    await sendDingMessage(self, {
+      conversationId,
+      sessionWebhook,
+      content: '⚠️ 当前没有活跃的会话，无需结束。\n可以通过 /new 开始新会话。',
+    });
     return;
   }
 
@@ -579,8 +603,7 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
   await sendDingMessage(self, {
     conversationId,
     sessionWebhook,
-    atUserId: session.startStaffId,
-    content: `💬 会话已结束\n📋 会话ID: ${sessionId}${queueLen > 0 ? `\n🗑️ 已清空消息队列，丢弃${queueLen}条待处理消息` : ''}`,
+    content: `💬 会话已结束\n🆔 ${sessionId}${queueLen > 0 ? `\n🗑️ 已清空消息队列，丢弃${queueLen}条待处理消息` : ''}`,
   });
 
   self.activeSessions.delete(sessionKey);
@@ -604,7 +627,7 @@ export async function switchToSession(
   const targetSession = findHistorySession(self, conversationId, targetSessionId);
   if (!targetSession) {
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
+      conversationId, sessionWebhook,
       content: `❌ 未找到会话 ${targetSessionId}，该会话可能已被清理，请发送新消息开始新会话`,
     });
     return false;
@@ -613,7 +636,7 @@ export async function switchToSession(
   const sessionDir = getSessionDir(self, targetSession);
   if (!fs.existsSync(sessionDir)) {
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
+      conversationId, sessionWebhook,
       content: `❌ 会话 ${targetSessionId} 的数据已被清理，无法恢复，请发送新消息开始新会话`,
     });
     return false;
@@ -644,8 +667,8 @@ export async function switchToSession(
   const hasClaudeSession = !!targetSession.claudeSessionId;
   const displayId = getSessionId(targetSession);
   await sendDingMessage(self, {
-    conversationId, sessionWebhook, atUserId: senderStaffId,
-    content: `✅ 已切换到历史会话 (会话ID: ${displayId})\n${hasClaudeSession ? '🔄 已恢复对话上下文' : '⚠️ 该会话无历史上下文，将从头开始'}\n💡 回复 /end 可结束本轮对话`,
+    conversationId, sessionWebhook,
+    content: `✅ 已切换到历史会话 (🆔 ${displayId})\n${hasClaudeSession ? '🔄 已恢复对话上下文' : '⚠️ 该会话无历史上下文，将从头开始'}\n💡 回复 /end 可结束本轮对话`,
   });
 
   console.log(`已切换到历史会话: 群=${conversationId}, 会话ID=${displayId}, 有Claude上下文=${hasClaudeSession}`);
@@ -666,13 +689,14 @@ export async function startNewSession(self: DingClaude, opts: {
   if (self.activeSessions.size >= maxConcurrency) {
     console.log(`达到最大并发数 (${maxConcurrency})，拒绝新会话: 群=${conversationId}`);
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
+      conversationId, sessionWebhook,
       content: '🤯 当前繁忙，请稍后再试...',
     });
     return;
   }
 
   const now = Date.now();
+  const newSessionId = crypto.randomUUID();
   const session: ISession = {
     conversationId,
     sessionWebhook,
@@ -682,7 +706,7 @@ export async function startNewSession(self: DingClaude, opts: {
     startNickName: senderNick,
   };
 
-  console.log(`创建新会话: 群=${conversationId}, 会话ID=${getSessionId(session)}, 发起者=${senderStaffId}, 当前并发=${self.activeSessions.size + 1}/${maxConcurrency}`);
+  console.log(`创建新会话: 群=${conversationId}, 会话ID=${newSessionId}, 发起者=${senderStaffId}, 当前并发=${self.activeSessions.size + 1}/${maxConcurrency}`);
 
   const sessionDir = getSessionDir(self, session);
   fs.mkdirSync(sessionDir, { recursive: true });
@@ -699,8 +723,8 @@ export async function startNewSession(self: DingClaude, opts: {
 
   if (conversationConfig.receiveReply !== false) {
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
-      content: `🚀 会话已开始！\n处理中...\n💡 回复 /end 可结束本轮对话`,
+      conversationId, sessionWebhook,
+      content: `✅ 收到，我来处理...\n🆔 ${newSessionId}`,
     });
   }
 
@@ -711,6 +735,7 @@ export async function startNewSession(self: DingClaude, opts: {
       senderNick,
       senderStaffId,
       permissionMode: conversationConfig.permissionMode,
+      newSessionId,
     });
   } catch (err) {
     console.error('执行 Claude 查询失败:', err);
@@ -749,9 +774,10 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   saveActiveSession(self, conversationId);
 
   if (activeSession.conversationConfig.receiveReply !== false) {
+    const preview = message.length > 50 ? message.substring(0, 50) + '…' : message;
     await sendDingMessage(self, {
       conversationId, sessionWebhook, atUserId: senderStaffId,
-      content: '✅ 收到，我来处理...',
+      content: `🚀 开始处理消息「${preview}」`,
     }).catch(() => {});
   }
 
@@ -834,7 +860,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
       const queuePos = activeSession.messageQueue.length;
       console.log(`会话 ${conversationId} 消息已入队，排队第 ${queuePos} 条`);
       await sendDingMessage(self, {
-        conversationId, sessionWebhook, atUserId: senderStaffId,
+        conversationId, sessionWebhook,
         content: `⏳ 正在处理中，已加入队列（排队第 ${queuePos} 条）`,
       });
       return;
@@ -858,7 +884,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
 
     if (conversationConfig.receiveReply !== false) {
       await sendDingMessage(self, {
-        conversationId, sessionWebhook, atUserId: senderStaffId,
+        conversationId, sessionWebhook,
         content: '✅ 收到，我来处理...',
       });
     }

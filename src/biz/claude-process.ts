@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
+import { randomUUID } from 'crypto';
 import type { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IClaudeSetting, ISession } from './types';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
@@ -449,7 +450,7 @@ function runClaudeOnce(
           conversationId: getReplyConversationId(session),
           sessionWebhook: getReplyWebhook(session),
           atUserId,
-          content: '⚠️ Claude 处理完成但未返回任何内容，请重试或换种方式提问',
+          content: '⚠️ Claude 处理完成但未返回任何内容',
         }).catch(err => console.error('发送钉钉消息失败:', err));
       }
 
@@ -656,9 +657,9 @@ export async function executeClaudeQuery(
   self: DingClaude,
   session: ISession,
   message: string,
-  opts?: { skill?: string; agent?: string; settings?: string; senderNick?: string; senderStaffId?: string; permissionMode?: string },
+  opts?: { skill?: string; agent?: string; settings?: string; senderNick?: string; senderStaffId?: string; permissionMode?: string; newSessionId?: string },
 ): Promise<void> {
-  const { skill, agent, senderNick, senderStaffId } = opts || {};
+  const { skill, agent, senderNick, senderStaffId, newSessionId } = opts || {};
   let sessionDir = self.getSessionDir(session);
   let sessionLog = `${sessionDir}/session.log`;
   const dingGroupDir = self.getConversationDir(session.conversationId);
@@ -712,8 +713,8 @@ export async function executeClaudeQuery(
     });
     return;
   }
-  // 默认 acceptEdits（安全默认值）；如需绕过所有权限确认，需在配置中显式设置 bypassPermissions
-  const permissionMode = opts?.permissionMode ?? 'acceptEdits';
+  // 默认 bypassPermissions（cc-ding 通过钉钉交互，无终端审批能力）；如需更严格权限可在配置中显式设置 acceptEdits
+  const permissionMode = opts?.permissionMode ?? 'bypassPermissions';
   const fixedCmdArgs = [
     '--permission-mode', permissionMode,
     '--print',
@@ -778,6 +779,15 @@ export async function executeClaudeQuery(
       if (!isRetry) {
         console.log(`[${timestamp()}] 恢复 Claude 会话: ${session.claudeSessionId}`);
       }
+    } else if (!isRetry) {
+      // 首轮新会话：显式指定 session-id，确保 session 从开始就被持久化到磁盘，
+      // 这样后续 --resume 一定能找到该会话。不预先设置 claudeSessionId，
+      // 因为 Claude 可能在内部使用不同的 UUID；改为依赖 stream 中返回的真实 session_id。
+      const explicitSessionId = newSessionId || randomUUID();
+      cmdArgs.push('--session-id', explicitSessionId);
+      // 使用 UUID 前缀作为 name，避免时间戳被 Claude 误认为 session ID
+      cmdArgs.push('--name', `cc-ding-${explicitSessionId.substring(0, 8)}`);
+      console.log(`[${timestamp()}] 创建 Claude 会话(显式 session-id): ${explicitSessionId}`);
     }
     const settingsPath = resolveClaudeSettingsPath(self, dingGroupDir, opts?.settings);
     if (settingsPath) {

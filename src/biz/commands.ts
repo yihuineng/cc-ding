@@ -166,10 +166,9 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/recorder',
-    aliases: [ '/r' ],
-    description: 'Recorder 模式：记录所有消息到本地（仅 owner 单聊，录制中可发送 /exit 或 /e 快捷退出）',
+    description: 'Recorder 模式：记录所有消息到本地（仅 owner 单聊，发送 /recorder exit 退出）',
     usage: '/recorder [on|exit]',
-    examples: [ '/recorder on', '/recorder exit', '/r on', '/r exit' ],
+    examples: [ '/recorder on', '/recorder exit' ],
     category: '管理',
     ownerOnly: true,
   },
@@ -189,9 +188,9 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/!',
-    description: '中断当前任务并立即处理新消息',
-    usage: '/!',
-    examples: [ '/!' ],
+    description: '中断当前任务并立即处理新消息（支持 /! /！ ! ！）',
+    usage: '/! | /！ | ! | ！',
+    examples: [ '/!', '!' ],
     category: '会话',
   },
   {
@@ -199,6 +198,22 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     description: '重启 cc-ding 应用（需 pm2 部署）',
     usage: '/reboot [--update [tag]]',
     examples: [ '/reboot', '/reboot --update', '/reboot --update beta' ],
+    category: '管理',
+    ownerOnly: true,
+  },
+  {
+    name: '/destroy',
+    description: '注销当前群机器人，删除工作目录和配置',
+    usage: '/destroy [--conversationId xxx]',
+    examples: [ '/destroy', '/destroy --conversationId targetConvId' ],
+    category: '管理',
+    ownerOnly: true,
+  },
+  {
+    name: '/freedom',
+    description: '自由模式：开启后所有群成员均可使用机器人（跳过白名单限制）',
+    usage: '/freedom | /freedom exit',
+    examples: [ '/freedom', '/freedom exit' ],
     category: '管理',
     ownerOnly: true,
   },
@@ -333,6 +348,7 @@ export function formatConversationInfo(
   }
   if (conv.atSender === false) lines.push(`- **atSender:** false`);
   if (conv.receiveReply === false) lines.push(`- **receiveReply:** false (不回复确认消息)`);
+  if (conv.freedomMode) lines.push(`- **freedomMode:** 已开启（跳过白名单限制）`);
   if (conv.useLocalOcr === false) lines.push(`- **本地OCR:** 关闭`);
   if (conv.permissionMode) lines.push(`- **permissionMode:** ${conv.permissionMode}`);
   if (conv.taskCfg?.skill) lines.push(`- **taskSkill:** ${conv.taskCfg.skill}`);
@@ -658,19 +674,16 @@ export function parseBashCommand(text: string): string | null {
  * 解析 /mq 命令
  * - /mq           -> { type: 'list' }
  * - /mq front      -> { type: 'front' } (插队到队列头部)
+ * - /mq rm         -> { type: 'rm', all: true } (清空全部)
  * - /mq rm <n>     -> { type: 'rm', indices: [n] } (按序号删除)
  * - /mq rm <1-3>   -> { type: 'rm', indices: [1,2,3] } (范围删除)
  * - /mq rm 1 3 5   -> { type: 'rm', indices: [1,3,5] } (多序号删除)
- * - /mq -n 3        -> { type: 'cancel', count: 3 } (取消前N条)
- * - /mq -all        -> { type: 'cancelAll' }
  * - 其他 -> null
  */
 export type MqCommand =
   | { type: 'list' }
   | { type: 'front' }
-  | { type: 'rm'; indices: number[] }
-  | { type: 'cancel'; count: number }
-  | { type: 'cancelAll' };
+  | { type: 'rm'; all?: boolean; indices?: number[] };
 
 export function parseMqCommand(text: string): MqCommand | null {
   const trimmed = text.trim();
@@ -682,11 +695,11 @@ export function parseMqCommand(text: string): MqCommand | null {
   // /mq front
   if (/^front$/i.test(rest)) return { type: 'front' };
 
-  // /mq rm <序号列表> (支持: rm 1 / rm 1-3 / rm 1 3 5 / rm all)
+  // /mq rm (无参数=清空全部; 有参数=按序号/范围删除)
+  if (/^rm$/i.test(rest)) return { type: 'rm', all: true };
   const rmMatch = rest.match(/^rm\s+(.+)$/i);
   if (rmMatch) {
     const rmArg = rmMatch[1].trim();
-    if (/^all$/i.test(rmArg)) return { type: 'cancelAll' };
 
     const indices: number[] = [];
     // 先检查是否有范围格式 (如 1-3)
@@ -707,14 +720,6 @@ export function parseMqCommand(text: string): MqCommand | null {
     }
     if (indices.length > 0) return { type: 'rm', indices };
   }
-
-  const match = rest.match(/^-n\s+(\d+)$/i);
-  if (match) {
-    const n = parseInt(match[1], 10);
-    return n > 0 ? { type: 'cancel', count: n } : { type: 'list' };
-  }
-
-  if (/^-all$/i.test(rest)) return { type: 'cancelAll' };
 
   return null;
 }
@@ -778,10 +783,61 @@ export function parseClaudeMdCommand(text: string): boolean {
 }
 
 /**
- * 解析 /! 中断命令
+ * 解析 /! 中断命令，支持四种触发方式：/! /！ ! ！
  */
 export function parseInterruptCommand(text: string): boolean {
-  return text.trim() === '/!';
+  const trimmed = text.trim();
+  return trimmed === '/!' || trimmed === '/！' || trimmed === '!' || trimmed === '！';
+}
+
+/**
+ * 解析 /destroy 命令
+ * - /destroy                           -> 注销当前群
+ * - /destroy --conversationId xxx       -> 注销指定群（owner 专用）
+ */
+export interface IDestroyOptions {
+  conversationId?: string;
+}
+
+export function parseDestroyCommand(text: string): IDestroyOptions | null {
+  const trimmed = text.trim();
+  if (!/^\/destroy(\b|$)/.test(trimmed)) return null;
+
+  const rest = trimmed.substring(8).trim();
+  if (!rest) return {};
+
+  if (/^--help$/i.test(rest)) return null;
+
+  const result: IDestroyOptions = {};
+  const tokens = rest.split(/\s+/);
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--conversationId' && tokens[i + 1]) {
+      result.conversationId = tokens[++i];
+    }
+  }
+  return result;
+}
+
+/**
+ * 解析 /freedom 命令
+ * - /freedom             -> 进入自由模式（60s 内回复"确认"或"confirm"即可开启）
+ * - /freedom exit        -> 退出自由模式
+ */
+export type FreedomAction = 'enter' | 'exit';
+
+export interface IFreedomOptions {
+  action: FreedomAction;
+}
+
+export function parseFreedomCommand(text: string): IFreedomOptions | null {
+  const trimmed = text.trim();
+  if (!/^\/freedom(\b|$)/i.test(trimmed)) return null;
+
+  const rest = trimmed.substring(8).trim().toLowerCase();
+  if (!rest) return { action: 'enter' };
+  if (rest === 'exit') return { action: 'exit' };
+  return null;
 }
 
 /**
@@ -948,13 +1004,11 @@ export function parseRebootCommand(text: string): IRebootCommand | null {
 }
 
 /**
- * 解析 /recorder 或 /r 快捷命令（增强版，支持 /exit /e 退出别名）
+ * 解析 /recorder 命令
  */
 export function parseRecorderCommandEnhanced(text: string): 'on' | 'exit' | null {
-  const trimmed = text.trim().toLowerCase();
-  // /recorder on / /r on
-  if (/^\/(?:recorder|r)\s+on$/i.test(trimmed)) return 'on';
-  // /recorder exit / /r exit / /recorder e / /r e / /exit / /e
-  if (/^\/(?:recorder|r)\s+(?:exit|e)$/i.test(trimmed) || /^\/(?:exit|e)$/i.test(trimmed)) return 'exit';
+  const trimmed = text.trim();
+  if (/^\/recorder\s+on$/i.test(trimmed)) return 'on';
+  if (/^\/recorder\s+exit$/i.test(trimmed)) return 'exit';
   return null;
 }

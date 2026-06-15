@@ -1,11 +1,12 @@
 import { exec as childExec } from 'child_process';
 import { DingStreamClient, DWClientDownStream, dateUtil } from 'utils-ok';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { projUtil } from '../common';
 import { IConfig, IActiveSession, ISession, IRawCallbackData, IAuthRequest } from './types';
-import { extractQuoteInfo, formatPromptWithQuote } from './quote';
-import { fetchQuotedMessage, sendMessageToUser, sendOwnerMessage } from './messaging';
+import { extractQuoteInfo, formatPromptWithQuote, enrichQuoteInfo } from './quote';
+import { sendMessageToUser, sendOwnerMessage } from './messaging';
 import { processPictureMessage, processRichTextMessage, processFileMessage, extractDownloadCode } from './image';
 import {
   parseInfoCommand, formatConversationInfo, formatGlobalConfig, parseLogCommand,
@@ -15,7 +16,7 @@ import {
   parseCronCommand, parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
   parseBashCommand, parseMqCommand, parseRecorderCommandEnhanced,
   parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
-  parseRebootCommand, parseInterruptCommand, parseMenuCommand,
+  parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand, parseFreedomCommand,
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts } from './claude-process';
@@ -79,6 +80,9 @@ export class DingClaude {
 
   /** Recorder 模式已开启的会话 ID 集合（运行时状态，不持久化） */
   recorderModeConversations = new Set<string>();
+
+  /** 等待确认开启自由模式的会话 ID -> 发起时间戳（60s 超时，不持久化） */
+  pendingFreedomConvs = new Map<string, number>();
 
   /** 定时任务引擎 */
   cronEngine!: CronEngine;
@@ -261,9 +265,7 @@ export class DingClaude {
         conversationId, sessionWebhook,
         content: [
           '抱歉,您暂无使用权限',
-          '请将以下信息发送给机器人管理员,由管理员通过命令注册:',
-          `- **会话ID:** \`${conversationId}\``,
-          `- **注册命令:** \`/cfg --conversationId ${conversationId}\``,
+          '请联系机器人 owner 申请授权',
         ].join('\n'),
         msgType: 'markdown',
       });
@@ -777,11 +779,7 @@ export class DingClaude {
     const conversationConfig = this.getConversationConfig(conversationId);
 
     // ==================== Recorder 模式处理 ====================
-    let recorderCmd = parseRecorderCommandEnhanced(textContent);
-    // 裸 /exit、/e 仅在 recorder 模式开启时作为退出快捷方式，避免拦截普通会话消息
-    if (recorderCmd === 'exit' && /^\/(?:exit|e)$/i.test(textContent) && !this.recorderModeConversations.has(conversationId)) {
-      recorderCmd = null;
-    }
+    const recorderCmd = parseRecorderCommandEnhanced(textContent);
     if (recorderCmd !== null) {
       if (!this.isOwner(senderStaffId) || conversationType !== '1') {
         await this.sendDingMessage({
@@ -811,6 +809,29 @@ export class DingClaude {
         });
       }
       return;
+    }
+
+    // ==================== 自由模式确认拦截 ====================
+    const pendingTime = this.pendingFreedomConvs.get(conversationId);
+    if (pendingTime && Date.now() - pendingTime < 60_000) {
+      const normalizedText = textContent.trim().toLowerCase();
+      if (normalizedText === '确认' || normalizedText === 'confirm') {
+        this.pendingFreedomConvs.delete(conversationId);
+        const convConfig = this.getConversationConfig(conversationId);
+        if (convConfig) {
+          convConfig.freedomMode = true;
+          saveClientConfig(this);
+        }
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: '✅ 自由模式已开启\n💡 所有群成员现在均可使用机器人',
+          msgType: 'markdown',
+        });
+        return;
+      }
+    } else if (pendingTime && Date.now() - pendingTime >= 60_000) {
+      // 超时清理
+      this.pendingFreedomConvs.delete(conversationId);
     }
 
     // Recorder 模式拦截：开启时所有消息都记录，不执行正常处理
@@ -882,13 +903,13 @@ export class DingClaude {
       prompt = textContent;
       // 引用消息只 @机器人（无额外文本）时 textContent 为空，但仍有引用内容需要处理
       if (!prompt) {
+        const conversationDir = this.getConversationDir(conversationId);
+        const useLocalOcr = conversationConfig?.useLocalOcr !== false;
         const quoteInfo = extractQuoteInfo(rawData);
         if (quoteInfo) {
           this.debugLog(`检测到引用消息(无正文): quoteMessageId=${quoteInfo.quoteMessageId}`);
-          if (quoteInfo.quoteMessageId && !quoteInfo.quoteText) {
-            const fetched = await fetchQuotedMessage(this, quoteInfo.quoteMessageId);
-            if (fetched) quoteInfo.quoteText = fetched;
-          }
+          // 增强引用：下载文件/图片、OCR 等
+          await enrichQuoteInfo(this, quoteInfo, rawData, conversationDir, useLocalOcr);
           if (quoteInfo.quoteText) {
             prompt = formatPromptWithQuote('', quoteInfo);
           }
@@ -899,14 +920,13 @@ export class DingClaude {
 
     // 提取引用消息（命令消息忽略引用）
     if (!prompt.startsWith('/') && msgtype === 'text' && textContent) {
+      const conversationDir = this.getConversationDir(conversationId);
+      const useLocalOcr = conversationConfig?.useLocalOcr !== false;
       const quoteInfo = extractQuoteInfo(rawData);
       if (quoteInfo) {
         this.debugLog(`检测到引用消息: quoteMessageId=${quoteInfo.quoteMessageId}`);
-        // 如有 messageId 但无文本内容,通过 API 获取
-        if (quoteInfo.quoteMessageId && !quoteInfo.quoteText) {
-          const fetched = await fetchQuotedMessage(this, quoteInfo.quoteMessageId);
-          if (fetched) quoteInfo.quoteText = fetched;
-        }
+        // 增强引用：下载文件/图片、OCR 等
+        await enrichQuoteInfo(this, quoteInfo, rawData, conversationDir, useLocalOcr);
         // 注入引用上下文到 prompt
         if (quoteInfo.quoteText) {
           prompt = formatPromptWithQuote(prompt, quoteInfo);
@@ -1067,10 +1087,29 @@ export class DingClaude {
 
       // /version 命令：查看工具版本
       route('/version', () => parseVersionCommand(prompt), async () => {
+        let claudeCliVersion = '未安装';
+        try {
+          const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+            childExec('claude --version', { timeout: 5000 }, (err, stdout, _stderr) => {
+              if (err) reject(err);
+              else resolve({ stdout });
+            });
+          });
+          claudeCliVersion = stdout.trim() || '未知';
+        } catch { /* ignore */ }
+
+        const md = [
+          '### 📦 cc-ding 版本信息',
+          '',
+          `- **cc-ding:** ${TOOL_VERSION}`,
+          `- **claude:** ${claudeCliVersion}`,
+          `- **os:** ${os.platform()} ${os.release()}`,
+          `- **node:** ${process.version}`,
+        ].join('\n');
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: `**版本:** ${TOOL_VERSION}`,
+          content: md,
           msgType: 'markdown',
         });
       }),
@@ -1109,9 +1148,9 @@ export class DingClaude {
           return;
         }
 
-        const tag = rebootCmd.tag ? `@${rebootCmd.tag}` : '';
+        const tag = rebootCmd.tag ? `@${rebootCmd.tag}` : '@latest';
         const cmd = rebootCmd.update
-          ? `pnpm add -g cc-ding${tag}`
+          ? `npm install -g cc-ding${tag}`
           : null;
         const processName = `cc-ding-${this.clientId}`;
 
@@ -1152,7 +1191,6 @@ export class DingClaude {
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          atUserId: senderStaffId,
           content: `⚠️ 该群未注册，请先使用 \`/cfg\` 命令注册`,
           msgType: 'markdown',
         });
@@ -1160,7 +1198,6 @@ export class DingClaude {
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          atUserId: senderStaffId,
           content: `抱歉,该群的机器人未在服务端注册,请联系应用机器人owner注册(${conversationId})...`,
         });
       }
@@ -1169,6 +1206,120 @@ export class DingClaude {
 
     // 已注册群的命令路由表
     const commandRoutes: ICommandRoute[] = [
+      // /destroy 命令：注销当前群机器人，删除工作目录和配置（仅 owner 可用）
+      route('/destroy', () => parseDestroyCommand(prompt), async destroyOpts => {
+        if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
+
+        const targetConvId = destroyOpts.conversationId || conversationId;
+        const isTargetOther = targetConvId !== conversationId;
+        if (isTargetOther && !this.isOwner(senderStaffId)) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '❌ 只有 owner 才能操作其他群的配置',
+            msgType: 'markdown',
+          });
+          return;
+        }
+
+        const convIndex = this.config.conversations.findIndex(c => c.conversationId === targetConvId);
+        if (convIndex < 0) {
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '⚠️ 该群未在配置中注册，无需注销',
+            msgType: 'markdown',
+          });
+          return;
+        }
+
+        const conv = this.config.conversations[convIndex];
+        const convTitle = conv.conversationTitle || targetConvId;
+
+        // 从配置中移除
+        this.config.conversations.splice(convIndex, 1);
+
+        // 删除工作目录
+        const workDir = this.getConversationDir(targetConvId);
+        let dirDeleted = false;
+        try {
+          if (fs.existsSync(workDir)) {
+            fs.rmSync(workDir, { recursive: true, force: true });
+            dirDeleted = true;
+          }
+        } catch (err) {
+          console.error(`[${timestamp()}] 删除工作目录失败:`, err);
+        }
+
+        // 清除内存状态
+        const activeSession = this.activeSessions.get(targetConvId);
+        if (activeSession?.currentProcess) {
+          try { activeSession.currentProcess.kill('SIGTERM'); } catch { /* ignore */ }
+        }
+        this.activeSessions.delete(targetConvId);
+        this.recorderModeConversations.delete(targetConvId);
+
+        // 持久化配置
+        saveClientConfig(this);
+
+        console.log(`[${timestamp()}] 已注销群: ${convTitle}(${targetConvId})`);
+
+        const parts: string[] = [
+          '✅ 群机器人已注销',
+          `- **群名称:** ${convTitle}`,
+          `- **群ID:** ${targetConvId}`,
+        ];
+        if (dirDeleted) parts.push('- **工作目录:** 已删除');
+        else parts.push('- **工作目录:** (不存在或无法删除)');
+        if (activeSession) parts.push('- **活跃会话:** 已清除');
+        parts.push('\n⚠️ 该群下次发送消息时将收到"未注册"提示');
+        parts.push('💡 如需重新注册，请使用 `/cfg` 命令');
+
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: parts.join('\n'),
+          msgType: 'markdown',
+        });
+      }),
+
+      // /freedom 命令：自由模式，跳过群用户白名单限制（仅 owner 可用）
+      route('/freedom', () => parseFreedomCommand(prompt), async freedomOpts => {
+        if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
+
+        if (freedomOpts.action === 'enter') {
+          if (conversationConfig?.freedomMode) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: 'ℹ️ 当前已处于自由模式',
+              msgType: 'markdown',
+            });
+            return;
+          }
+          // 记录发起时间，60s 内回复"确认"或"confirm"即可开启
+          this.pendingFreedomConvs.set(conversationId, Date.now());
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '⚠️ 开启自由模式后，所有群成员均可使用机器人（跳过白名单限制）\n\n60 秒内回复「确认」或「confirm」即可开启',
+            msgType: 'markdown',
+          });
+        } else if (freedomOpts.action === 'exit') {
+          if (!conversationConfig?.freedomMode) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: 'ℹ️ 当前未开启自由模式',
+              msgType: 'markdown',
+            });
+            return;
+          }
+          conversationConfig.freedomMode = false;
+          saveClientConfig(this);
+          this.pendingFreedomConvs.delete(conversationId);
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '✅ 自由模式已关闭\n🔒 已恢复白名单限制',
+            msgType: 'markdown',
+          });
+        }
+      }),
+
       // /clean 命令：清除历史会话和缓存（单聊模式也允许操作）
       route('/clean', () => parseCleanCommand(prompt), async cleanType => {
       // 单聊模式仅限 clean 当前群
@@ -1662,7 +1813,6 @@ export class DingClaude {
           await this.sendDingMessage({
             conversationId,
             sessionWebhook,
-            atUserId: senderStaffId,
             content: '🚀 请输入您的问题开始新会话',
           });
         }
@@ -1678,7 +1828,6 @@ export class DingClaude {
             await this.sendDingMessage({
               conversationId,
               sessionWebhook,
-              atUserId: senderStaffId,
               content: '⚠️ 未找到已结束的会话',
               msgType: 'markdown',
             });
@@ -1807,7 +1956,6 @@ export class DingClaude {
           await this.sendDingMessage({
             conversationId,
             sessionWebhook,
-            atUserId: senderStaffId,
             content: '📋 任务已收到,完成后我会回复',
           });
           await this.saveTask({
@@ -1888,6 +2036,17 @@ export class DingClaude {
               });
               return;
             }
+            // /mq rm 无参数：清空全部
+            if (mqCmd.all) {
+              const removedCount = queue.length;
+              queue.length = 0;
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: `✅ 已清空消息队列，共移除 ${removedCount} 条消息`,
+                msgType: 'markdown',
+              });
+              return;
+            }
             const unique = [ ...new Set(mqCmd.indices) ];
             const valid = unique.filter(n => n >= 1 && n <= queue.length).sort((a, b) => b - a);
             const invalid = unique.filter(n => n < 1 || n > queue.length);
@@ -1914,47 +2073,6 @@ export class DingClaude {
             await this.sendDingMessage({
               conversationId, sessionWebhook,
               content,
-              msgType: 'markdown',
-            });
-            return;
-          }
-
-          case 'cancel': {
-            if (queue.length === 0) {
-              await this.sendDingMessage({
-                conversationId, sessionWebhook,
-                content: '📭 当前无排队消息',
-                msgType: 'markdown',
-              });
-              return;
-            }
-            const removeCount = Math.min(mqCmd.count, queue.length);
-            const removed = queue.splice(queue.length - removeCount, removeCount);
-            const removedLines = removed.map((entry, i) =>
-              `${i + 1}. **${entry.senderNick || entry.senderStaffId}:** ${this.truncateMsg(entry.message)}`,
-            );
-            await this.sendDingMessage({
-              conversationId, sessionWebhook,
-              content: `✅ 已从队尾移除 ${removeCount} 条消息\n${removedLines.join('\n')}`,
-              msgType: 'markdown',
-            });
-            return;
-          }
-
-          case 'cancelAll': {
-            if (queue.length === 0) {
-              await this.sendDingMessage({
-                conversationId, sessionWebhook,
-                content: '📭 当前无排队消息',
-                msgType: 'markdown',
-              });
-              return;
-            }
-            const removedCount = queue.length;
-            queue.length = 0;
-            await this.sendDingMessage({
-              conversationId, sessionWebhook,
-              content: `✅ 已清空消息队列，共移除 ${removedCount} 条消息`,
               msgType: 'markdown',
             });
             return;
@@ -2061,7 +2179,6 @@ export class DingClaude {
           if (activeSession.conversationConfig.receiveReply !== false) {
             await this.sendDingMessage({
               conversationId, sessionWebhook,
-              atUserId: senderStaffId,
               content: '📥 已收到，正在处理...',
             }).catch(() => {});
           }
@@ -2123,6 +2240,12 @@ export class DingClaude {
         const replacement = name ? `${name}(${id})` : id;
         finalPrompt = finalPrompt.replace(/\u200b/g, replacement);
       }
+    }
+
+    // 防止 / 开头的非 /cc 命令被 Claude CLI 误识别为未知命令
+    // 在 / 前加空格，让 Claude 当作普通文本处理
+    if (finalPrompt.startsWith('/') && !finalPrompt.startsWith('/cc ')) {
+      finalPrompt = ` ${finalPrompt}`;
     }
 
     await this.handleSessionMessage({
