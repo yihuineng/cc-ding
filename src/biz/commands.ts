@@ -143,8 +143,8 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/cfg',
     description: '注册当前群到配置，或刷新指定字段(已注册群)',
-    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode]',
-    examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --permissionMode auto', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
+    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode] [--qaGitRepos 目录1,目录2] [--qaDocs url1,url2] [--qaAutoPull true|false]',
+    examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --permissionMode auto', '/cfg --qaGitRepos cc-ding,my-project --qaAutoPull true', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
     category: '管理',
     ownerOnly: true,
   },
@@ -216,6 +216,13 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     examples: [ '/freedom', '/freedom exit' ],
     category: '管理',
     ownerOnly: true,
+  },
+  {
+    name: '/qa',
+    description: '问答模式：开启后 Claude 以只读 plan 模式运行，所有群成员均可使用',
+    usage: '/qa | /qa exit',
+    examples: [ '/qa', '/qa exit' ],
+    category: '管理',
   },
 ];
 
@@ -353,6 +360,10 @@ export function formatConversationInfo(
   if (conv.permissionMode) lines.push(`- **permissionMode:** ${conv.permissionMode}`);
   if (conv.taskCfg?.skill) lines.push(`- **taskSkill:** ${conv.taskCfg.skill}`);
   if (conv.preBash) lines.push(`- **preBash:** \`${conv.preBash}\``);
+  if (conv.qaMode) lines.push(`- **qaMode:** 已开启（只读问答模式，所有群成员可用）`);
+  if (conv.qaCfg?.gitRepos?.length) lines.push(`- **qaGitRepos:** ${conv.qaCfg.gitRepos.join(', ')}`);
+  if (conv.qaCfg?.docs?.length) lines.push(`- **qaDocs:** ${conv.qaCfg.docs.join(', ')}`);
+  if (conv.qaCfg?.autoPull) lines.push(`- **qaAutoPull:** 已开启`);
   return lines.join('\n');
 }
 
@@ -596,6 +607,10 @@ export interface ICfgOptions {
   receiveReply?: boolean;
   preBash?: string;
   permissionMode?: string;
+  // QA 模式配置
+  qaGitRepos?: string[];
+  qaDocs?: string[];
+  qaAutoPull?: boolean;
 }
 
 export function parseCfgCommand(text: string): ICfgOptions | null {
@@ -650,6 +665,13 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
       }
     } else if (token === '--permissionMode' && tokens[i + 1]) {
       result.permissionMode = tokens[++i];
+    } else if (token === '--qaGitRepos' && tokens[i + 1]) {
+      result.qaGitRepos = tokens[++i].split(',').map(s => s.trim()).filter(Boolean);
+    } else if (token === '--qaDocs' && tokens[i + 1]) {
+      result.qaDocs = tokens[++i].split(',').map(s => s.trim()).filter(Boolean);
+    } else if (token === '--qaAutoPull' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      result.qaAutoPull = val === 'true' || val === '1' || val === 'yes';
     }
   }
 
@@ -835,6 +857,27 @@ export function parseFreedomCommand(text: string): IFreedomOptions | null {
   if (!/^\/freedom(\b|$)/i.test(trimmed)) return null;
 
   const rest = trimmed.substring(8).trim().toLowerCase();
+  if (!rest) return { action: 'enter' };
+  if (rest === 'exit') return { action: 'exit' };
+  return null;
+}
+
+/**
+ * 解析 /qa 命令
+ * - /qa            -> 进入问答模式
+ * - /qa exit       -> 退出问答模式
+ */
+export type QaAction = 'enter' | 'exit';
+
+export interface IQaOptions {
+  action: QaAction;
+}
+
+export function parseQaCommand(text: string): IQaOptions | null {
+  const trimmed = text.trim();
+  if (!/^\/qa(\b|$)/i.test(trimmed)) return null;
+
+  const rest = trimmed.substring(3).trim().toLowerCase();
   if (!rest) return { action: 'enter' };
   if (rest === 'exit') return { action: 'exit' };
   return null;

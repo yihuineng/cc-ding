@@ -35,8 +35,8 @@ export function runDoctor(clientDir: string): CheckResult[] {
   // ---- 0. Node 版本检查 (优先检查) ----
   const nodeVersion = process.version.slice(1);
   const nodeMajor = parseInt(nodeVersion.split('.')[0], 10);
-  if (nodeMajor < 24) {
-    results.push(check('FATAL', `Node 版本过低：${nodeVersion}，要求 Node >= 24`));
+  if (nodeMajor < 22) {
+    results.push(check('FATAL', `Node 版本过低：${nodeVersion}，要求 Node >= 22`));
     // 继续检查其他项目，让用户看到完整的检查报告
   } else {
     results.push(check('PASS', `Node 版本：${nodeVersion}`));

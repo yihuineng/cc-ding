@@ -16,10 +16,10 @@ import {
   parseCronCommand, parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
   parseBashCommand, parseMqCommand, parseRecorderCommandEnhanced,
   parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
-  parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand, parseFreedomCommand,
+  parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand, parseFreedomCommand, parseQaCommand,
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
-import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts } from './claude-process';
+import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts, refreshSessionContext } from './claude-process';
 import { recordMessage, getRecorderDir } from './recorder';
 import {
   getMergedMenu, addMenuItem, deleteMenuItem, formatMenuDisplay, formatMenuList,
@@ -988,7 +988,8 @@ export class DingClaude {
         const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
         cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
-        cfgOpts.permissionMode !== undefined);
+        cfgOpts.permissionMode !== undefined ||
+        cfgOpts.qaGitRepos?.length || cfgOpts.qaDocs?.length || cfgOpts.qaAutoPull !== undefined);
 
         if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
@@ -1000,6 +1001,12 @@ export class DingClaude {
           if (cfgOpts.receiveReply !== undefined) existingConv.receiveReply = cfgOpts.receiveReply;
           if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
           if (cfgOpts.permissionMode !== undefined) existingConv.permissionMode = cfgOpts.permissionMode;
+          if (cfgOpts.qaGitRepos?.length || cfgOpts.qaDocs?.length || cfgOpts.qaAutoPull !== undefined) {
+            if (!existingConv.qaCfg) existingConv.qaCfg = {};
+            if (cfgOpts.qaGitRepos?.length) existingConv.qaCfg.gitRepos = cfgOpts.qaGitRepos;
+            if (cfgOpts.qaDocs?.length) existingConv.qaCfg.docs = cfgOpts.qaDocs;
+            if (cfgOpts.qaAutoPull !== undefined) existingConv.qaCfg.autoPull = cfgOpts.qaAutoPull;
+          }
           if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
             existingConv.whiteUserList = cfgOpts.whiteUserList;
             for (const item of cfgOpts.whiteUserList) {
@@ -1023,6 +1030,12 @@ export class DingClaude {
           if (cfgOpts.receiveReply !== undefined) newConv.receiveReply = cfgOpts.receiveReply;
           if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
           if (cfgOpts.permissionMode !== undefined) newConv.permissionMode = cfgOpts.permissionMode;
+          if (cfgOpts.qaGitRepos?.length || cfgOpts.qaDocs?.length || cfgOpts.qaAutoPull !== undefined) {
+            newConv.qaCfg = {};
+            if (cfgOpts.qaGitRepos?.length) newConv.qaCfg.gitRepos = cfgOpts.qaGitRepos;
+            if (cfgOpts.qaDocs?.length) newConv.qaCfg.docs = cfgOpts.qaDocs;
+            if (cfgOpts.qaAutoPull !== undefined) newConv.qaCfg.autoPull = cfgOpts.qaAutoPull;
+          }
           if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
             newConv.whiteUserList = cfgOpts.whiteUserList;
             for (const item of cfgOpts.whiteUserList) {
@@ -1315,6 +1328,47 @@ export class DingClaude {
           await this.sendDingMessage({
             conversationId, sessionWebhook,
             content: '✅ 自由模式已关闭\n🔒 已恢复白名单限制',
+            msgType: 'markdown',
+          });
+        }
+      }),
+
+      // /qa 命令：问答模式，只读 plan 模式，所有群成员可用（owner/管理员可开启/关闭）
+      route('/qa', () => parseQaCommand(prompt), async qaOpts => {
+        if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
+
+        if (qaOpts.action === 'enter') {
+          if (conversationConfig?.qaMode) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: 'ℹ️ 当前已处于问答模式',
+              msgType: 'markdown',
+            });
+            return;
+          }
+          conversationConfig.qaMode = true;
+          saveClientConfig(this);
+          refreshSessionContext(this, conversationId);
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '✅ 问答模式已开启\n- Claude 将以只读 plan 模式运行\n- 所有群成员均可使用\n- 使用 `/cfg --qaGitRepos 目录名` 配置要 pull 的仓库\n- 使用 `/cfg --qaDocs url1,url2` 配置文档',
+            msgType: 'markdown',
+          });
+        } else if (qaOpts.action === 'exit') {
+          if (!conversationConfig?.qaMode) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: 'ℹ️ 当前未开启问答模式',
+              msgType: 'markdown',
+            });
+            return;
+          }
+          conversationConfig.qaMode = false;
+          saveClientConfig(this);
+          refreshSessionContext(this, conversationId);
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '✅ 问答模式已关闭',
             msgType: 'markdown',
           });
         }

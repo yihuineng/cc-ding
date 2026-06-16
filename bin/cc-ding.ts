@@ -44,10 +44,10 @@ program
     // init 命令执行前检查 Node 版本
     const nodeVersion = process.version.slice(1);
     const nodeMajor = parseInt(nodeVersion.split('.')[0], 10);
-    if (nodeMajor < 24) {
+    if (nodeMajor < 22) {
       console.log('\n❌ Node 版本过低，无法执行 init 命令');
       console.log(`  当前版本：${nodeVersion}`);
-      console.log('  要求：Node >= 24');
+      console.log('  要求：Node >= 22');
       console.log('\n💡 请升级 Node 版本后重新运行\n');
       process.exit(1);
     }

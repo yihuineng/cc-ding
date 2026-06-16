@@ -65,7 +65,21 @@ export interface IConversation {
   }; // 群维度session相关配置
   taskCfg?: {
     skill?: string; // 指定技能处理
-  }; // 群维度task相关配置
+  }; // 群维度 task 相关配置
+  /** 问答模式：开启后 Claude 以只读 plan 模式运行，所有群成员均可使用 */
+  qaMode?: boolean;
+  /** 问答模式配置 */
+  qaCfg?: IQaCfg;
+}
+
+/** 问答模式配置 */
+export interface IQaCfg {
+  /** 工作目录下的 git 仓库目录名数组，自动执行 git pull */
+  gitRepos?: string[];
+  /** 在线文档 URL 或本地文件路径数组，作为上下文注入 */
+  docs?: string[];
+  /** 回答问题前是否自动拉取最新代码 */
+  autoPull?: boolean;
 }
 
 // 会话信息
