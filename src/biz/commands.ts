@@ -551,7 +551,7 @@ export function parseCronCommand(text: string): CronCommand | null {
  * 解析 /version 命令
  */
 export function parseVersionCommand(text: string): boolean {
-  return text.trim() === '/version';
+  return text.trim().toLowerCase() === '/version';
 }
 
 /**
@@ -805,11 +805,31 @@ export function parseClaudeMdCommand(text: string): boolean {
 }
 
 /**
- * 解析 /! 中断命令，支持四种触发方式：/! /！ ! ！
+ * 解析 /! 中断命令，支持以下形式：
+ * - /!       /！       精确匹配
+ * - !        ！         精确匹配
+ * - ! 内容   ！内容     开头匹配，中断后内容作为消息发送
+ * 注意：!! 和 ！！ 不匹配（排除连续感叹号）
  */
-export function parseInterruptCommand(text: string): boolean {
+export function parseInterruptCommand(text: string): string | false {
   const trimmed = text.trim();
-  return trimmed === '/!' || trimmed === '/！' || trimmed === '!' || trimmed === '！';
+  // 精确匹配：单独的 ! 或 /!
+  if (trimmed === '/!' || trimmed === '/！' || trimmed === '!' || trimmed === '！') {
+    return '';
+  }
+  // 排除连续感叹号：!! 或 ！！
+  if (trimmed.startsWith('!!') || trimmed.startsWith('！！')) {
+    return false;
+  }
+  // 开头匹配：! 或 ！ 后跟内容（已排除 !!）
+  if (trimmed.startsWith('!') || trimmed.startsWith('！')) {
+    return trimmed;
+  }
+  // /! 或 /！ 后跟内容
+  if (trimmed.startsWith('/!') || trimmed.startsWith('/！')) {
+    return trimmed;
+  }
+  return false;
 }
 
 /**

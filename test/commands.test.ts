@@ -124,7 +124,10 @@ describe('commands parsers', () => {
   describe('简单命令', () => {
     it('parseVersionCommand', () => {
       assert.strictEqual(parseVersionCommand(' /version '), true);
-      assert.strictEqual(parseVersionCommand('/Version'), false);
+      assert.strictEqual(parseVersionCommand('/Version'), true);
+      assert.strictEqual(parseVersionCommand('/VERSION'), true);
+      assert.strictEqual(parseVersionCommand('/version '), true);
+      assert.strictEqual(parseVersionCommand('/ver'), false);
     });
     it('parseOpenCommand', () => {
       assert.strictEqual(parseOpenCommand('/open'), 'folder');
@@ -150,12 +153,19 @@ describe('commands parsers', () => {
       assert.strictEqual(parseClaudeMdCommand('/claudemd'), false);
     });
     it('parseInterruptCommand', () => {
-      assert.strictEqual(parseInterruptCommand('/!'), true);
-      assert.strictEqual(parseInterruptCommand('/！'), true);
-      assert.strictEqual(parseInterruptCommand('!'), true);
-      assert.strictEqual(parseInterruptCommand('！'), true);
-      assert.strictEqual(parseInterruptCommand('/! now'), false);
+      // 精确匹配返回空字符串
+      assert.strictEqual(parseInterruptCommand('/!'), '');
+      assert.strictEqual(parseInterruptCommand('/！'), '');
+      assert.strictEqual(parseInterruptCommand('!'), '');
+      assert.strictEqual(parseInterruptCommand('！'), '');
+      // ! 后跟内容返回完整文本（作为中断命令匹配）
+      assert.strictEqual(parseInterruptCommand('! help'), '! help');
+      assert.strictEqual(parseInterruptCommand('！ 帮助'), '！ 帮助');
+      assert.strictEqual(parseInterruptCommand('/! now'), '/! now');
+      assert.strictEqual(parseInterruptCommand('!something'), '!something');
+      // 不匹配的返回 false
       assert.strictEqual(parseInterruptCommand('!!'), false);
+      assert.strictEqual(parseInterruptCommand('hello'), false);
     });
   });
 

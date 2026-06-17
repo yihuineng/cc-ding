@@ -146,8 +146,9 @@ export function isMobile(value: string): boolean {
 
 /** 判断是否为工号格式（非手机号且非userId的纯数字/字母数字组合） */
 export function isJobNumber(value: string): boolean {
-  // 工号通常为数字或字母数字组合，不是手机号，也不是userId格式
-  return !isMobile(value) && !value.includes('_') && /^[A-Za-z0-9]+$/.test(value);
+  // 工号通常位数较少（≤15位），长数字串大概率是 userId
+  // 不是手机号，也不是userId格式（含下划线等），且为数字或字母数字组合
+  return !isMobile(value) && !value.includes('_') && value.length <= 15 && /^[A-Za-z0-9]+$/.test(value);
 }
 
 export function getPhoneMapFile(self: DingClaude): string {

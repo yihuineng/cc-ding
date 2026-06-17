@@ -757,7 +757,7 @@ export class DingClaude {
   private async botMsgGetCallback(res: DWClientDownStream): Promise<void> {
     this.dingStreamClient.socketCallBackResponse(res.headers.messageId, '');
     const rawData = JSON.parse(res.data) as IRawCallbackData;
-    // console.log('rawData', rawData);
+    console.log('rawData', rawData);
     const { senderNick, senderStaffId, conversationId, conversationTitle, sessionWebhook, msgtype, conversationType } = rawData;
     const textContent = rawData.text?.content?.trim() ?? '';
 
@@ -1116,7 +1116,7 @@ export class DingClaude {
           '',
           `- **cc-ding:** ${TOOL_VERSION}`,
           `- **claude:** ${claudeCliVersion}`,
-          `- **os:** ${os.platform()} ${os.release()}`,
+          `- **os:** ${os.hostname()} ${os.platform()} ${os.release()}`,
           `- **node:** ${process.version}`,
         ].join('\n');
         await this.sendDingMessage({
@@ -2135,7 +2135,8 @@ export class DingClaude {
       }),
 
       // /! 命令：中断当前任务，立即处理队列中的消息
-      route('/!', () => parseInterruptCommand(prompt), async () => {
+      // 支持 /! /！ ! ！ 以及 !内容 /!内容 等形式
+      route('/!', () => parseInterruptCommand(prompt), async (parsed) => {
         const found = this.findActiveSession(conversationId);
         if (!found) {
           await this.sendDingMessage({
@@ -2152,13 +2153,27 @@ export class DingClaude {
           });
           return;
         }
+
+        // 提取 !/！ 后的内容（去掉命令前缀）
+        const contentAfter = parsed === '' ? '' : parsed.replace(/^[/！!]\s*/, '');
+
         // 中断后原调用栈中的 executeClaudeQuery 会结束，finally 释放 isProcessing 并自动 drain 消息队列
         interruptClaudeProcess(activeSession, `/!: ${senderNick} 中断当前任务`);
         const queued = activeSession.messageQueue.length;
         await this.sendDingMessage({
           conversationId, sessionWebhook,
-          content: queued > 0 ? `⏹ 已中断当前任务，开始处理队列中的 ${queued} 条消息` : '⏹ 已中断当前任务',
+          content: queued > 0
+            ? `⏹ 已中断当前任务，开始处理队列中的 ${queued} 条消息`
+            : '⏹ 已中断当前任务',
         });
+
+        // 如果 ! 后有内容，作为新消息发送
+        if (contentAfter) {
+          await this.handleSessionMessage({
+            conversationId, sessionWebhook, senderStaffId, senderNick,
+            message: contentAfter, conversationConfig,
+          });
+        }
       }),
 
       // /goon 命令：强制重启 Claude 进程
@@ -2444,6 +2459,7 @@ export class DingClaude {
     }
 
     this.dingStreamClient.registerCallbackListener('/v1.0/im/bot/messages/get', async (res) => {
+      console.log(`[${timestamp()}] [DEBUG] 收到钉钉回调, messageId=${res.headers?.messageId}, eventType=${res.headers?.eventType}`);
       await this.botMsgGetCallback(res);
     });
 

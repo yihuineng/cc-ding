@@ -833,8 +833,6 @@ export async function executeClaudeQuery(
       // 因为 Claude 可能在内部使用不同的 UUID；改为依赖 stream 中返回的真实 session_id。
       const explicitSessionId = newSessionId || randomUUID();
       cmdArgs.push('--session-id', explicitSessionId);
-      // 使用 UUID 前缀作为 name，避免时间戳被 Claude 误认为 session ID
-      cmdArgs.push('--name', `cc-ding-${explicitSessionId.substring(0, 8)}`);
       console.log(`[${timestamp()}] 创建 Claude 会话(显式 session-id): ${explicitSessionId}`);
     }
     const settingsPath = resolveClaudeSettingsPath(self, dingGroupDir, opts?.settings);
