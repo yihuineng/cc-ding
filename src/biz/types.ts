@@ -5,8 +5,8 @@ import { RobotTextMessage } from 'utils-ok';
 export interface IConfig {
   clientName?: string;
   whiteUserList: string[]; // 白名单（手机号或工号）
-  owner: string; // 机器人 owner（手机号或工号，可执行敏感操作如 /clean）
-  /** 管理员列表（手机号、工号或userId），除 /reboot、/open、/cfg 注册外与 owner 同权 */
+  owner: string; // 机器人 owner（手机号或工号，拥有所有权限）
+  /** 管理员列表（手机号、工号或userId），除管理员人员管理(/auth admin add/rm/list)外与 owner 同权 */
   adminUserList?: string[];
   clientSecret: string; // 钉钉 Stream Client 密钥
   dingSecret?: string; // 搭配 dingToken 发送群消息的签名密钥

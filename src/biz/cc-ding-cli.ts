@@ -27,7 +27,7 @@ import {
   getUserTrigger, setUserTrigger, loadMenuData, startSelectionCleanupTimer,
 } from './menu';
 import {
-  getClientDir, getClientConfig, authCheck, isOwner, isAdmin, debugLog,
+  getClientDir, getClientConfig, authCheck, isOwner, isAdmin, isOwnerOrAdmin, debugLog,
   hashConversationId, getConversationConfig,
   getConversationDir, getSessionsDir, getTasksDir,
   getSessionDir, getSessionId, formatSessionInfo, readSessionLogTail,
@@ -132,6 +132,7 @@ export class DingClaude {
   authCheck = (userId: string, conversationId?: string) => authCheck(this, userId, conversationId);
   isOwner = (userId: string) => isOwner(this, userId);
   isAdmin = (userId: string) => isAdmin(this, userId);
+  isOwnerOrAdmin = (userId: string) => isOwnerOrAdmin(this, userId);
   debugLog = (message: string, ...args: unknown[]) => debugLog(this, message, ...args);
   hashConversationId = (conversationId: string) => hashConversationId(this, conversationId);
   getConversationConfig = (conversationId: string) => getConversationConfig(this, conversationId);
@@ -224,27 +225,6 @@ export class DingClaude {
       return false;
     }
     return true;
-  }
-
-  /**
-   * Owner 或单聊模式权限检查
-   * 单聊已注册时允许非 owner 操作（仅限当前单聊）
-   */
-  private async requireOwnerOrSingleChat(
-    conversationId: string,
-    sessionWebhook: string,
-    senderStaffId: string,
-    conversationConfig: IConfig['conversations'][0],
-  ): Promise<boolean> {
-    if (this.isOwner(senderStaffId)) return true;
-    if (conversationConfig?.conversationType === '1') return true;
-    await this.sendDingMessage({
-      conversationId,
-      sessionWebhook,
-      content: '❌ 只有机器人 owner 才能执行此操作',
-      msgType: 'markdown',
-    });
-    return false;
   }
 
   /**
@@ -492,10 +472,10 @@ export class DingClaude {
   ): Promise<void> {
     const { conversationId, sessionWebhook, senderStaffId } = ctx;
 
-    if ((cmd.type === 'add' || cmd.type === 'del') && cmd.isGlobal && !this.isOwner(senderStaffId)) {
+    if ((cmd.type === 'add' || cmd.type === 'del') && cmd.isGlobal && !this.isOwnerOrAdmin(senderStaffId)) {
       await this.sendDingMessage({
         conversationId, sessionWebhook,
-        content: '❌ 全局菜单仅 owner 可管理',
+        content: '❌ 全局菜单仅 owner 或管理员可管理',
         msgType: 'markdown',
       });
       return;
@@ -781,10 +761,10 @@ export class DingClaude {
     // ==================== Recorder 模式处理 ====================
     const recorderCmd = parseRecorderCommandEnhanced(textContent);
     if (recorderCmd !== null) {
-      if (!this.isOwner(senderStaffId) || conversationType !== '1') {
+      if (!this.isOwnerOrAdmin(senderStaffId) || conversationType !== '1') {
         await this.sendDingMessage({
           conversationId, sessionWebhook,
-          content: '❌ Recorder 模式仅限 owner 单聊使用',
+          content: '❌ Recorder 模式仅限 owner 或管理员单聊使用',
           msgType: 'markdown',
         });
         return;
@@ -960,20 +940,20 @@ export class DingClaude {
     // ==================== 命令分发（注册表，按注册顺序匹配） ====================
     // 未注册群也可用的命令
     const preRegistrationRoutes: ICommandRoute[] = [
-      // /cfg 命令：注册当前群到配置（仅 owner 可用，单聊模式也允许操作）
+      // /cfg 命令：注册当前群到配置（单聊模式也允许操作）
       // 未注册群：创建新配置；已注册群：刷新指定字段
-      // 支持 --conversationId <id> 指定目标群（仅 owner，单聊模式不允许指定）
+      // 支持 --conversationId <id> 指定目标群（单聊模式不允许指定）
       route('/cfg', () => parseCfgCommand(prompt), async cfgOpts => {
-      // 指定 --conversationId 无条件要求 owner
-        if (cfgOpts.conversationId && !this.isOwner(senderStaffId)) {
+      // 指定 --conversationId 无条件要求 owner 或管理员
+        if (cfgOpts.conversationId && !this.isOwnerOrAdmin(senderStaffId)) {
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: '❌ 只有机器人 owner 才能操作其他群的配置',
+            content: '❌ 只有 owner 或管理员才能操作其他群的配置',
             msgType: 'markdown',
           });
           return;
         }
-        if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
+        if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
         // 确定目标 conversationId
         const targetConvId = cfgOpts.conversationId || conversationId;
@@ -1093,7 +1073,7 @@ export class DingClaude {
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: formatHelpOverview(TOOL_VERSION, this.isOwner(senderStaffId)),
+          content: formatHelpOverview(TOOL_VERSION, this.isOwnerOrAdmin(senderStaffId)),
           msgType: 'markdown',
         });
       }),
@@ -1200,7 +1180,7 @@ export class DingClaude {
 
     if (!conversationConfig) {
       console.log(`未注册的机器人,群:${conversationTitle},${conversationId}`);
-      if (this.isOwner(senderStaffId)) {
+      if (this.isOwnerOrAdmin(senderStaffId)) {
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
@@ -1219,16 +1199,16 @@ export class DingClaude {
 
     // 已注册群的命令路由表
     const commandRoutes: ICommandRoute[] = [
-      // /destroy 命令：注销当前群机器人，删除工作目录和配置（仅 owner 可用）
+      // /destroy 命令：注销当前群机器人，删除工作目录和配置
       route('/destroy', () => parseDestroyCommand(prompt), async destroyOpts => {
-        if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
+        if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
         const targetConvId = destroyOpts.conversationId || conversationId;
         const isTargetOther = targetConvId !== conversationId;
-        if (isTargetOther && !this.isOwner(senderStaffId)) {
+        if (isTargetOther && !this.isOwnerOrAdmin(senderStaffId)) {
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: '❌ 只有 owner 才能操作其他群的配置',
+            content: '❌ 只有 owner 或管理员才能操作其他群的配置',
             msgType: 'markdown',
           });
           return;
@@ -1293,9 +1273,9 @@ export class DingClaude {
         });
       }),
 
-      // /freedom 命令：自由模式，跳过群用户白名单限制（仅 owner 可用）
+      // /freedom 命令：自由模式，跳过群用户白名单限制
       route('/freedom', () => parseFreedomCommand(prompt), async freedomOpts => {
-        if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
+        if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
         if (freedomOpts.action === 'enter') {
           if (conversationConfig?.freedomMode) {
@@ -1374,18 +1354,17 @@ export class DingClaude {
         }
       }),
 
-      // /clean 命令：清除历史会话和缓存（单聊模式也允许操作）
+      // /clean 命令：清除历史会话和缓存
       route('/clean', () => parseCleanCommand(prompt), async cleanType => {
-      // 单聊模式仅限 clean 当前群
-        if (cleanType === 'all' && conversationConfig?.conversationType !== '1' && !this.isOwner(senderStaffId)) {
+        if (cleanType === 'all' && conversationConfig?.conversationType !== '1' && !this.isOwnerOrAdmin(senderStaffId)) {
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: '❌ 只有机器人 owner 才能清除所有群缓存',
+            content: '❌ 只有 owner 或管理员才能清除所有群缓存',
             msgType: 'markdown',
           });
           return;
         }
-        if (!(await this.requireOwnerOrSingleChat(conversationId, sessionWebhook, senderStaffId, conversationConfig))) return;
+        if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
         const targetConvId = cleanType === 'all' ? null : conversationId;
         const result = this.cleanCache(targetConvId, true);
@@ -1412,9 +1391,9 @@ export class DingClaude {
         });
       }),
 
-      // /reset-apikeycfg 命令：手工重置 API Key 配置（仅 owner 可用）
+      // /reset-apikeycfg 命令：手工重置 API Key 配置
       route('/reset-apikeycfg', () => parseResetApiKeyCfgCommand(prompt), async () => {
-        if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+        if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
         if (!this.config.apiKeyCfg) {
           await this.sendDingMessage({
@@ -1436,9 +1415,16 @@ export class DingClaude {
         });
       }),
 
-      // /auth 命令：管理当前群白名单（仅 owner 可用）
+      // /auth 命令：管理当前群白名单和管理员
       route('/auth', () => parseAuthCommand(prompt), async authCmd => {
-        if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+        // 管理员人员管理仅限 owner
+        if (authCmd.type === 'adminList' || authCmd.type === 'adminAdd' || authCmd.type === 'adminRm') {
+          if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+        }
+        // 群白名单操作需要 owner 或管理员权限
+        if (authCmd.type === 'approve' || authCmd.type === 'reject' || authCmd.type === 'list' || authCmd.type === 'add' || authCmd.type === 'del') {
+          if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
+        }
 
         // /auth approve|reject <requestId>
         if (authCmd.type === 'approve' || authCmd.type === 'reject') {
@@ -1709,9 +1695,9 @@ export class DingClaude {
         }
       }),
 
-      // /open 命令：在文件管理器或终端中打开工作目录（仅 owner 可用）
+      // /open 命令：在文件管理器或终端中打开工作目录
       route('/open', () => parseOpenCommand(prompt), async openTarget => {
-        if (!(await this.requireOwner(conversationId, sessionWebhook, senderStaffId))) return;
+        if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
         const conversationDir = this.getConversationDir(conversationId);
         const platform = process.platform;

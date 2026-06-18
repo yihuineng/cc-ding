@@ -122,7 +122,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/open [shell|code]',
     examples: [ '/open', '/open shell', '/open code' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/clean',
@@ -130,7 +129,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/clean',
     examples: [ '/clean' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/reset-apikeycfg',
@@ -138,7 +136,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/reset-apikeycfg',
     examples: [ '/reset-apikeycfg' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/cfg',
@@ -146,7 +143,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode] [--qaGitRepos 目录1,目录2] [--qaDocs url1,url2] [--qaAutoPull true|false]',
     examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --permissionMode auto', '/cfg --qaGitRepos cc-ding,my-project --qaAutoPull true', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/bash',
@@ -154,7 +150,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/bash <命令>',
     examples: [ '/bash ls -la', '/bash pwd', '/bash git status' ],
     category: '文件',
-    ownerOnly: true,
   },
   {
     name: '/auth',
@@ -166,11 +161,10 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/recorder',
-    description: 'Recorder 模式：记录所有消息到本地（仅 owner 单聊，发送 /recorder exit 退出）',
+    description: 'Recorder 模式：记录所有消息到本地（仅 owner/管理员单聊，发送 /recorder exit 退出）',
     usage: '/recorder [on|exit]',
     examples: [ '/recorder on', '/recorder exit' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/todo',
@@ -199,7 +193,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/reboot [--update [tag]]',
     examples: [ '/reboot', '/reboot --update', '/reboot --update beta' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/destroy',
@@ -207,7 +200,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/destroy [--conversationId xxx]',
     examples: [ '/destroy', '/destroy --conversationId targetConvId' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/freedom',
@@ -215,7 +207,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/freedom | /freedom exit',
     examples: [ '/freedom', '/freedom exit' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/qa',
