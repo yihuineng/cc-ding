@@ -211,8 +211,8 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/qa',
     description: '问答模式：开启后 Claude 以只读 plan 模式运行，所有群成员均可使用',
-    usage: '/qa | /qa exit | /qa --gitRepos 目录1,目录2 | /qa --docs url1,url2 | /qa --autoPull true|false',
-    examples: [ '/qa', '/qa exit', '/qa --gitRepos cc-ding,my-project', '/qa --docs https://example.com/doc --autoPull true' ],
+    usage: '/qa | /qa exit | /qa --gitRepos https://github.com/a/b | /qa --docs url1,url2 | /qa --autoPull true|false',
+    examples: [ '/qa', '/qa exit', '/qa --gitRepos https://github.com/user/repo.git', '/qa --docs https://example.com/doc --autoPull true' ],
     category: '管理',
   },
 ];
@@ -864,12 +864,12 @@ export function parseFreedomCommand(text: string): IFreedomOptions | null {
 
 /**
  * 解析 /qa 命令
- * - /qa                            -> 进入问答模式
- * - /qa exit                       -> 退出问答模式
- * - /qa --gitRepos 目录1,目录2      -> 配置 git 仓库目录
- * - /qa --docs url1,url2           -> 配置参考文档
- * - /qa --autoPull true|false      -> 配置自动拉取
- * - /qa --gitRepos x --autoPull y  -> 组合配置
+ * - /qa                                    -> 进入问答模式
+ * - /qa exit                               -> 退出问答模式
+ * - /qa --gitRepos https://github.com/a/b  -> 配置 git 仓库链接
+ * - /qa --docs url1,url2                   -> 配置参考文档
+ * - /qa --autoPull true|false              -> 配置自动拉取
+ * - /qa --gitRepos url1,url2 --autoPull y  -> 组合配置
  */
 export type QaAction = 'enter' | 'exit' | 'config';
 

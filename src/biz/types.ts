@@ -74,7 +74,7 @@ export interface IConversation {
 
 /** 问答模式配置 */
 export interface IQaCfg {
-  /** 工作目录下的 git 仓库目录名数组，自动执行 git pull */
+  /** git 仓库链接数组，自动 clone/pull 到工作目录 */
   gitRepos?: string[];
   /** 在线文档 URL 或本地文件路径数组，作为上下文注入 */
   docs?: string[];

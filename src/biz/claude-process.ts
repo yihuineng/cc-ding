@@ -740,17 +740,21 @@ export async function executeClaudeQuery(
     // 自动拉取最新代码
     if (conversationConfig.qaCfg?.autoPull && conversationConfig.qaCfg.gitRepos?.length) {
       try {
-        for (const repoName of conversationConfig.qaCfg.gitRepos) {
+        for (const repoUrl of conversationConfig.qaCfg.gitRepos) {
+          // 从 URL 中提取仓库名(如 https://github.com/user/repo.git -> repo)
+          const base = repoUrl.replace(/\/$/, '').replace(/\.git$/, '');
+          const repoName = base.split('/').pop() || repoUrl;
           const repoDir = path.join(dingGroupDir, repoName);
           if (fs.existsSync(path.join(repoDir, '.git'))) {
             await exec('git pull', { cwd: repoDir, timeout: 60_000 });
             console.log(`[${timestamp()}] QA 模式 git pull: ${repoName}`);
           } else {
-            console.log(`[${timestamp()}] QA 模式跳过非 git 目录: ${repoName}`);
+            await exec(`git clone ${repoUrl}`, { cwd: dingGroupDir, timeout: 120_000 });
+            console.log(`[${timestamp()}] QA 模式 git clone: ${repoUrl} -> ${repoName}`);
           }
         }
       } catch (err) {
-        console.error(`[${timestamp()}] QA 模式 git pull 失败:`, err);
+        console.error(`[${timestamp()}] QA 模式 git 操作失败:`, err);
       }
     }
 

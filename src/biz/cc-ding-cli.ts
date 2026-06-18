@@ -1352,7 +1352,7 @@ export class DingClaude {
           refreshSessionContext(this, conversationId);
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: '✅ 问答模式已开启\n- Claude 将以只读 plan 模式运行\n- 所有群成员均可使用\n- 使用 `/qa --gitRepos 目录名` 配置要 pull 的仓库\n- 使用 `/qa --docs url1,url2` 配置参考文档\n- 使用 `/qa --autoPull true` 开启自动拉取',
+            content: '✅ 问答模式已开启\n- Claude 将以只读 plan 模式运行\n- 所有群成员均可使用\n- 使用 `/qa --gitRepos https://github.com/user/repo.git` 配置仓库(首次 clone，后续 pull)\n- 使用 `/qa --docs url1,url2` 配置参考文档\n- 使用 `/qa --autoPull true` 开启自动拉取',
             msgType: 'markdown',
           });
         } else if (qaOpts.action === 'exit') {
