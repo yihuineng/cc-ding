@@ -191,10 +191,12 @@ pnpm run build
 
 ### 交流群
 
-扫码加入钉钉交流群：
+扫码加入钉钉或微信交流群：
 
 <p align="center">
-  <img src="assets/qrcode-dingtalk.jpg" alt="钉钉交流群二维码" width="300">
+  <img src="assets/qrcode-dingtalk.jpg" alt="钉钉交流群二维码" width="250">
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="assets/qrcode-wechat.jpg" alt="微信交流群二维码" width="250">
 </p>
 
 ---
@@ -376,10 +378,12 @@ pnpm run build
 
 ### Community
 
-Scan the QR code to join our DingTalk group:
+Scan the QR code to join our DingTalk or WeChat group:
 
 <p align="center">
-  <img src="assets/qrcode-dingtalk.jpg" alt="DingTalk Group QR Code" width="300">
+  <img src="assets/qrcode-dingtalk.jpg" alt="DingTalk Group QR Code" width="250">
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="assets/qrcode-wechat.jpg" alt="WeChat Group QR Code" width="250">
 </p>
 
 ---
