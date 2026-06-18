@@ -140,8 +140,8 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/cfg',
     description: '注册当前群到配置，或刷新指定字段(已注册群)',
-    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode] [--qaGitRepos 目录1,目录2] [--qaDocs url1,url2] [--qaAutoPull true|false]',
-    examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --permissionMode auto', '/cfg --qaGitRepos cc-ding,my-project --qaAutoPull true', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
+    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode]',
+    examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --permissionMode auto', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
     category: '管理',
   },
   {
@@ -211,8 +211,8 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/qa',
     description: '问答模式：开启后 Claude 以只读 plan 模式运行，所有群成员均可使用',
-    usage: '/qa | /qa exit',
-    examples: [ '/qa', '/qa exit' ],
+    usage: '/qa | /qa exit | /qa --gitRepos 目录1,目录2 | /qa --docs url1,url2 | /qa --autoPull true|false',
+    examples: [ '/qa', '/qa exit', '/qa --gitRepos cc-ding,my-project', '/qa --docs https://example.com/doc --autoPull true' ],
     category: '管理',
   },
 ];
@@ -352,9 +352,9 @@ export function formatConversationInfo(
   if (conv.taskCfg?.skill) lines.push(`- **taskSkill:** ${conv.taskCfg.skill}`);
   if (conv.preBash) lines.push(`- **preBash:** \`${conv.preBash}\``);
   if (conv.qaMode) lines.push(`- **qaMode:** 已开启（只读问答模式，所有群成员可用）`);
-  if (conv.qaCfg?.gitRepos?.length) lines.push(`- **qaGitRepos:** ${conv.qaCfg.gitRepos.join(', ')}`);
-  if (conv.qaCfg?.docs?.length) lines.push(`- **qaDocs:** ${conv.qaCfg.docs.join(', ')}`);
-  if (conv.qaCfg?.autoPull) lines.push(`- **qaAutoPull:** 已开启`);
+  if (conv.qaCfg?.gitRepos?.length) lines.push(`- **QA gitRepos:** ${conv.qaCfg.gitRepos.join(', ')}`);
+  if (conv.qaCfg?.docs?.length) lines.push(`- **QA docs:** ${conv.qaCfg.docs.join(', ')}`);
+  if (conv.qaCfg?.autoPull) lines.push(`- **QA autoPull:** 已开启`);
   return lines.join('\n');
 }
 
@@ -598,10 +598,6 @@ export interface ICfgOptions {
   receiveReply?: boolean;
   preBash?: string;
   permissionMode?: string;
-  // QA 模式配置
-  qaGitRepos?: string[];
-  qaDocs?: string[];
-  qaAutoPull?: boolean;
 }
 
 export function parseCfgCommand(text: string): ICfgOptions | null {
@@ -656,13 +652,6 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
       }
     } else if (token === '--permissionMode' && tokens[i + 1]) {
       result.permissionMode = tokens[++i];
-    } else if (token === '--qaGitRepos' && tokens[i + 1]) {
-      result.qaGitRepos = tokens[++i].split(',').map(s => s.trim()).filter(Boolean);
-    } else if (token === '--qaDocs' && tokens[i + 1]) {
-      result.qaDocs = tokens[++i].split(',').map(s => s.trim()).filter(Boolean);
-    } else if (token === '--qaAutoPull' && tokens[i + 1]) {
-      const val = tokens[++i].toLowerCase();
-      result.qaAutoPull = val === 'true' || val === '1' || val === 'yes';
     }
   }
 
@@ -875,23 +864,56 @@ export function parseFreedomCommand(text: string): IFreedomOptions | null {
 
 /**
  * 解析 /qa 命令
- * - /qa            -> 进入问答模式
- * - /qa exit       -> 退出问答模式
+ * - /qa                            -> 进入问答模式
+ * - /qa exit                       -> 退出问答模式
+ * - /qa --gitRepos 目录1,目录2      -> 配置 git 仓库目录
+ * - /qa --docs url1,url2           -> 配置参考文档
+ * - /qa --autoPull true|false      -> 配置自动拉取
+ * - /qa --gitRepos x --autoPull y  -> 组合配置
  */
-export type QaAction = 'enter' | 'exit';
+export type QaAction = 'enter' | 'exit' | 'config';
 
 export interface IQaOptions {
   action: QaAction;
+  gitRepos?: string[];
+  docs?: string[];
+  autoPull?: boolean;
 }
 
 export function parseQaCommand(text: string): IQaOptions | null {
   const trimmed = text.trim();
   if (!/^\/qa(\b|$)/i.test(trimmed)) return null;
 
-  const rest = trimmed.substring(3).trim().toLowerCase();
+  const rest = trimmed.substring(3).trim();
   if (!rest) return { action: 'enter' };
-  if (rest === 'exit') return { action: 'exit' };
-  return null;
+
+  const lowerRest = rest.toLowerCase();
+  if (lowerRest === 'exit') return { action: 'exit' };
+
+  // 解析参数：--gitRepos / --docs / --autoPull
+  const tokens = rest.split(/\s+/);
+  const result: IQaOptions = { action: 'config' };
+  let hasConfig = false;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--gitRepos' && tokens[i + 1]) {
+      result.gitRepos = tokens[++i].split(',').map(s => s.trim()).filter(Boolean);
+      hasConfig = true;
+    } else if (token === '--docs' && tokens[i + 1]) {
+      result.docs = tokens[++i].split(',').map(s => s.trim()).filter(Boolean);
+      hasConfig = true;
+    } else if (token === '--autoPull' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      result.autoPull = val === 'true' || val === '1' || val === 'yes';
+      hasConfig = true;
+    } else {
+      // 非预期参数，不匹配
+      return null;
+    }
+  }
+
+  return hasConfig ? result : null;
 }
 
 /**
