@@ -18,6 +18,16 @@
 
 将 Claude Code 接入钉钉，实现双向通信。支持多轮对话、任务队列、定时任务、图片识别，帮助团队以最低成本构建可私有化部署的 AI 助手。
 
+### 交流群
+
+扫码加入钉钉或微信交流群：
+
+<p align="center">
+  <img src="assets/qrcode-dingtalk.jpg" alt="钉钉交流群二维码" width="250">
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="assets/qrcode-wechat.jpg" alt="微信交流群二维码" width="250">
+</p>
+
 ### 目录
 
 - [快速开始](#快速开始)
@@ -194,6 +204,16 @@ pnpm run build
 ## English
 
 Connect Claude Code to DingTalk for bidirectional communication. Supports multi-turn conversations, task queues, scheduled jobs, and image recognition — helping teams build privately deployable AI assistants at minimal cost.
+
+### Community
+
+Scan the QR code to join our DingTalk or WeChat group:
+
+<p align="center">
+  <img src="assets/qrcode-dingtalk.jpg" alt="DingTalk Group QR Code" width="250">
+  &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="assets/qrcode-wechat.jpg" alt="WeChat Group QR Code" width="250">
+</p>
 
 ### Table of Contents
 

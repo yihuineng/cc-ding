@@ -122,7 +122,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/open [shell|code]',
     examples: [ '/open', '/open shell', '/open code' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/clean',
@@ -130,7 +129,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/clean',
     examples: [ '/clean' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/reset-apikeycfg',
@@ -138,7 +136,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/reset-apikeycfg',
     examples: [ '/reset-apikeycfg' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/cfg',
@@ -146,7 +143,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode]',
     examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --permissionMode auto', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/bash',
@@ -154,7 +150,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/bash <命令>',
     examples: [ '/bash ls -la', '/bash pwd', '/bash git status' ],
     category: '文件',
-    ownerOnly: true,
   },
   {
     name: '/auth',
@@ -166,11 +161,10 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/recorder',
-    description: 'Recorder 模式：记录所有消息到本地（仅 owner 单聊，发送 /recorder exit 退出）',
+    description: 'Recorder 模式：记录所有消息到本地（仅 owner/管理员单聊，发送 /recorder exit 退出）',
     usage: '/recorder [on|exit]',
     examples: [ '/recorder on', '/recorder exit' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/todo',
@@ -199,7 +193,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/reboot [--update [tag]]',
     examples: [ '/reboot', '/reboot --update', '/reboot --update beta' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/destroy',
@@ -207,7 +200,6 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/destroy [--conversationId xxx]',
     examples: [ '/destroy', '/destroy --conversationId targetConvId' ],
     category: '管理',
-    ownerOnly: true,
   },
   {
     name: '/freedom',
@@ -215,7 +207,13 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     usage: '/freedom | /freedom exit',
     examples: [ '/freedom', '/freedom exit' ],
     category: '管理',
-    ownerOnly: true,
+  },
+  {
+    name: '/qa',
+    description: '问答模式：开启后 Claude 以只读 plan 模式运行，所有群成员均可使用',
+    usage: '/qa | /qa exit | /qa --gitRepos https://github.com/a/b | /qa --docs url1,url2 | /qa --autoPull true|false',
+    examples: [ '/qa', '/qa exit', '/qa --gitRepos https://github.com/user/repo.git', '/qa --docs https://example.com/doc --autoPull true' ],
+    category: '管理',
   },
 ];
 
@@ -353,6 +351,10 @@ export function formatConversationInfo(
   if (conv.permissionMode) lines.push(`- **permissionMode:** ${conv.permissionMode}`);
   if (conv.taskCfg?.skill) lines.push(`- **taskSkill:** ${conv.taskCfg.skill}`);
   if (conv.preBash) lines.push(`- **preBash:** \`${conv.preBash}\``);
+  if (conv.qaMode) lines.push(`- **qaMode:** 已开启（只读问答模式，所有群成员可用）`);
+  if (conv.qaCfg?.gitRepos?.length) lines.push(`- **QA gitRepos:** ${conv.qaCfg.gitRepos.join(', ')}`);
+  if (conv.qaCfg?.docs?.length) lines.push(`- **QA docs:** ${conv.qaCfg.docs.join(', ')}`);
+  if (conv.qaCfg?.autoPull) lines.push(`- **QA autoPull:** 已开启`);
   return lines.join('\n');
 }
 
@@ -540,7 +542,7 @@ export function parseCronCommand(text: string): CronCommand | null {
  * 解析 /version 命令
  */
 export function parseVersionCommand(text: string): boolean {
-  return text.trim() === '/version';
+  return text.trim().toLowerCase() === '/version';
 }
 
 /**
@@ -783,11 +785,31 @@ export function parseClaudeMdCommand(text: string): boolean {
 }
 
 /**
- * 解析 /! 中断命令，支持四种触发方式：/! /！ ! ！
+ * 解析 /! 中断命令，支持以下形式：
+ * - /!       /！       精确匹配
+ * - !        ！         精确匹配
+ * - ! 内容   ！内容     开头匹配，中断后内容作为消息发送
+ * 注意：!! 和 ！！ 不匹配（排除连续感叹号）
  */
-export function parseInterruptCommand(text: string): boolean {
+export function parseInterruptCommand(text: string): string | false {
   const trimmed = text.trim();
-  return trimmed === '/!' || trimmed === '/！' || trimmed === '!' || trimmed === '！';
+  // 精确匹配：单独的 ! 或 /!
+  if (trimmed === '/!' || trimmed === '/！' || trimmed === '!' || trimmed === '！') {
+    return '';
+  }
+  // 排除连续感叹号：!! 或 ！！
+  if (trimmed.startsWith('!!') || trimmed.startsWith('！！')) {
+    return false;
+  }
+  // 开头匹配：! 或 ！ 后跟内容（已排除 !!）
+  if (trimmed.startsWith('!') || trimmed.startsWith('！')) {
+    return trimmed;
+  }
+  // /! 或 /！ 后跟内容
+  if (trimmed.startsWith('/!') || trimmed.startsWith('/！')) {
+    return trimmed;
+  }
+  return false;
 }
 
 /**
@@ -838,6 +860,60 @@ export function parseFreedomCommand(text: string): IFreedomOptions | null {
   if (!rest) return { action: 'enter' };
   if (rest === 'exit') return { action: 'exit' };
   return null;
+}
+
+/**
+ * 解析 /qa 命令
+ * - /qa                                    -> 进入问答模式
+ * - /qa exit                               -> 退出问答模式
+ * - /qa --gitRepos https://github.com/a/b  -> 配置 git 仓库链接
+ * - /qa --docs url1,url2                   -> 配置参考文档
+ * - /qa --autoPull true|false              -> 配置自动拉取
+ * - /qa --gitRepos url1,url2 --autoPull y  -> 组合配置
+ */
+export type QaAction = 'enter' | 'exit' | 'config';
+
+export interface IQaOptions {
+  action: QaAction;
+  gitRepos?: string[];
+  docs?: string[];
+  autoPull?: boolean;
+}
+
+export function parseQaCommand(text: string): IQaOptions | null {
+  const trimmed = text.trim();
+  if (!/^\/qa(\b|$)/i.test(trimmed)) return null;
+
+  const rest = trimmed.substring(3).trim();
+  if (!rest) return { action: 'enter' };
+
+  const lowerRest = rest.toLowerCase();
+  if (lowerRest === 'exit') return { action: 'exit' };
+
+  // 解析参数：--gitRepos / --docs / --autoPull
+  const tokens = rest.split(/\s+/);
+  const result: IQaOptions = { action: 'config' };
+  let hasConfig = false;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--gitRepos' && tokens[i + 1]) {
+      result.gitRepos = tokens[++i].split(',').map(s => s.trim()).filter(Boolean);
+      hasConfig = true;
+    } else if (token === '--docs' && tokens[i + 1]) {
+      result.docs = tokens[++i].split(',').map(s => s.trim()).filter(Boolean);
+      hasConfig = true;
+    } else if (token === '--autoPull' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      result.autoPull = val === 'true' || val === '1' || val === 'yes';
+      hasConfig = true;
+    } else {
+      // 非预期参数，不匹配
+      return null;
+    }
+  }
+
+  return hasConfig ? result : null;
 }
 
 /**

@@ -95,6 +95,8 @@ export function authCheck(self: DingClaude, userId: string, conversationId?: str
     const conv = self.config.conversations.find(it => it.conversationId === conversationId);
     // 自由模式：跳过群用户白名单限制
     if (conv?.freedomMode) return true;
+    // 问答模式：跳过白名单，所有群成员可用
+    if (conv?.qaMode) return true;
     if (conv?.whiteUserList && conv.whiteUserList.length > 0) {
       return conv.whiteUserList.some(item => resolveToUserId(self, item) === userId);
     }
@@ -144,8 +146,9 @@ export function isMobile(value: string): boolean {
 
 /** 判断是否为工号格式（非手机号且非userId的纯数字/字母数字组合） */
 export function isJobNumber(value: string): boolean {
-  // 工号通常为数字或字母数字组合，不是手机号，也不是userId格式
-  return !isMobile(value) && !value.includes('_') && /^[A-Za-z0-9]+$/.test(value);
+  // 工号通常位数较少（≤15位），长数字串大概率是 userId
+  // 不是手机号，也不是userId格式（含下划线等），且为数字或字母数字组合
+  return !isMobile(value) && !value.includes('_') && value.length <= 15 && /^[A-Za-z0-9]+$/.test(value);
 }
 
 export function getPhoneMapFile(self: DingClaude): string {
@@ -736,6 +739,7 @@ export async function startNewSession(self: DingClaude, opts: {
       senderStaffId,
       permissionMode: conversationConfig.permissionMode,
       newSessionId,
+      conversationConfig,
     });
   } catch (err) {
     console.error('执行 Claude 查询失败:', err);
@@ -788,6 +792,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
       senderNick,
       senderStaffId,
       permissionMode: activeSession.conversationConfig.permissionMode,
+      conversationConfig: activeSession.conversationConfig,
     });
   } catch (err) {
     console.error('执行队列 Claude 查询失败:', err);
@@ -809,6 +814,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
         senderNick: activeSession.session.startNickName,
         senderStaffId: activeSession.lastSenderStaffId,
         permissionMode: activeSession.conversationConfig.permissionMode,
+        conversationConfig: activeSession.conversationConfig,
       });
     } catch (err) {
       console.error('goonPending 恢复执行失败:', err);
@@ -896,6 +902,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         senderNick,
         senderStaffId,
         permissionMode: conversationConfig.permissionMode,
+        conversationConfig,
       });
     } catch (err) {
       // 恢复会话失败（可能会话已失效），清除 claudeSessionId 重新发起一次
@@ -910,6 +917,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
             senderNick,
             senderStaffId,
             permissionMode: conversationConfig.permissionMode,
+            conversationConfig,
           });
           return;
         } catch (retryErr) {

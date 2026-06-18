@@ -5,8 +5,8 @@ import { RobotTextMessage } from 'utils-ok';
 export interface IConfig {
   clientName?: string;
   whiteUserList: string[]; // 白名单（手机号或工号）
-  owner: string; // 机器人 owner（手机号或工号，可执行敏感操作如 /clean）
-  /** 管理员列表（手机号、工号或userId），除 /reboot、/open、/cfg 注册外与 owner 同权 */
+  owner: string; // 机器人 owner（手机号或工号，拥有所有权限）
+  /** 管理员列表（手机号、工号或userId），除管理员人员管理(/auth admin add/rm/list)外与 owner 同权 */
   adminUserList?: string[];
   clientSecret: string; // 钉钉 Stream Client 密钥
   dingSecret?: string; // 搭配 dingToken 发送群消息的签名密钥
@@ -65,7 +65,21 @@ export interface IConversation {
   }; // 群维度session相关配置
   taskCfg?: {
     skill?: string; // 指定技能处理
-  }; // 群维度task相关配置
+  }; // 群维度 task 相关配置
+  /** 问答模式：开启后 Claude 以只读 plan 模式运行，所有群成员均可使用 */
+  qaMode?: boolean;
+  /** 问答模式配置 */
+  qaCfg?: IQaCfg;
+}
+
+/** 问答模式配置 */
+export interface IQaCfg {
+  /** git 仓库链接数组，自动 clone/pull 到工作目录 */
+  gitRepos?: string[];
+  /** 在线文档 URL 或本地文件路径数组，作为上下文注入 */
+  docs?: string[];
+  /** 回答问题前是否自动拉取最新代码 */
+  autoPull?: boolean;
 }
 
 // 会话信息

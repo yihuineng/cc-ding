@@ -1,8 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import readline from 'readline';
+import { exec as execCb } from 'child_process';
+import { promisify } from 'util';
 import { randomUUID } from 'crypto';
 import type { DingClaude } from './cc-ding-cli';
+
+const exec = promisify(execCb);
 import { IActiveSession, IClaudeSetting, ISession } from './types';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { timestamp, getReplyWebhook, getReplyConversationId } from './session';
@@ -548,18 +552,15 @@ function buildContextContent(self: DingClaude, conversationId: string): string {
   const lines: string[] = [
     START_MARK,
     '# cc-ding Session Context',
-    '',
     '## Client',
     `- clientId: \`${self.clientId}\``,
     config.clientName ? `- clientName: ${config.clientName}` : '',
     `- owner: ${config.owner}`,
-    '',
     '## Conversation',
     `- conversationId: \`${conversationId}\``,
     convCfg?.conversationType ? `- conversationType: ${convCfg.conversationType === '1' ? '单聊' : '群聊'}` : '',
     convCfg?.conversationTitle ? `- conversationTitle: ${convCfg.conversationTitle}` : '',
     convCfg?.linkConversationId ? `- linkConversationId: \`${convCfg.linkConversationId}\` (关联群，共享工作目录)` : '',
-    '',
     '## Settings',
     convCfg?.permissionMode ? `- permissionMode: ${convCfg.permissionMode}` : '',
     convCfg?.agent ? `- agent: ${convCfg.agent}` : '',
@@ -568,7 +569,8 @@ function buildContextContent(self: DingClaude, conversationId: string): string {
     config.includeThinking !== undefined ? `- includeThinking: ${config.includeThinking}` : '',
     config.preBash ? `- preBash(全局): \`${config.preBash}\`` : '',
     convCfg?.preBash ? `- preBash(群): \`${convCfg.preBash}\`` : '',
-    '',
+    convCfg?.qaMode ? '- qaMode: true (问答模式，仅回答问题，禁止执行命令、写入文件或运行代码)' : '',
+    convCfg?.qaMode && convCfg.qaCfg?.docs?.length ? `- qaDocs: ${convCfg.qaCfg.docs.join(', ')}` : '',
     '## DingTalk Context',
     '当 prompt 中包含 "消息来自: xxx(用户ID)" 时，说明消息来自钉钉用户。',
     '- 回答时要考虑用户的使用场景（钉钉聊天界面，非终端环境）',
@@ -651,15 +653,29 @@ export function injectSessionContextIfChanged(self: DingClaude, session: ISessio
 }
 
 /**
+ * 强制刷新指定会话的上下文注入（用于 qaMode 切换等场景）
+ */
+export function refreshSessionContext(self: DingClaude, conversationId: string): void {
+  injectedContextCache.delete(conversationId);
+  const newSection = buildContextContent(self, conversationId);
+  const dingGroupDir = self.getConversationDir(conversationId);
+  const claudeDir = path.join(dingGroupDir, '.claude');
+  if (!fs.existsSync(claudeDir)) fs.mkdirSync(claudeDir, { recursive: true });
+  const claudeMdPath = path.join(claudeDir, 'CLAUDE.md');
+  fs.writeFileSync(claudeMdPath, newSection, 'utf-8');
+  console.log(`[${timestamp()}] QA 模式切换，CLAUDE.md 已刷新: ${claudeMdPath}`);
+}
+
+/**
  * 执行 Claude 查询（session 模式），支持 TPM 额度超限自动重试和 API Key 配额管理
  */
 export async function executeClaudeQuery(
   self: DingClaude,
   session: ISession,
   message: string,
-  opts?: { skill?: string; agent?: string; settings?: string; senderNick?: string; senderStaffId?: string; permissionMode?: string; newSessionId?: string },
+  opts?: { skill?: string; agent?: string; settings?: string; senderNick?: string; senderStaffId?: string; permissionMode?: string; newSessionId?: string; conversationConfig?: { qaMode?: boolean; qaCfg?: { gitRepos?: string[]; docs?: string[]; autoPull?: boolean } } },
 ): Promise<void> {
-  const { skill, agent, senderNick, senderStaffId, newSessionId } = opts || {};
+  const { skill, agent, senderNick, senderStaffId, newSessionId, conversationConfig } = opts || {};
   let sessionDir = self.getSessionDir(session);
   let sessionLog = `${sessionDir}/session.log`;
   const dingGroupDir = self.getConversationDir(session.conversationId);
@@ -713,6 +729,44 @@ export async function executeClaudeQuery(
     });
     return;
   }
+
+  // ---- QA 模式处理 ----
+  let actualMessage = skill ? `/${skill} ${messageWithPrefix}` : messageWithPrefix;
+
+  if (conversationConfig?.qaMode) {
+    // 强制使用 plan 模式（只读，禁止写入和执行命令）
+    opts.permissionMode = 'plan';
+
+    // 自动拉取最新代码
+    if (conversationConfig.qaCfg?.autoPull && conversationConfig.qaCfg.gitRepos?.length) {
+      try {
+        for (const repoUrl of conversationConfig.qaCfg.gitRepos) {
+          // 从 URL 中提取仓库名(如 https://github.com/user/repo.git -> repo)
+          const base = repoUrl.replace(/\/$/, '').replace(/\.git$/, '');
+          const repoName = base.split('/').pop() || repoUrl;
+          const repoDir = path.join(dingGroupDir, repoName);
+          if (fs.existsSync(path.join(repoDir, '.git'))) {
+            await exec('git pull', { cwd: repoDir, timeout: 60_000 });
+            console.log(`[${timestamp()}] QA 模式 git pull: ${repoName}`);
+          } else {
+            await exec(`git clone ${repoUrl}`, { cwd: dingGroupDir, timeout: 120_000 });
+            console.log(`[${timestamp()}] QA 模式 git clone: ${repoUrl} -> ${repoName}`);
+          }
+        }
+      } catch (err) {
+        console.error(`[${timestamp()}] QA 模式 git 操作失败:`, err);
+      }
+    }
+
+    // 注入 QA 模式规则 + 文档链接
+    const qaRules = '【重要规则】当前为问答模式，请严格遵守：\n1. 仅回答问题，不要执行任何命令\n2. 不要修改或写入任何文件\n3. 不要尝试运行代码、脚本或工具\n4. 不要进行 git push、commit 等写操作';
+    const docLinks = conversationConfig.qaCfg?.docs?.length
+      ? `\n\n【参考资料链接】\n${conversationConfig.qaCfg.docs.map((d, i) => `${i + 1}. ${d}`).join('\n')}\n你可以使用 WebFetch 工具访问上述链接获取详细内容`
+      : '';
+
+    actualMessage = `${qaRules}${docLinks}\n\n---\n\n用户问题：\n${actualMessage}`;
+  }
+
   // 默认 bypassPermissions（cc-ding 通过钉钉交互，无终端审批能力）；如需更严格权限可在配置中显式设置 acceptEdits
   const permissionMode = opts?.permissionMode ?? 'bypassPermissions';
   const fixedCmdArgs = [
@@ -724,8 +778,6 @@ export async function executeClaudeQuery(
   if (agent) {
     fixedCmdArgs.push('--agent', agent);
   }
-
-  const actualMessage = skill ? `/${skill} ${messageWithPrefix}` : messageWithPrefix;
 
   let consecutiveFastFail = 0;
   let totalRetries = 0;
@@ -785,8 +837,6 @@ export async function executeClaudeQuery(
       // 因为 Claude 可能在内部使用不同的 UUID；改为依赖 stream 中返回的真实 session_id。
       const explicitSessionId = newSessionId || randomUUID();
       cmdArgs.push('--session-id', explicitSessionId);
-      // 使用 UUID 前缀作为 name，避免时间戳被 Claude 误认为 session ID
-      cmdArgs.push('--name', `cc-ding-${explicitSessionId.substring(0, 8)}`);
       console.log(`[${timestamp()}] 创建 Claude 会话(显式 session-id): ${explicitSessionId}`);
     }
     const settingsPath = resolveClaudeSettingsPath(self, dingGroupDir, opts?.settings);
