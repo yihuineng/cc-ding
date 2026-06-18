@@ -189,6 +189,14 @@ pnpm run test
 pnpm run build
 ```
 
+### 交流群
+
+扫码加入钉钉交流群：
+
+<p align="center">
+  <img src="assets/qrcode-dingtalk.jpg" alt="钉钉交流群二维码" width="300">
+</p>
+
 ---
 
 ## English
@@ -365,6 +373,14 @@ pnpm run lint
 pnpm run test
 pnpm run build
 ```
+
+### Community
+
+Scan the QR code to join our DingTalk group:
+
+<p align="center">
+  <img src="assets/qrcode-dingtalk.jpg" alt="DingTalk Group QR Code" width="300">
+</p>
 
 ---
 
