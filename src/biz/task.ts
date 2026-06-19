@@ -497,8 +497,10 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
   const MAX_FAST_FAIL = 20;
   const RETRY_DELAY_MS = 10_000;
   const FAST_FAIL_THRESHOLD_MS = 10_000;
-  const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000;
+  const watchdogTimeoutMins = convCfg?.maxTurnTimeMins ?? self.config.maxTurnTimeMins ?? 5;
+  const WATCHDOG_TIMEOUT_MS = watchdogTimeoutMins * 60 * 1000;
   const WATCHDOG_CHECK_INTERVAL_MS = 60 * 1000;
+  let watchdogFired = false; // 当前执行中 watchdog 是否触发过
   const entryCmd = 'claude';
   if (!commandExists(entryCmd)) {
     const message = formatClaudeCommandMissingMessage(entryCmd);
@@ -524,7 +526,7 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
         stdio: [ 'ignore', 'pipe', 'pipe' ],
       });
 
-      // Watchdog: 定期检查是否长时间无活动，发送提醒（不终止进程）
+      // Watchdog: 定期检查是否长时间无活动，超时后 kill 进程
       const watchdogTimer = setInterval(() => {
         if (exited) {
           clearInterval(watchdogTimer);
@@ -532,13 +534,17 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
         }
         const elapsed = Date.now() - lastActivityTime;
         if (elapsed >= WATCHDOG_TIMEOUT_MS) {
-          console.warn(`[${timestamp()}] 任务 Watchdog: ${WATCHDOG_TIMEOUT_MS / 1000}s 无日志输出，通知用户`);
+          console.warn(`[${timestamp()}] 任务 Watchdog: ${watchdogTimeoutMins} 分钟无日志输出，自动 kill 进程并重置为待办`);
           clearInterval(watchdogTimer);
+          exited = true;
+          watchdogFired = true;
+          child.kill('SIGINT');
+          // 通知用户
           sendDingMessage(self, {
             conversationId: task.conversationId,
             sessionWebhook: task.sessionWebhook,
             atUserId: task.senderStaffId,
-            content: `⏰ 任务超过 ${WATCHDOG_TIMEOUT_MS / 1000}s 无响应，仍在执行中，请稍候`,
+            content: ` 任务超过 ${watchdogTimeoutMins} 分钟无响应，已自动终止并重置为待办，将重新尝试`,
           }).catch(err => console.error('发送任务 Watchdog 通知失败:', err));
         }
       }, WATCHDOG_CHECK_INTERVAL_MS);
@@ -580,9 +586,22 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
   let consecutiveFastFail = 0;
 
   while (true) {
+    watchdogFired = false; // 每次执行重置 watchdog 标志
     const result = await runTaskOnce(cmdArgs);
     exitCode = result.exitCode;
     combinedOutput = result.output;
+
+    // Watchdog 触发：自动终止并重置为待办
+    if (watchdogFired) {
+      const logContent = [
+        `[${timestamp()}] 执行命令: ${entryCmd} ${cmdArgs.join(' ')}`,
+        `[${timestamp()}] 退出码: ${exitCode}`,
+        combinedOutput,
+      ].join('\n');
+      fs.writeFileSync(logFile, logContent);
+      await resetTaskToTodo(self, taskDir, `Watchdog 超时（${watchdogTimeoutMins} 分钟无响应）`);
+      return false;
+    }
 
     if (exitCode !== 0) {
 

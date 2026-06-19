@@ -38,6 +38,10 @@ export interface IConfig {
     /** 保存目录，默认为会话工作目录下的 .recorder */
     dist?: string;
   };
+  /** Watchdog 超时时间（分钟），默认 5 */
+  maxTurnTimeMins?: number;
+  /** Watchdog 超时自动恢复最大次数，默认 2 */
+  maxAutoRecovery?: number;
 }
 
 export interface IConversation {
@@ -70,6 +74,8 @@ export interface IConversation {
   qaMode?: boolean;
   /** 问答模式配置 */
   qaCfg?: IQaCfg;
+  /** 会话级 Watchdog 超时时间（分钟），覆盖全局 maxTurnTimeMins */
+  maxTurnTimeMins?: number;
 }
 
 /** 问答模式配置 */
@@ -120,6 +126,8 @@ export interface IActiveSession {
   interrupted?: boolean; // 是否被用户中断
   goonPending?: boolean; // 是否收到 /goon 请求，待重启
   lastActivityTime?: number; // 最近一次 Claude 进程活动时间（watchdog 用）
+  /** 当前 turn 自动超时恢复次数 */
+  autoRecoveryAttempts?: number;
   /** 排队中的消息，当前查询完成后依次处理 */
   messageQueue: Array<{ message: string; senderStaffId: string; senderNick: string }>;
 }

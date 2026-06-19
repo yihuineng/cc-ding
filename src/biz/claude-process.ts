@@ -30,8 +30,6 @@ const FAST_FAIL_THRESHOLD_MS = 10_000;
 const MAX_TOTAL_RETRIES = 10;
 /** 最大重试持续时间（ms），超过此值且重试 >=3 次视为无限重试循环 */
 const MAX_RETRY_DURATION_MS = 5 * 60 * 1000;
-/** Watchdog: 日志无更新超时时间（5 分钟） */
-const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000;
 /** Watchdog: 检查间隔 */
 const WATCHDOG_CHECK_INTERVAL_MS = 30 * 1000;
 
@@ -127,6 +125,14 @@ class ConversationNotFoundError extends Error {
   constructor() {
     super('Claude conversation not found');
     this.name = 'ConversationNotFoundError';
+  }
+}
+
+/** Watchdog 超时触发，需要自动恢复 */
+export class WatchdogTimeoutError extends Error {
+  constructor() {
+    super('Watchdog timeout: process inactive for too long');
+    this.name = 'WatchdogTimeoutError';
   }
 }
 
@@ -290,6 +296,7 @@ function runClaudeOnce(
     let hasSentResponse = false;
     let settled = false;
     let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+    let watchdogFired = false; // Watchdog 是否触发过超时
     const loggedToolUseIds = new Set<string>();
 
     const updateActivity = () => {
@@ -299,6 +306,9 @@ function runClaudeOnce(
     };
 
     // Watchdog: 定期检查是否长时间无活动
+    const convCfg = self.getConversationConfig(session.conversationId);
+    const watchdogTimeoutMins = convCfg?.maxTurnTimeMins ?? self.config.maxTurnTimeMins ?? 5;
+    const watchdogTimeoutMs = watchdogTimeoutMins * 60 * 1000;
     watchdogTimer = setInterval(() => {
       if (settled) {
         if (watchdogTimer) clearInterval(watchdogTimer);
@@ -306,18 +316,24 @@ function runClaudeOnce(
       }
       const lastActivity = activeSession?.lastActivityTime ?? startTime;
       const elapsed = Date.now() - lastActivity;
-      if (elapsed >= WATCHDOG_TIMEOUT_MS) {
-        console.warn(`[${timestamp()}] Watchdog: Claude 进程 ${WATCHDOG_TIMEOUT_MS / 1000}s 无活动，通知用户`);
-        try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，${WATCHDOG_TIMEOUT_MS / 1000}s 无活动，已通知用户\n`, 'utf-8'); } catch { /* ignore */ }
+      if (elapsed >= watchdogTimeoutMs) {
+        console.warn(`[${timestamp()}] Watchdog: Claude 进程 ${watchdogTimeoutMins} 分钟无活动，执行自动恢复`);
+        try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，${watchdogTimeoutMins} 分钟无活动，自动 kill 进程并恢复\n`, 'utf-8'); } catch { /* ignore */ }
         if (watchdogTimer) clearInterval(watchdogTimer);
         watchdogTimer = null;
-        const atUserId = activeSession?.lastSenderStaffId || session.startStaffId;
-        sendDingMessage(self, {
-          conversationId: getReplyConversationId(session),
-          sessionWebhook: getReplyWebhook(session),
-          atUserId,
-          content: `⏰ Claude 进程超过 ${WATCHDOG_TIMEOUT_MS / 1000}s 无响应，可发送 /goon 强制重启恢复，或 /end 结束会话`,
-        }).catch(err => console.error('发送 Watchdog 通知失败:', err));
+        // 自动 kill 当前 Claude 进程
+        if (activeSession?.currentProcess) {
+          interruptClaudeProcess(activeSession, 'Watchdog: 自动终止超时进程');
+        }
+        // 标记 watchdog 超时，让 runClaudeOnce 以特殊方式退出
+        watchdogFired = true;
+        settled = true;
+        if (activeSession?.currentProcess) {
+          // 进程已被 kill，等待 close 事件
+        } else {
+          // 进程已不存在，直接 reject
+          reject(new WatchdogTimeoutError());
+        }
       }
     }, WATCHDOG_CHECK_INTERVAL_MS);
 
@@ -423,6 +439,13 @@ function runClaudeOnce(
       const activeSessionRef = self.activeSessions.get(session.conversationId);
       if (activeSessionRef) {
         activeSessionRef.currentProcess = undefined;
+      }
+
+      // Watchdog 触发的进程退出：reject 让外层处理自动恢复
+      if (watchdogFired) {
+        console.log(`[${timestamp()}] Watchdog 触发的进程退出，reject WatchdogTimeoutError`);
+        reject(new WatchdogTimeoutError());
+        return;
       }
 
       // 被中断时（/end、/new 等），丢弃未发送的 responseBuffer，不再发送残余消息
@@ -784,6 +807,10 @@ export async function executeClaudeQuery(
   let retryStartTime = 0;
   const retryHistory: string[] = [];
   const originalActiveSession = self.activeSessions.get(session.conversationId);
+  // 新 turn 开始，重置自动恢复计数
+  if (originalActiveSession) {
+    originalActiveSession.autoRecoveryAttempts = 0;
+  }
 
   /** 检查会话是否仍在活跃状态（未被 /end 终止或 /goon 请求重启） */
   const isSessionStillActive = (reason: string): boolean => {
@@ -934,6 +961,52 @@ export async function executeClaudeQuery(
         }
         consecutiveFastFail = 0;
         continue;
+      }
+      // Watchdog 超时：自动 kill 进程 + 发送"继续"恢复
+      if (err instanceof WatchdogTimeoutError) {
+        const activeSessionNow = self.activeSessions.get(session.conversationId);
+        const convCfgNow = self.getConversationConfig(session.conversationId);
+        const maxAutoRecovery = self.config.maxAutoRecovery ?? 2;
+        const watchdogTimeoutMins = convCfgNow?.maxTurnTimeMins ?? self.config.maxTurnTimeMins ?? 5;
+        const currentAttempts = activeSessionNow?.autoRecoveryAttempts ?? 0;
+
+        if (currentAttempts < maxAutoRecovery) {
+          // 自动恢复：发送"继续"
+          const newAttempts = currentAttempts + 1;
+          if (activeSessionNow) {
+            activeSessionNow.autoRecoveryAttempts = newAttempts;
+          }
+          totalRetries++; retryStartTime = retryStartTime || Date.now();
+          retryHistory.push(`[${timestamp()}] Watchdog 超时，自动恢复 ${newAttempts}/${maxAutoRecovery}`);
+          console.log(`[${timestamp()}] Watchdog 超时，自动恢复 ${newAttempts}/${maxAutoRecovery}，发送"继续"`);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，自动恢复 ${newAttempts}/${maxAutoRecovery}\n`, 'utf-8');
+          const atUserId = senderStaffId || session.startStaffId;
+          await sendDingMessage(self, {
+            conversationId: getReplyConversationId(session),
+            sessionWebhook: getReplyWebhook(session),
+            atUserId,
+            content: ` Claude 进程超过 ${watchdogTimeoutMins} 分钟无响应，已自动重启恢复（${newAttempts}/${maxAutoRecovery}），继续执行中...`,
+          });
+          consecutiveFastFail = 0;
+          // 重置 interrupted 标志，允许继续执行
+          if (activeSessionNow) {
+            activeSessionNow.interrupted = false;
+          }
+          continue;
+        } else {
+          // 超过最大恢复次数，通知用户手动处理
+          console.log(`[${timestamp()}] Watchdog 超时，已达最大自动恢复次数 ${maxAutoRecovery}，通知用户`);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，已达最大自动恢复次数 ${maxAutoRecovery}\n`, 'utf-8');
+          const atUserId = senderStaffId || session.startStaffId;
+          await sendDingMessage(self, {
+            conversationId: getReplyConversationId(session),
+            sessionWebhook: getReplyWebhook(session),
+            atUserId,
+            content: `⏰ Claude 进程已超过 ${watchdogTimeoutMins} 分钟无响应，已尝试自动恢复 ${maxAutoRecovery} 次但仍超时。请发送 /goon 手动重启，或 /end 结束会话`,
+          });
+          // 不再重试，退出
+          return;
+        }
       }
       // 上下文窗口超长：自动发送 /compact 压缩上下文后继续
       if (err instanceof ContextWindowExceededError) {

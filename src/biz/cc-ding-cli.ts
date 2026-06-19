@@ -16,7 +16,7 @@ import {
   parseCronCommand, parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
   parseBashCommand, parseMqCommand, parseRecorderCommandEnhanced,
   parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
-  parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand, parseFreedomCommand, parseQaCommand,
+  parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand, parseFreedomCommand, parseQaCommand, parseTimerCommand,
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts, refreshSessionContext } from './claude-process';
@@ -55,6 +55,7 @@ import { resetApiKeyCfg, scheduleApiKeyCfgDailyReset, startupCheck, saveClientCo
 import { resolveSecret } from './secrets';
 import { ICommandRoute, route } from './command-route';
 import { CronEngine, formatCronJobList, formatCronJobInfo, isValidCronExpression } from './cron';
+import { TimerEngine, formatTimerList, formatTimerInfo } from './timer';
 import { commandExists, isWindows, isWindowsPlatform, spawnCommand } from './platform';
 
 /** 工具版本号 */
@@ -87,6 +88,9 @@ export class DingClaude {
   /** 定时任务引擎 */
   cronEngine!: CronEngine;
 
+  /** 延时提醒引擎 */
+  timerEngine!: TimerEngine;
+
   /** 默认最大并发会话数 */
   readonly DEFAULT_SESSION_MAX_CONCURRENCY = 5;
   /** 默认任务处理器数量 */
@@ -110,6 +114,8 @@ export class DingClaude {
     }
     // 在 clientId 和 config 初始化完成后再创建 CronEngine
     this.cronEngine = new CronEngine(this);
+    // 创建 TimerEngine
+    this.timerEngine = new TimerEngine(this);
   }
 
   // ==================== 委托方法 ====================
@@ -459,6 +465,63 @@ export class DingClaude {
             msgType: 'markdown',
           });
         }
+        return;
+      }
+    }
+  }
+
+  // ==================== /timer 命令处理 ====================
+
+  /**
+   * 处理 /timer 延时提醒命令
+   */
+  private async handleTimerCommand(
+    cmd: import('./commands').TimerCommand,
+    ctx: { conversationId: string; sessionWebhook: string; senderStaffId: string; senderNick: string },
+  ): Promise<void> {
+    const { conversationId, sessionWebhook, senderStaffId, senderNick } = ctx;
+
+    switch (cmd.action) {
+      case 'list': {
+        const jobs = this.timerEngine.listTimers(conversationId);
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: formatTimerList(jobs),
+          msgType: 'markdown',
+        });
+        return;
+      }
+
+      case 'cancel': {
+        const ok = this.timerEngine.removeTimer(cmd.id);
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: ok
+            ? `✅ 定时提醒 **${cmd.id}** 已取消`
+            : `❌ 未找到定时提醒: ${cmd.id}`,
+          msgType: 'markdown',
+        });
+        return;
+      }
+
+      case 'add': {
+        const now = Date.now();
+        const job = this.timerEngine.addTimer({
+          id: `timer_${now}`,
+          conversationId,
+          delayMs: cmd.delayMs,
+          fireAt: now + cmd.delayMs,
+          prompt: cmd.prompt,
+          description: cmd.description,
+          createdAt: new Date(now).toLocaleString(),
+          senderStaffId,
+          senderNick,
+        });
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: formatTimerInfo(job),
+          msgType: 'markdown',
+        });
         return;
       }
     }
@@ -1796,6 +1859,11 @@ export class DingClaude {
         await this.handleCronCommand(cronCmd, { conversationId, sessionWebhook, senderStaffId, senderNick, conversationConfig });
       }),
 
+      // /timer 命令：延时提醒
+      route('/timer', () => parseTimerCommand(prompt), async timerCmd => {
+        await this.handleTimerCommand(timerCmd, { conversationId, sessionWebhook, senderStaffId, senderNick });
+      }),
+
       // /todo 命令：待办管理
       route('/todo', () => parseTodoCommand(prompt, rawData.atUsers), async todoCmd => {
         await this.handleTodoCommand(todoCmd, { conversationId, sessionWebhook, senderStaffId, senderNick });
@@ -2455,6 +2523,9 @@ export class DingClaude {
     // 启动 Cron 引擎
     this.cronEngine.start();
 
+    // 启动 Timer 引擎
+    this.timerEngine.start();
+
     // 启动 /menu 待选状态过期清理定时器
     startSelectionCleanupTimer();
 
@@ -2482,6 +2553,13 @@ export class DingClaude {
       console.error('Fatal error', error);
       process.exit(1);
     });
+
+    // 进程退出时清理 Timer 引擎
+    const onShutdown = () => {
+      this.timerEngine.destroy();
+    };
+    process.on('SIGTERM', onShutdown);
+    process.on('SIGINT', onShutdown);
 
     await Promise.all([ receiverPromise, ...handlerPromises ]);
   }

@@ -96,6 +96,13 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     category: '任务',
   },
   {
+    name: '/timer',
+    description: '设置一次性延时提醒，到期后自动执行',
+    usage: '/timer <5m|1h30m|2d> <提醒内容> | /timer list | /timer cancel <id>',
+    examples: [ '/timer 5m 提醒我检查部署', '/timer 1h30m 总结今天的PR', '/timer 2d 项目里程碑检查', '/timer list', '/timer cancel timer_123' ],
+    category: '任务',
+  },
+  {
     name: '/ls',
     description: '查看工作目录结构',
     usage: '/ls [目标目录] [展开层数]',
@@ -1087,4 +1094,65 @@ export function parseRecorderCommandEnhanced(text: string): 'on' | 'exit' | null
   if (/^\/recorder\s+on$/i.test(trimmed)) return 'on';
   if (/^\/recorder\s+exit$/i.test(trimmed)) return 'exit';
   return null;
+}
+
+/**
+ * 解析 /timer 延时提醒命令
+ * - /timer 5m 提醒内容          -> { action: 'add', delayMs: 300000, prompt: '提醒内容', description: '提醒内容' }
+ * - /timer 1h30m 提醒内容        -> { action: 'add', delayMs: 5400000, prompt: '提醒内容', description: '提醒内容' }
+ * - /timer list                  -> { action: 'list' }
+ * - /timer cancel timer_xxx      -> { action: 'cancel', id: 'timer_xxx' }
+ * - 无效输入                     -> null
+ */
+export type TimerCommand =
+  | { action: 'add'; delayMs: number; prompt: string; description: string }
+  | { action: 'list' }
+  | { action: 'cancel'; id: string };
+
+export function parseTimerCommand(text: string): TimerCommand | null {
+  const trimmed = text.trim();
+  if (!/^\/timer(\b|$)/i.test(trimmed)) return null;
+
+  const rest = trimmed.substring(6).trim();
+  if (!rest) return null;
+
+  // /timer list
+  if (/^(list|ls)$/i.test(rest)) return { action: 'list' };
+
+  // /timer cancel <id>
+  const cancelMatch = rest.match(/^(?:cancel|rm|del(?:ete)?)\s+(\S+)$/i);
+  if (cancelMatch) return { action: 'cancel', id: cancelMatch[1] };
+
+  // /timer <delay> <prompt>
+  // 先提取延时部分（d/h/m/s 组合），剩余的是 prompt
+  const delayRegex = /^(\d+[dhms](?:\s*\d+[dhms])*)\s+(.+)$/;
+  const delayMatch = rest.match(delayRegex);
+  if (!delayMatch) return null;
+
+  const delayStr = delayMatch[1].replace(/\s+/g, '');
+  const prompt = delayMatch[2].trim();
+  if (!prompt) return null;
+
+  // 将 delayStr 转换为标准格式（如 "1h30m"）
+  const normalizedDelay = delayStr
+    .replace(/(\d+)d/g, '$1d')
+    .replace(/(\d+)h/g, '$1h')
+    .replace(/(\d+)m/g, '$1m')
+    .replace(/(\d+)s/g, '$1s');
+
+  // 解析延时
+  const regex = /^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/;
+  const match = normalizedDelay.match(regex);
+  if (!match) return null;
+
+  const days = parseInt(match[1] || '0', 10);
+  const hours = parseInt(match[2] || '0', 10);
+  const minutes = parseInt(match[3] || '0', 10);
+  const seconds = parseInt(match[4] || '0', 10);
+
+  if (days === 0 && hours === 0 && minutes === 0 && seconds === 0) return null;
+
+  const delayMs = ((days * 24 + hours) * 60 + minutes) * 60 * 1000 + seconds * 1000;
+
+  return { action: 'add', delayMs, prompt, description: prompt };
 }
