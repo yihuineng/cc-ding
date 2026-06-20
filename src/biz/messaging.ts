@@ -399,6 +399,18 @@ export async function sendClaudeResponseToDing(
       }
     }
   }
+
+  // ensureAt: 追加一条 text 消息，确保钉钉 @ 通知生效
+  const convCfg = self.config.conversations.find(c => c.conversationId === conversationId);
+  if (convCfg?.ensureAt && atUserId) {
+    await sendDingMessage(self, {
+      conversationId,
+      sessionWebhook,
+      atUserId,
+      content: '',
+      msgType: 'text',
+    });
+  }
 }
 
 /**

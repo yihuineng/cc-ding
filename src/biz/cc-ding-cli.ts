@@ -1197,7 +1197,7 @@ export class DingClaude {
         const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
         cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
-        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model);
+        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model || cfgOpts.enableMsgToUser !== undefined || cfgOpts.ensureAt !== undefined);
 
         if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
@@ -1210,9 +1210,12 @@ export class DingClaude {
           if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
           if (cfgOpts.permissionMode !== undefined) existingConv.permissionMode = cfgOpts.permissionMode;
           if (cfgOpts.streaming !== undefined) existingConv.streaming = cfgOpts.streaming;
+          if (cfgOpts.ensureAt !== undefined) existingConv.ensureAt = cfgOpts.ensureAt;
           if (cfgOpts.model) existingConv.model = cfgOpts.model;
           // cardTemplateId 是全局配置
           if (cfgOpts.cardTemplateId) this.config.cardTemplateId = cfgOpts.cardTemplateId;
+          // enableMsgToUser 是全局配置
+          if (cfgOpts.enableMsgToUser !== undefined) this.config.enableMsgToUser = cfgOpts.enableMsgToUser;
           if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
             existingConv.whiteUserList = cfgOpts.whiteUserList;
             for (const item of cfgOpts.whiteUserList) {
@@ -1237,9 +1240,12 @@ export class DingClaude {
           if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
           if (cfgOpts.permissionMode !== undefined) newConv.permissionMode = cfgOpts.permissionMode;
           if (cfgOpts.streaming !== undefined) newConv.streaming = cfgOpts.streaming;
+          if (cfgOpts.ensureAt !== undefined) newConv.ensureAt = cfgOpts.ensureAt;
           if (cfgOpts.model) newConv.model = cfgOpts.model;
           // cardTemplateId 是全局配置
           if (cfgOpts.cardTemplateId) this.config.cardTemplateId = cfgOpts.cardTemplateId;
+          // enableMsgToUser 是全局配置
+          if (cfgOpts.enableMsgToUser !== undefined) this.config.enableMsgToUser = cfgOpts.enableMsgToUser;
           if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
             newConv.whiteUserList = cfgOpts.whiteUserList;
             for (const item of cfgOpts.whiteUserList) {
@@ -1275,6 +1281,7 @@ export class DingClaude {
         if (convToShow?.receiveReply === false) info.push('- **receiveReply:** false (不回复确认消息)');
         if (convToShow?.permissionMode) info.push(`- **permissionMode:** ${convToShow.permissionMode}`);
         if (convToShow?.streaming) info.push('- **streaming:** true (AI Card 流式输出)');
+        if (convToShow?.ensureAt) info.push('- **ensureAt:** true (追加 text 消息确保 @ 通知生效)');
         if (convToShow?.model) info.push(`- **model:** ${convToShow.model}`);
         if (convToShow?.whiteUserList?.length) {
           const display = convToShow.whiteUserList.map(item => {
@@ -1284,6 +1291,7 @@ export class DingClaude {
           info.push(`- **whiteUserList:** ${display}`);
         }
         info.push(`- **工作目录:** ${workDir}`);
+        info.push(`- **enableMsgToUser:** ${this.config.enableMsgToUser ? 'true' : 'false'} (私聊消息开关)`);
         info.push('\n💡 可编辑 config.json 补充更多配置');
         await this.sendDingMessage({
           conversationId,
@@ -2515,7 +2523,7 @@ export class DingClaude {
 
         // 中断后原调用栈中的 executeClaudeQuery 会结束，finally 释放 isProcessing 并自动 drain 消息队列
         interruptClaudeProcess(activeSession, `/!: ${senderNick} 中断当前任务`);
-        const queued = activeSession.messageQueue.length;
+        const queued = activeSession.messageQueue?.length ?? 0;
         await this.sendDingMessage({
           conversationId, sessionWebhook,
           content: queued > 0

@@ -147,7 +147,7 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/cfg',
     description: '注册当前群到配置，或刷新指定字段(已注册群)',
-    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode] [--model model-name]',
+    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode] [--enableMsgToUser true|false] [--ensureAt true|false] [--model model-name]',
     examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --permissionMode auto', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
     category: '管理',
   },
@@ -370,6 +370,7 @@ export function formatConversationInfo(
   if (conv.qaCfg?.gitRepos?.length) lines.push(`- **QA gitRepos:** ${conv.qaCfg.gitRepos.join(', ')}`);
   if (conv.qaCfg?.docs?.length) lines.push(`- **QA docs:** ${conv.qaCfg.docs.join(', ')}`);
   if (conv.qaCfg?.autoPull) lines.push(`- **QA autoPull:** 已开启`);
+  if (conv.ensureAt) lines.push(`- **ensureAt:** 已开启（追加 text 消息确保 @ 通知生效）`);
   return lines.join('\n');
 }
 
@@ -394,6 +395,7 @@ export function formatGlobalConfig(cfg: IConfig): string {
     lines.push(`- **apiKeyCfg:** ${validCount}/${cfg.apiKeyCfg.claudeSettings.length} 有效`);
     lines.push(`  - **最近重置:** ${cfg.apiKeyCfg.resetTime || '-'}`);
   }
+  lines.push(`- **enableMsgToUser:** ${cfg.enableMsgToUser ?? false} (私聊消息开关)`);
   return lines.join('\n');
 }
 
@@ -597,11 +599,13 @@ export function parseResetApiKeyCfgCommand(text: string): boolean {
 
 /**
  * 解析 /cfg 命令
- * 格式: /cfg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false]
+ * 格式: /cfg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--enableMsgToUser true|false] [--ensureAt true|false]
  * - /cfg                                -> 注册当前群（所有选项均为默认值）
  * - /cfg --dingToken xxx               -> 指定 dingToken
  * - /cfg --atSender false              -> 关闭回复时 at 发送人
  * - /cfg --receiveReply false          -> 关闭"收到"确认消息
+ * - /cfg --enableMsgToUser true|false  -> 开启/关闭私聊消息能力
+ * - /cfg --ensureAt true|false         -> 开启/关闭 @ 通知保障
  * - 其他                                -> null
  */
 export interface ICfgOptions {
@@ -618,6 +622,10 @@ export interface ICfgOptions {
   cardTemplateId?: string;
   model?: string;
   reload?: boolean;
+  /** 是否开启单聊消息能力（oToMessages/batchSend），默认 false */
+  enableMsgToUser?: boolean;
+  /** markdown 回复后是否追加 text 消息确保 @ 通知生效，默认 false */
+  ensureAt?: boolean;
 }
 
 export function parseCfgCommand(text: string): ICfgOptions | null {
@@ -679,6 +687,12 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
       result.cardTemplateId = tokens[++i];
     } else if (token === '--model' && tokens[i + 1]) {
       result.model = tokens[++i];
+    } else if (token === '--enableMsgToUser' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      result.enableMsgToUser = val === 'true' || val === '1' || val === 'yes';
+    } else if (token === '--ensureAt' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      result.ensureAt = val === 'true' || val === '1' || val === 'yes';
     } else if (token === '--reload') {
       result.reload = true;
     }

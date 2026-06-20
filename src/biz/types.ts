@@ -86,6 +86,8 @@ export interface IConversation {
   maxTurnTimeMins?: number;
   /** 是否开启流式输出（AI Card），默认 false */
   streaming?: boolean;
+  /** markdown 回复后是否追加 text 消息确保 @ 通知生效，默认 false */
+  ensureAt?: boolean;
 }
 
 /** 问答模式配置 */
@@ -127,6 +129,17 @@ export interface ITask {
 }
 
 // 活跃会话状态
+
+/** 消息队列中的单条消息 */
+export interface IMessageQueueItem {
+  message: string;
+  senderStaffId: string;
+  senderNick: string;
+  sessionWebhook: string;     // 入队时的 webhook 地址（消费时使用，webhook 可能过期）
+  conversationId: string;     // 入队时的会话ID（消费时确认来源，避免跨会话混用）
+  enqueueTime: number;        // 入队时间戳（用于超时清理或优先级排序）
+}
+
 export interface IActiveSession {
   session: ISession;
   lastSenderStaffId: string;
@@ -139,7 +152,7 @@ export interface IActiveSession {
   /** 当前 turn 自动超时恢复次数 */
   autoRecoveryAttempts?: number;
   /** 排队中的消息，当前查询完成后依次处理 */
-  messageQueue: Array<{ message: string; senderStaffId: string; senderNick: string }>;
+  messageQueue?: IMessageQueueItem[];
 }
 
 // 活跃会话持久化数据（不含运行时字段）

@@ -5,7 +5,7 @@ import assert from 'assert';
 import crypto from 'crypto';
 import path from 'path';
 import type { DingClaude } from './cc-ding-cli';
-import { IActiveSession, IActiveSessionPersist, IConfig, ISession } from './types';
+import { IActiveSession, IActiveSessionPersist, IConfig, IMessageQueueItem, ISession } from './types';
 import { parseEndCommand } from './commands';
 import { sendDingMessage, queryUserIdByMobile, queryUserIdByJobNumber, queryDingUser } from './messaging';
 import { interruptClaudeProcess, executeClaudeQuery } from './claude-process';
@@ -794,13 +794,23 @@ export async function startNewSession(self: DingClaude, opts: {
  */
 export async function processMessageQueue(self: DingClaude, conversationId: string): Promise<void> {
   const activeSession = self.activeSessions.get(conversationId);
-  if (!activeSession || activeSession.messageQueue.length === 0) return;
+  if (!activeSession || !activeSession.messageQueue || activeSession.messageQueue.length === 0) return;
 
   const entry = activeSession.messageQueue.shift()!;
-  const { message, senderStaffId, senderNick } = entry;
-  const sessionWebhook = activeSession.session.sessionWebhook;
+  const { message, senderStaffId, senderNick, sessionWebhook, conversationId: entryConvId, enqueueTime } = entry;
 
-  console.log(`处理队列消息: 群=${conversationId}, 剩余 ${activeSession.messageQueue.length} 条`);
+  // 检查消息是否过期（超过 10 分钟跳过）
+  const MAX_QUEUE_AGE_MS = 10 * 60 * 1000;
+  if (Date.now() - enqueueTime > MAX_QUEUE_AGE_MS) {
+    console.log(`队列消息已过期，跳过: 入队时间=${new Date(enqueueTime).toLocaleString()}, 群=${entryConvId}`);
+    // 继续处理下一条
+    if (activeSession.messageQueue.length > 0) {
+      await processMessageQueue(self, conversationId);
+    }
+    return;
+  }
+
+  console.log(`处理队列消息: 群=${entryConvId}, 剩余 ${activeSession.messageQueue.length} 条`);
 
   activeSession.isProcessing = true;
   activeSession.lastSenderStaffId = senderStaffId;
@@ -809,7 +819,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   if (activeSession.conversationConfig.receiveReply !== false) {
     const preview = message.length > 50 ? message.substring(0, 50) + '…' : message;
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
+      conversationId: entryConvId, sessionWebhook, atUserId: senderStaffId,
       content: `🚀 开始处理消息「${preview}」`,
     }).catch(() => {});
   }
@@ -826,8 +836,8 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   } catch (err) {
     console.error('执行队列 Claude 查询失败:', err);
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
-      content: `❌ 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
+      conversationId: entryConvId, sessionWebhook, atUserId: senderStaffId,
+      content: ` 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
     });
   } finally {
     activeSession.isProcessing = false;
@@ -853,7 +863,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   }
 
   // 如果队列还有消息，继续处理
-  if (activeSession.messageQueue.length > 0) {
+  if (activeSession.messageQueue && activeSession.messageQueue.length > 0) {
     await processMessageQueue(self, conversationId);
   }
 }
@@ -890,7 +900,12 @@ export async function handleSessionMessage(self: DingClaude, opts: {
 
     if (activeSession.isProcessing) {
       // 正在处理中，将消息加入队列
-      const queueEntry = { message, senderStaffId, senderNick };
+      const queueEntry: IMessageQueueItem = {
+        message, senderStaffId, senderNick,
+        sessionWebhook, conversationId,
+        enqueueTime: Date.now(),
+      };
+      if (!activeSession.messageQueue) activeSession.messageQueue = [];
       activeSession.messageQueue.push(queueEntry);
       const queuePos = activeSession.messageQueue.length;
       console.log(`会话 ${conversationId} 消息已入队，排队第 ${queuePos} 条`);
