@@ -147,7 +147,7 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/cfg',
     description: '注册当前群到配置，或刷新指定字段(已注册群)',
-    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode]',
+    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode] [--model model-name]',
     examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --permissionMode auto', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
     category: '管理',
   },
@@ -220,6 +220,13 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     description: '问答模式：开启后 Claude 以只读 plan 模式运行，所有群成员均可使用',
     usage: '/qa | /qa exit | /qa --gitRepos https://github.com/a/b | /qa --docs url1,url2 | /qa --autoPull true|false',
     examples: [ '/qa', '/qa exit', '/qa --gitRepos https://github.com/user/repo.git', '/qa --docs https://example.com/doc --autoPull true' ],
+    category: '管理',
+  },
+  {
+    name: '/model',
+    description: '查看或切换当前会话使用的 Claude 模型',
+    usage: '/model | /model list | /model <model-name> | /model add <model-name> | /model rm <model-name>',
+    examples: [ '/model', '/model list', '/model claude-sonnet-4-20250514', '/model add claude-3-7-sonnet-20250219', '/model rm claude-haiku-4-20251001' ],
     category: '管理',
   },
 ];
@@ -343,6 +350,7 @@ export function formatConversationInfo(
   if (workDir) lines.push(`- **工作目录:** \`${workDir}\``);
   if (conv.linkConversationId) lines.push(`- **关联会话ID:** ${conv.linkConversationId}`);
   if (conv.agent) lines.push(`- **agent:** ${conv.agent}`);
+  if (conv.model) lines.push(`- **model:** ${conv.model}`);
   if (conv.dingToken) lines.push(`- **dingToken:** ${conv.dingToken.substring(0, 8)}...`);
   if (conv.whiteUserList?.length) {
     const display = conv.whiteUserList.map(uid => {
@@ -371,6 +379,7 @@ export function formatConversationInfo(
 export function formatGlobalConfig(cfg: IConfig): string {
   const lines = [
     `- **clientName:** ${cfg.clientName || '-'}`,
+    `- **model:** ${cfg.model || '(默认)'}`,
     `- **sessionMaxConcurrency:** ${cfg.sessionMaxConcurrency ?? 5}`,
     `- **taskHandlerCount:** ${cfg.taskHandlerCount ?? 1}`,
     `- **taskQueueSize:** ${cfg.taskQueueSize ?? 50}`,
@@ -607,6 +616,7 @@ export interface ICfgOptions {
   permissionMode?: string;
   streaming?: boolean;
   cardTemplateId?: string;
+  model?: string;
 }
 
 export function parseCfgCommand(text: string): ICfgOptions | null {
@@ -666,6 +676,8 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
       result.streaming = val === 'true' || val === '1' || val === 'yes';
     } else if (token === '--cardTemplateId' && tokens[i + 1]) {
       result.cardTemplateId = tokens[++i];
+    } else if (token === '--model' && tokens[i + 1]) {
+      result.model = tokens[++i];
     }
   }
 
@@ -1162,4 +1174,43 @@ export function parseTimerCommand(text: string): TimerCommand | null {
   const delayMs = ((days * 24 + hours) * 60 + minutes) * 60 * 1000 + seconds * 1000;
 
   return { action: 'add', delayMs, prompt, description: prompt };
+}
+
+/**
+ * 解析 /model 命令
+ * - /model                      -> { action: 'list' }
+ * - /model list                 -> { action: 'list' }
+ * - /model <model-name>         -> { action: 'set', model: 'model-name' }
+ * - /model add <model-name>     -> { action: 'add', model: 'model-name' }
+ * - /model rm <model-name>      -> { action: 'remove', model: 'model-name' }
+ * - 无效输入                    -> null
+ */
+export type ModelCommand =
+  | { action: 'list' }
+  | { action: 'set'; model: string }
+  | { action: 'add'; model: string }
+  | { action: 'remove'; model: string };
+
+export function parseModelCommand(text: string): ModelCommand | null {
+  const trimmed = text.trim();
+  if (!/^\/model(\b|$)/i.test(trimmed)) return null;
+
+  const rest = trimmed.substring(6).trim();
+
+  // /model 或 /model list
+  if (!rest || /^(list|ls)$/i.test(rest)) return { action: 'list' };
+
+  // /model add <model-name>
+  const addMatch = rest.match(/^(?:add)\s+(\S+)$/i);
+  if (addMatch) return { action: 'add', model: addMatch[1] };
+
+  // /model rm <model-name>
+  const rmMatch = rest.match(/^(?:rm|del(?:ete)?)\s+(\S+)$/i);
+  if (rmMatch) return { action: 'remove', model: rmMatch[1] };
+
+  // /model <model-name> (切换)
+  const setMatch = rest.match(/^(\S+)$/);
+  if (setMatch) return { action: 'set', model: setMatch[1] };
+
+  return null;
 }

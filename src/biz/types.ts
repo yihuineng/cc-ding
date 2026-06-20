@@ -4,6 +4,8 @@ import { RobotTextMessage } from 'utils-ok';
 // config.json
 export interface IConfig {
   clientName?: string;
+  /** 全局默认模型，群维度 model 优先 */
+  model?: string;
   whiteUserList: string[]; // 白名单（手机号或工号）
   owner: string; // 机器人 owner（手机号或工号，拥有所有权限）
   /** 管理员列表（手机号、工号或userId），除管理员人员管理(/auth admin add/rm/list)外与 owner 同权 */
@@ -58,6 +60,8 @@ export interface IConversation {
   mobile?: string;
   whiteUserList?: string[]; // 机器人实例维度白名单, 定义时优先级高于Client维度
   agent?: string; // 指定agent
+  /** 指定模型，优先于全局 model */
+  model?: string;
   useLocalOcr?: boolean; // 本地 OCR 降级（用于不支持图片识别的模型），默认 true
   atSender?: boolean; // 回复时是否 at 发送人，默认 true
   /** 是否回复"收到"等确认消息，默认 true */

@@ -744,7 +744,7 @@ export async function executeClaudeQuery(
   self: DingClaude,
   session: ISession,
   message: string,
-  opts?: { skill?: string; agent?: string; settings?: string; senderNick?: string; senderStaffId?: string; permissionMode?: string; newSessionId?: string; conversationConfig?: { qaMode?: boolean; qaCfg?: { gitRepos?: string[]; docs?: string[]; autoPull?: boolean } } },
+  opts?: { skill?: string; agent?: string; settings?: string; senderNick?: string; senderStaffId?: string; permissionMode?: string; newSessionId?: string; model?: string; conversationConfig?: { qaMode?: boolean; qaCfg?: { gitRepos?: string[]; docs?: string[]; autoPull?: boolean } } },
 ): Promise<void> {
   const { skill, agent, senderNick, senderStaffId, newSessionId, conversationConfig } = opts || {};
   let sessionDir = self.getSessionDir(session);
@@ -848,6 +848,15 @@ export async function executeClaudeQuery(
   ];
   if (agent) {
     fixedCmdArgs.push('--agent', agent);
+  }
+
+  // 解析模型优先级：opts.model > 会话级 config.model > 全局 config.model
+  const modelOverride = opts?.model;
+  const convModel = self.getConversationConfig(session.conversationId)?.model;
+  const globalModel = self.config.model;
+  const effectiveModel = modelOverride || convModel || globalModel;
+  if (effectiveModel) {
+    fixedCmdArgs.push('--model', effectiveModel);
   }
 
   let consecutiveFastFail = 0;

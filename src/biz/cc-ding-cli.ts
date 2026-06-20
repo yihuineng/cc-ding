@@ -16,7 +16,7 @@ import {
   parseCronCommand, parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
   parseBashCommand, parseMqCommand, parseRecorderCommandEnhanced,
   parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
-  parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand, parseFreedomCommand, parseQaCommand, parseTimerCommand,
+  parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand, parseFreedomCommand, parseQaCommand, parseTimerCommand, parseModelCommand,
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts, refreshSessionContext } from './claude-process';
@@ -57,6 +57,7 @@ import { ICommandRoute, route } from './command-route';
 import { CronEngine, formatCronJobList, formatCronJobInfo, isValidCronExpression } from './cron';
 import { TimerEngine, formatTimerList, formatTimerInfo } from './timer';
 import { SendQueueProcessor } from './send-queue';
+import { initModelOptions, loadModelOptions, addModelOptions, removeModelOptions, resolveCurrentModel, setConversationModel } from './model';
 import { commandExists, isWindows, isWindowsPlatform, spawnCommand } from './platform';
 
 /** 工具版本号 */
@@ -122,6 +123,8 @@ export class DingClaude {
     this.timerEngine = new TimerEngine(this);
     // 创建 SendQueueProcessor
     this.sendQueueProcessor = new SendQueueProcessor(this);
+    // 初始化预设模型列表
+    initModelOptions(this);
   }
 
   // ==================== 委托方法 ====================
@@ -1037,7 +1040,7 @@ export class DingClaude {
         const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
         cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
-        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId);
+        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model);
 
         if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
@@ -1050,6 +1053,7 @@ export class DingClaude {
           if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
           if (cfgOpts.permissionMode !== undefined) existingConv.permissionMode = cfgOpts.permissionMode;
           if (cfgOpts.streaming !== undefined) existingConv.streaming = cfgOpts.streaming;
+          if (cfgOpts.model) existingConv.model = cfgOpts.model;
           // cardTemplateId 是全局配置
           if (cfgOpts.cardTemplateId) this.config.cardTemplateId = cfgOpts.cardTemplateId;
           if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
@@ -1076,6 +1080,7 @@ export class DingClaude {
           if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
           if (cfgOpts.permissionMode !== undefined) newConv.permissionMode = cfgOpts.permissionMode;
           if (cfgOpts.streaming !== undefined) newConv.streaming = cfgOpts.streaming;
+          if (cfgOpts.model) newConv.model = cfgOpts.model;
           // cardTemplateId 是全局配置
           if (cfgOpts.cardTemplateId) this.config.cardTemplateId = cfgOpts.cardTemplateId;
           if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
@@ -1113,6 +1118,7 @@ export class DingClaude {
         if (convToShow?.receiveReply === false) info.push('- **receiveReply:** false (不回复确认消息)');
         if (convToShow?.permissionMode) info.push(`- **permissionMode:** ${convToShow.permissionMode}`);
         if (convToShow?.streaming) info.push('- **streaming:** true (AI Card 流式输出)');
+        if (convToShow?.model) info.push(`- **model:** ${convToShow.model}`);
         if (convToShow?.whiteUserList?.length) {
           const display = convToShow.whiteUserList.map(item => {
             if (isMobile(item)) return item;
@@ -1162,6 +1168,7 @@ export class DingClaude {
           `- **os:** ${os.hostname()} ${os.platform()} ${os.release()}`,
           `- **node:** ${process.version}`,
           `- **cardTemplateId:** ${this.config.cardTemplateId || '(未配置)'}`,
+          `- **model:** ${conversationConfig?.model || this.config.model || '(默认)'}`,
         ].join('\n');
         await this.sendDingMessage({
           conversationId,
@@ -1876,6 +1883,87 @@ export class DingClaude {
       // /timer 命令：延时提醒
       route('/timer', () => parseTimerCommand(prompt), async timerCmd => {
         await this.handleTimerCommand(timerCmd, { conversationId, sessionWebhook, senderStaffId, senderNick });
+      }),
+
+      // /model 命令：查看或切换当前会话使用的模型
+      route('/model', () => parseModelCommand(prompt), async modelCmd => {
+        if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
+
+        const models = loadModelOptions(this);
+        const currentModel = resolveCurrentModel(this, conversationId);
+        const globalModel = this.config.model || '(未设置)';
+        const convModel = conversationConfig?.model;
+
+        if (modelCmd.action === 'list') {
+          const lines = [
+            '###  模型设置',
+            '',
+            `- **当前生效模型:** ${currentModel || '(默认)'}`,
+            `- **会话级 model:** ${convModel || '(未设置)'}`,
+            `- **全局 model:** ${globalModel}`,
+            '',
+            '**可用模型列表:**',
+          ];
+          for (const m of models) {
+            const marker = m === currentModel ? ' ✅' : '';
+            lines.push(`- \`${m}\`${marker}`);
+          }
+          lines.push('');
+          lines.push('💡 使用 `/model <model-name>` 切换当前会话模型');
+          lines.push('💡 使用 `/model add <model-name>` 添加自定义模型');
+          lines.push('💡 使用 `/model rm <model-name>` 从列表移除模型');
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: lines.join('\n'),
+            msgType: 'markdown',
+          });
+        } else if (modelCmd.action === 'set') {
+          setConversationModel(this, conversationId, modelCmd.model);
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: `✅ 已设置当前会话模型为: \`${modelCmd.model}\`\n\n💡 仅影响后续新建的 Claude 会话`,
+            msgType: 'markdown',
+          });
+        } else if (modelCmd.action === 'add') {
+          const updated = addModelOptions(this, [ modelCmd.model ]);
+          const lines = [
+            `✅ 已添加模型: \`${modelCmd.model}\``,
+            '',
+            '**当前可用模型:**',
+          ];
+          for (const m of updated) {
+            lines.push(`- \`${m}\``);
+          }
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: lines.join('\n'),
+            msgType: 'markdown',
+          });
+        } else if (modelCmd.action === 'remove') {
+          const presetModels = [ 'claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-haiku-4-20251001' ];
+          if (presetModels.includes(modelCmd.model)) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: `❌ 无法移除预设模型: \`${modelCmd.model}\``,
+              msgType: 'markdown',
+            });
+            return;
+          }
+          const updated = removeModelOptions(this, [ modelCmd.model ]);
+          const lines = [
+            `✅ 已移除模型: \`${modelCmd.model}\``,
+            '',
+            '**当前可用模型:**',
+          ];
+          for (const m of updated) {
+            lines.push(`- \`${m}\``);
+          }
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: lines.join('\n'),
+            msgType: 'markdown',
+          });
+        }
       }),
 
       // /todo 命令：待办管理
