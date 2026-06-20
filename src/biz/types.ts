@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'child_process';
+import type { IAgent } from './agent';
 import { RobotTextMessage } from 'utils-ok';
 
 // config.json
@@ -154,6 +155,8 @@ export interface IActiveSession {
   autoRecoveryAttempts?: number;
   /** 排队中的消息，当前查询完成后依次处理 */
   messageQueue?: IMessageQueueItem[];
+  /** 当前会话使用的 Agent 实例（避免每次从 config 重新创建） */
+  agent?: IAgent;
 }
 
 // 活跃会话持久化数据（不含运行时字段）

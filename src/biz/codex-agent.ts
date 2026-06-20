@@ -9,9 +9,7 @@ import {
   appendSessionLog,
 } from './session';
 import { spawnCommand } from './platform';
-
-const WATCHDOG_CHECK_INTERVAL_MS = 30 * 1000;
-const DEFAULT_MAX_AUTO_RECOVERY = 2;
+import { AgentWatchdog, defaultWatchdogOnTimeout, defaultWatchdogOnRecoveryFailed } from './watchdog';
 
 /**
  * 解析 Codex CLI 的 JSON 流式事件
@@ -76,6 +74,7 @@ export class CodexAgent implements IAgent {
   readonly type = 'codex';
 
   async executeQuery(dc: DingClaude, session: ISession, opts: IAgentQueryOpts): Promise<void> {
+    const convCfg = dc.getConversationConfig(session.conversationId);
     const sessionDir = dc.getSessionDir(session);
     const dingGroupDir = dc.getConversationDir(session.conversationId);
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -94,13 +93,14 @@ export class CodexAgent implements IAgent {
 
     // 构造 codex 命令参数
     const cmdArgs: string[] = [ 'exec' ];
+    const model = convCfg?.model || dc.config.model;
 
     if (session.agentSessionId) {
       // 恢复已有会话（使用 thread_id）
       cmdArgs.push('resume', '--skip-git-repo-check');
       cmdArgs.push('-c', 'sandbox_mode=full-auto');
       cmdArgs.push('-c', 'approval_policy=never');
-      if (opts.model) cmdArgs.push('--model', opts.model);
+      if (model) cmdArgs.push('--model', model);
       cmdArgs.push(session.agentSessionId);
       cmdArgs.push('--json', '-');
     } else {
@@ -108,7 +108,7 @@ export class CodexAgent implements IAgent {
       cmdArgs.push('--skip-git-repo-check');
       cmdArgs.push('--sandbox', 'full-auto');
       cmdArgs.push('-c', 'approval_policy=never');
-      if (opts.model) cmdArgs.push('--model', opts.model);
+      if (model) cmdArgs.push('--model', model);
       cmdArgs.push('--json', '--cd', dingGroupDir, '-');
     }
 
@@ -156,53 +156,24 @@ export class CodexAgent implements IAgent {
 
     const responseBuffer: string[] = [];
     let hasSentResponse = false;
-    let settled = false;
 
     const updateActivity = () => {
       if (activeSession) activeSession.lastActivityTime = Date.now();
     };
 
-    // Watchdog（与 Claude 相同逻辑，支持 autoRecovery）
-    const convCfg = dc.getConversationConfig(session.conversationId);
-    const watchdogTimeoutMs = ((convCfg?.maxTurnTimeMins ?? dc.config.maxTurnTimeMins) || 5) * 60 * 1000;
-    const maxAutoRecovery = dc.config.maxAutoRecovery ?? DEFAULT_MAX_AUTO_RECOVERY;
-
-    let watchdogTimer: ReturnType<typeof setInterval> | null = setInterval(() => {
-      if (settled) { if (watchdogTimer) clearInterval(watchdogTimer); return; }
-      const lastActivity = activeSession?.lastActivityTime ?? startTime;
-      const elapsed = Date.now() - lastActivity;
-      if (elapsed >= watchdogTimeoutMs) {
-        if (watchdogTimer) clearInterval(watchdogTimer);
-        watchdogTimer = null;
-        const attempts = activeSession?.autoRecoveryAttempts ?? 0;
-        const atUserId = activeSession?.lastSenderStaffId || session.startStaffId;
-        const timeoutSec = Math.round(watchdogTimeoutMs / 1000);
-        if (activeSession && attempts < maxAutoRecovery) {
-          activeSession.autoRecoveryAttempts = attempts + 1;
-          activeSession.goonPending = true;
-          activeSession.interrupted = true;
-          try { child.kill('SIGTERM'); } catch { /* ignore */ }
-          setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } }, 2000);
-          const replyConvId = session.currentConversationId || session.conversationId;
-          const replyWebhook = session.currentWebhook || session.sessionWebhook;
-          sendDingMessage(dc, {
-            conversationId: replyConvId,
-            sessionWebhook: replyWebhook,
-            atUserId,
-            content: `⏰ Codex 进程超时 (${timeoutSec}s 无活动)，自动恢复中 (${attempts + 1}/${maxAutoRecovery})...`,
-          }).catch(() => {});
-        } else {
-          const replyConvId = session.currentConversationId || session.conversationId;
-          const replyWebhook = session.currentWebhook || session.sessionWebhook;
-          sendDingMessage(dc, {
-            conversationId: replyConvId,
-            sessionWebhook: replyWebhook,
-            atUserId,
-            content: `⏰ Codex 进程已连续 ${maxAutoRecovery} 次超时自动恢复失败，请发送 /goon 手动恢复或 /new 开始新会话`,
-          }).catch(() => {});
-        }
-      }
-    }, WATCHDOG_CHECK_INTERVAL_MS);
+    const watchdog = new AgentWatchdog(dc, session, activeSession, {
+      killChild: () => {
+        try { child.kill('SIGTERM'); } catch { /* ignore */ }
+        setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* ignore */ } }, 2000);
+      },
+      onTimeout: (attempts, maxAutoRecovery, timeoutSec) => {
+        defaultWatchdogOnTimeout(dc, session, attempts, maxAutoRecovery, timeoutSec, 'codex');
+      },
+      onRecoveryFailed: (maxAutoRecovery) => {
+        defaultWatchdogOnRecoveryFailed(dc, session, maxAutoRecovery, 'codex');
+      },
+    }, startTime);
+    watchdog.start();
 
     return new Promise<void>((resolve, reject) => {
       // 逐行解析 stdout（JSON Lines）
@@ -229,8 +200,8 @@ export class CodexAgent implements IAgent {
 
         // 结果完成
         if (parsed.type === 'result') {
-          settled = true;
-          if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+          watchdog.markSettled();
+          watchdog.stop();
           const fullResponse = responseBuffer.join('\n').trim();
           if (fullResponse && !activeSession?.interrupted) {
             try { appendSessionLog(cwd, 'assistant', fullResponse); } catch { /* ignore */ }
@@ -244,8 +215,8 @@ export class CodexAgent implements IAgent {
 
         // 错误处理
         if (parsed.type === 'error') {
-          settled = true;
-          if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+          watchdog.markSettled();
+          watchdog.stop();
           const atUserId = activeSession?.lastSenderStaffId || session.startStaffId;
           sendDingMessage(dc, {
             conversationId: session.currentConversationId || session.conversationId,
@@ -268,8 +239,8 @@ export class CodexAgent implements IAgent {
       });
 
       child.on('close', (code) => {
-        settled = true;
-        if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+        watchdog.markSettled();
+        watchdog.stop();
         console.log(`[${timestamp()}] Codex 进程退出，代码: ${code}`);
 
         const activeSessionRef = dc.activeSessions.get(session.conversationId);
@@ -285,8 +256,15 @@ export class CodexAgent implements IAgent {
           return;
         }
 
+        // 已发送过回复，跳过后续处理
+        if (hasSentResponse) {
+          if (code === 0) { resolve(); return; }
+          reject(new Error(`Codex 进程退出，代码: ${code}`));
+          return;
+        }
+
         // 如果还未发送回复且有内容
-        if (!hasSentResponse && responseBuffer.length > 0) {
+        if (responseBuffer.length > 0) {
           const fullResponse = responseBuffer.join('\n').trim();
           if (fullResponse) {
             try {
@@ -300,7 +278,7 @@ export class CodexAgent implements IAgent {
         }
 
         // 正常退出但无回复
-        if (code === 0 && !hasSentResponse && !activeSessionRef?.interrupted) {
+        if (code === 0 && !activeSessionRef?.interrupted) {
           console.warn(`[${timestamp()}] Codex 进程正常退出但未产生任何回复内容`);
           const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
           sendDingMessage(dc, {
@@ -320,8 +298,8 @@ export class CodexAgent implements IAgent {
       });
 
       child.on('error', (err) => {
-        settled = true;
-        if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+        watchdog.markSettled();
+        watchdog.stop();
         console.error('Codex 进程错误:', err);
         try {
           const sessionDir = dc.getSessionDir(session);

@@ -7,13 +7,14 @@ export class ClaudeAgent implements IAgent {
   readonly type = 'claude';
 
   async executeQuery(dc: DingClaude, session: ISession, opts: IAgentQueryOpts): Promise<void> {
+    const convCfg = dc.getConversationConfig(session.conversationId);
     return executeClaudeQuery(dc, session, opts.message, {
       skill: opts.skill,
-      agent: opts.agent,
       senderNick: opts.senderNick,
       senderStaffId: opts.senderStaffId,
       newSessionId: opts.newSessionId,
-      permissionMode: opts.permissionMode,
+      permissionMode: convCfg?.permissionMode,
+      model: convCfg?.model || dc.config.model,
     });
   }
 

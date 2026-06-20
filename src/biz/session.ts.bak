@@ -620,8 +620,8 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
   const sessionId = getSessionId(session);
   console.log(`结束会话: 群=${conversationId}, 会话ID=${sessionId}`);
 
-  const agent = activeSession.agent;
-  if (agent?.interrupt(activeSession, '结束会话时中断正在执行的 Agent 进程')) {
+  const agent = createAgent(activeSession.conversationConfig?.agent || 'claude');
+  if (agent.interrupt(activeSession, '结束会话时中断正在执行的 Agent 进程')) {
     fs.appendFileSync(
       `${sessionDir}/session.log`,
       `[${timestamp()}] [SYSTEM]: 结束会话时中断 Claude 进程\n`,
@@ -681,8 +681,8 @@ export async function switchToSession(
   const currentActive = findActiveSession(self, conversationId);
   if (currentActive) {
     console.log(`切换会话，先结束当前会话: ${getSessionId(currentActive.session.session)}`);
-    const agent = currentActive.session.agent;
-    agent?.interrupt(currentActive.session, '切换会话时中断正在执行的 Agent 进程');
+    const agent = createAgent(currentActive.session.conversationConfig?.agent || 'claude');
+    agent.interrupt(currentActive.session, '切换会话时中断正在执行的 Agent 进程');
     self.activeSessions.delete(currentActive.key);
     saveActiveSession(self, currentActive.key);
     fs.appendFileSync(
@@ -767,12 +767,16 @@ export async function startNewSession(self: DingClaude, opts: {
   }
 
   try {
+    const agent = createAgent(conversationConfig.agent || 'claude');
     await agent.executeQuery(self, session, {
       message,
       skill: conversationConfig.taskCfg?.skill,
+      agent: conversationConfig.agent,
       senderNick,
       senderStaffId,
+      permissionMode: conversationConfig.permissionMode,
       newSessionId,
+      model: conversationConfig.model,
     });
   } catch (err) {
     console.error('执行 Agent 查询失败:', err);
@@ -829,12 +833,15 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   }
 
   try {
-    const agent = activeSession.agent!;
+    const agent = createAgent(activeSession.conversationConfig.agent || 'claude');
     await agent.executeQuery(self, activeSession.session, {
       message,
       skill: activeSession.conversationConfig.taskCfg?.skill,
+      agent: activeSession.conversationConfig.agent,
       senderNick,
       senderStaffId,
+      permissionMode: activeSession.conversationConfig.permissionMode,
+      model: activeSession.conversationConfig.model,
     });
   } catch (err) {
     console.error('执行队列 Agent 查询失败:', err);
@@ -852,11 +859,13 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
     activeSession.interrupted = false;
     activeSession.isProcessing = true;
     try {
-      const agent = activeSession.agent!;
+      const agent = createAgent(activeSession.conversationConfig.agent || 'claude');
       await agent.executeQuery(self, activeSession.session, {
         message: '继续',
         senderNick: activeSession.session.startNickName,
         senderStaffId: activeSession.lastSenderStaffId,
+        permissionMode: activeSession.conversationConfig.permissionMode,
+        model: activeSession.conversationConfig.model,
       });
     } catch (err) {
       console.error('goonPending 恢复执行失败:', err);
@@ -943,12 +952,15 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     }
 
     try {
-      const agent = activeSession.agent!;
+      const agent = createAgent(conversationConfig.agent || 'claude');
       await agent.executeQuery(self, activeSession.session, {
         message,
         skill: conversationConfig.taskCfg?.skill,
+        agent: conversationConfig.agent,
         senderNick,
         senderStaffId,
+        permissionMode: conversationConfig.permissionMode,
+        model: conversationConfig.model,
       });
     } catch (err) {
       // 恢复会话失败（可能会话已失效），清除 claudeSessionId 重新发起一次
@@ -957,12 +969,15 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         activeSession.session.claudeSessionId = undefined;
         self.updateSessionFile(activeSession.session, {});
         try {
-          const agent = activeSession.agent!;
+          const agent = createAgent(conversationConfig.agent || 'claude');
           await agent.executeQuery(self, activeSession.session, {
             message,
             skill: conversationConfig.taskCfg?.skill,
+            agent: conversationConfig.agent,
             senderNick,
             senderStaffId,
+            permissionMode: conversationConfig.permissionMode,
+            model: conversationConfig.model,
           });
           return;
         } catch (retryErr) {

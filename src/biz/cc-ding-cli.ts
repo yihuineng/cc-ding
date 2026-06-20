@@ -20,7 +20,6 @@ import {
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing, cacheUserName, getCachedUserName, restoreMentions } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts, refreshSessionContext } from './claude-process';
-import { createAgent } from './agent-registry';
 import { recordMessage, getRecorderDir } from './recorder';
 import {
   getMergedMenu, addMenuItem, deleteMenuItem, formatMenuDisplay, formatMenuList,
@@ -2214,8 +2213,7 @@ export class DingClaude {
         const activeFound = this.findActiveSession(conversationId);
         if (activeFound) {
           console.log(`收到新会话命令，结束旧会话: 群=${activeFound.session.session.conversationId}, 会话ID=${this.getSessionId(activeFound.session.session)}`);
-          const agent = createAgent(activeFound.session.conversationConfig?.agent || 'claude');
-          agent.interrupt(activeFound.session, '新会话命令中断正在执行的 Agent 进程');
+          activeFound.session.agent?.interrupt(activeFound.session, '新会话命令中断正在执行的 Agent 进程');
           this.activeSessions.delete(activeFound.key);
           this.saveActiveSession(activeFound.key);
         }
@@ -2524,8 +2522,7 @@ export class DingClaude {
         const contentAfter = parsed === '' ? '' : parsed.replace(/^[/！!]\s*/, '');
 
         // 中断后原调用栈中的 agent.executeQuery 会结束，finally 释放 isProcessing 并自动 drain 消息队列
-        const agent = createAgent(activeSession.conversationConfig?.agent || 'claude');
-        agent.interrupt(activeSession, `/!: ${senderNick} 中断当前任务`);
+        activeSession.agent?.interrupt(activeSession, `/!: ${senderNick} 中断当前任务`);
         const queued = activeSession.messageQueue?.length ?? 0;
         await this.sendDingMessage({
           conversationId, sessionWebhook,
@@ -2553,7 +2550,7 @@ export class DingClaude {
           });
           return;
         }
-        const agent = createAgent(activeSession.conversationConfig?.agent || 'claude');
+        const agent = activeSession.agent;
         if (activeSession.currentProcess) {
           console.log(`[${timestamp()}] /goon: 终止当前 Agent 进程`);
           agent.interrupt(activeSession, '/goon: 强制重启 Agent 进程');
@@ -2561,33 +2558,19 @@ export class DingClaude {
             conversationId, sessionWebhook,
             content: `🔄 正在重启 ${agent.getEntryCommand()} 进程...`,
           });
-          activeSession.goonPending = false;
-          activeSession.isProcessing = true;
-          try {
-            await agent.executeQuery(this, activeSession.session, {
-              message: '继续',
-              senderNick: activeSession.session.startNickName,
-              senderStaffId: activeSession.lastSenderStaffId,
-              permissionMode: activeSession.conversationConfig.permissionMode,
-              model: activeSession.conversationConfig.model,
-            });
-          } finally {
-            activeSession.isProcessing = false;
-          }
         } else {
           console.log(`[${timestamp()}] /goon: 无运行中进程，直接发送"继续"`);
-          activeSession.isProcessing = true;
-          try {
-            await agent.executeQuery(this, activeSession.session, {
-              message: '继续',
-              senderNick,
-              senderStaffId,
-              permissionMode: activeSession.conversationConfig.permissionMode,
-              model: activeSession.conversationConfig.model,
-            });
-          } finally {
-            activeSession.isProcessing = false;
-          }
+        }
+        activeSession.goonPending = false;
+        activeSession.isProcessing = true;
+        try {
+          await agent.executeQuery(this, activeSession.session, {
+            message: '继续',
+            senderNick: activeSession.session.startNickName,
+            senderStaffId: activeSession.lastSenderStaffId,
+          });
+        } finally {
+          activeSession.isProcessing = false;
         }
       }),
 
@@ -2616,13 +2599,11 @@ export class DingClaude {
               content: '📥 已收到，正在处理...',
             }).catch(() => {});
           }
-          const agent = createAgent(activeSession.conversationConfig?.agent || 'claude');
+          const agent = activeSession.agent;
           await agent.executeQuery(this, activeSession.session, {
             message: ccMessage,
             senderNick,
             senderStaffId,
-            permissionMode: activeSession.conversationConfig.permissionMode,
-            model: activeSession.conversationConfig.model,
           });
         } finally {
           activeSession.isProcessing = false;

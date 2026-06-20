@@ -23,6 +23,7 @@ import {
 } from './api-key-manager';
 import { resolveSecret } from './secrets';
 import { commandExists, formatClaudeCommandMissingMessage, isWindows, spawnCommand } from './platform';
+import { AgentWatchdog } from './watchdog';
 
 const MAX_FAST_FAIL = 20;
 const API_RETRY_DELAY_MS = 10_000;
@@ -31,8 +32,6 @@ const FAST_FAIL_THRESHOLD_MS = 10_000;
 const MAX_TOTAL_RETRIES = 10;
 /** 最大重试持续时间（ms），超过此值且重试 >=3 次视为无限重试循环 */
 const MAX_RETRY_DURATION_MS = 5 * 60 * 1000;
-/** Watchdog: 检查间隔 */
-const WATCHDOG_CHECK_INTERVAL_MS = 30 * 1000;
 
 /** CLAUDE.md 注入内容的内存缓存，key=conversationId，value=上次注入的完整内容字符串 */
 const injectedContextCache = new Map<string, string>();
@@ -296,8 +295,6 @@ function runClaudeOnce(
     let stderrOutput = '';
     let stdoutOutput = ''; // 累积 stdout 原始输出，用于错误检测
     let hasSentResponse = false;
-    let settled = false;
-    let watchdogTimer: ReturnType<typeof setInterval> | null = null;
     let watchdogFired = false; // Watchdog 是否触发过超时
     const loggedToolUseIds = new Set<string>();
 
@@ -308,36 +305,28 @@ function runClaudeOnce(
     };
 
     // Watchdog: 定期检查是否长时间无活动
-    const convCfg = self.getConversationConfig(session.conversationId);
-    const watchdogTimeoutMins = convCfg?.maxTurnTimeMins ?? self.config.maxTurnTimeMins ?? 5;
-    const watchdogTimeoutMs = watchdogTimeoutMins * 60 * 1000;
-    watchdogTimer = setInterval(() => {
-      if (settled) {
-        if (watchdogTimer) clearInterval(watchdogTimer);
-        return;
-      }
-      const lastActivity = activeSession?.lastActivityTime ?? startTime;
-      const elapsed = Date.now() - lastActivity;
-      if (elapsed >= watchdogTimeoutMs) {
-        console.warn(`[${timestamp()}] Watchdog: Claude 进程 ${watchdogTimeoutMins} 分钟无活动，执行自动恢复`);
-        try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，${watchdogTimeoutMins} 分钟无活动，自动 kill 进程并恢复\n`, 'utf-8'); } catch { /* ignore */ }
-        if (watchdogTimer) clearInterval(watchdogTimer);
-        watchdogTimer = null;
-        // 自动 kill 当前 Claude 进程
+    const watchdog = new AgentWatchdog(self, session, activeSession, {
+      killChild: () => {
         if (activeSession?.currentProcess) {
           interruptClaudeProcess(activeSession, 'Watchdog: 自动终止超时进程');
         }
+      },
+      onTimeout: (attempts, maxAutoRecovery, timeoutSec) => {
+        console.warn(`[${timestamp()}] Watchdog: Claude 进程 ${timeoutSec}s 无活动，执行自动恢复`);
+        try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，${timeoutSec}s 无活动，自动 kill 进程并恢复\n`, 'utf-8'); } catch { /* ignore */ }
         // 标记 watchdog 超时，让 runClaudeOnce 以特殊方式退出
         watchdogFired = true;
-        settled = true;
-        if (activeSession?.currentProcess) {
-          // 进程已被 kill，等待 close 事件
-        } else {
+        if (!activeSession?.currentProcess) {
           // 进程已不存在，直接 reject
           reject(new WatchdogTimeoutError());
         }
-      }
-    }, WATCHDOG_CHECK_INTERVAL_MS);
+      },
+      onRecoveryFailed: (maxAutoRecovery) => {
+        console.warn(`[${timestamp()}] Watchdog: 已达最大自动恢复次数 ${maxAutoRecovery}`);
+        try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，已达最大自动恢复次数 ${maxAutoRecovery}\n`, 'utf-8'); } catch { /* ignore */ }
+      },
+    }, startTime);
+    watchdog.start();
 
     const rl = readline.createInterface({ input: child.stdout! });
     rl.on('line', (line) => {
@@ -461,8 +450,9 @@ function runClaudeOnce(
     });
 
     child.on('close', (code) => {
-      settled = true;
-      if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+      watchdog.markSettled();
+      watchdog.markSettled();
+      watchdog.stop();
       console.log(`[${timestamp()}] Claude 进程退出，代码: ${code}`);
       try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Claude 查询结束，退出码: ${code}\n`, 'utf-8'); } catch { /* ignore */ }
 
@@ -600,8 +590,9 @@ function runClaudeOnce(
     });
 
     child.on('error', (err) => {
-      settled = true;
-      if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+      watchdog.markSettled();
+      watchdog.markSettled();
+      watchdog.stop();
       console.error('Claude 进程错误:', err);
       fs.appendFileSync(sessionLog, `[${timestamp()}] [ERROR]: 进程错误: ${err.message}\n`, 'utf-8');
       reject(err);
