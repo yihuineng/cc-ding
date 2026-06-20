@@ -59,11 +59,13 @@ export class StreamingCard {
     const card = new StreamingCard(opts, outTrackId);
 
     const accessToken = await opts.self.dingStreamClient.getAccessToken();
-    const openSpaceId = opts.conversationType !== '1'
+    const isGroup = opts.conversationType !== '1';
+    const openSpaceId = isGroup
       ? `dtv1.card//IM_GROUP.${opts.conversationId}`
       : `dtv1.card//IM_ROBOT.${opts.senderStaffId}`;
 
-    const body = {
+    const robotCode = opts.self.clientId;
+    const body: Record<string, unknown> = {
       cardTemplateId: opts.cardTemplateId,
       outTrackId,
       cardData: {
@@ -74,10 +76,15 @@ export class StreamingCard {
       },
       callbackType: 'STREAM',
       openSpaceId,
-      imGroupOpenSpaceModel: { supportForward: true },
-      imRobotOpenSpaceModel: { spaceType: 'IM_ROBOT', supportForward: true },
       userIdType: 1,
+      imGroupOpenSpaceModel: { supportForward: true },
+      imRobotOpenSpaceModel: { supportForward: true },
     };
+    if (isGroup) {
+      body.imGroupOpenDeliverModel = { robotCode };
+    } else {
+      body.imRobotOpenDeliverModel = { spaceType: 'IM_ROBOT', robotCode };
+    }
 
     try {
       const result = await urllib.request(`${DING_API_BASE}/v1.0/card/instances/createAndDeliver`, {
@@ -90,7 +97,7 @@ export class StreamingCard {
       });
 
       if (result.status !== 200) {
-        console.warn(`[${timestamp()}] StreamingCard 创建失败: status=${result.status}`);
+        console.warn(`[${timestamp()}] StreamingCard 创建失败: status=${result.status}, body=${JSON.stringify(result.data)}`);
         return null;
       }
 

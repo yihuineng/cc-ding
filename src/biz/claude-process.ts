@@ -311,7 +311,7 @@ function runClaudeOnce(
           interruptClaudeProcess(activeSession, 'Watchdog: 自动终止超时进程');
         }
       },
-      onTimeout: (attempts, maxAutoRecovery, timeoutSec) => {
+      onTimeout: (_attempts, _maxAutoRecovery, timeoutSec) => {
         console.warn(`[${timestamp()}] Watchdog: Claude 进程 ${timeoutSec}s 无活动，执行自动恢复`);
         try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，${timeoutSec}s 无活动，自动 kill 进程并恢复\n`, 'utf-8'); } catch { /* ignore */ }
         // 标记 watchdog 超时，让 runClaudeOnce 以特殊方式退出
@@ -402,11 +402,11 @@ function runClaudeOnce(
 
             // 流式卡片 finalize，成功后跳过普通消息，否则回退
             if (streamingCard && !streamingCard.permissionDenied) {
+              hasSentResponse = true;
               streamingCard.finalize(fullResponse).then(ok => {
                 if (!ok || streamingCard.failed || streamingCard.permissionDenied) {
                   const activeSessionRef = self.activeSessions.get(session.conversationId);
                   const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
-                  hasSentResponse = true;
                   sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
                     .catch(err => console.error('发送钉钉消息失败:', err));
                 }
@@ -414,7 +414,6 @@ function runClaudeOnce(
                 // finalize 异常，回退到普通消息
                 const activeSessionRef = self.activeSessions.get(session.conversationId);
                 const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
-                hasSentResponse = true;
                 sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
                   .catch(err => console.error('发送钉钉消息失败:', err));
               });
@@ -484,16 +483,15 @@ function runClaudeOnce(
 
           // 流式卡片 finalize，成功后跳过普通消息，否则回退
           if (streamingCard && !streamingCard.permissionDenied) {
+            hasSentResponse = true;
             streamingCard.finalize(fullResponse).then(ok => {
               if (!ok || streamingCard.failed || streamingCard.permissionDenied) {
                 const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
-                hasSentResponse = true;
                 sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
                   .catch(err => console.error('发送钉钉消息失败:', err));
               }
             }).catch(() => {
               const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
-              hasSentResponse = true;
               sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
                 .catch(err => console.error('发送钉钉消息失败:', err));
             });

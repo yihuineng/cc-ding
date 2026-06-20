@@ -769,7 +769,7 @@ export async function startNewSession(self: DingClaude, opts: {
   });
   saveActiveSession(self, conversationId);
 
-  if (conversationConfig.receiveReply !== false) {
+  if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
     await sendDingMessage(self, {
       conversationId, sessionWebhook,
       content: `✅ 收到，我来处理...\n🆔 ${newSessionId}`,
@@ -947,7 +947,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     activeSession.session.currentConversationId = conversationId;
     updateSessionFile(self, activeSession.session, { currentWebhook: sessionWebhook, currentConversationId: conversationId });
 
-    if (conversationConfig.receiveReply !== false) {
+    if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
       await sendDingMessage(self, {
         conversationId, sessionWebhook,
         content: '✅ 收到，我来处理...',

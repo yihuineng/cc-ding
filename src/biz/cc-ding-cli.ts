@@ -1323,7 +1323,18 @@ export class DingClaude {
               else resolve({ stdout });
             });
           });
-          claudeCliVersion = stdout.trim() || '未知';
+          claudeCliVersion = (stdout.trim() || '未知').replace(/\s*\(.*\)\s*$/, '');
+        } catch { /* ignore */ }
+
+        let codexVersion = '未安装';
+        try {
+          const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+            childExec('codex --version', { timeout: 5000 }, (err, stdout, _stderr) => {
+              if (err) reject(err);
+              else resolve({ stdout });
+            });
+          });
+          codexVersion = stdout.trim() || '未知';
         } catch { /* ignore */ }
 
         const md = [
@@ -1331,6 +1342,7 @@ export class DingClaude {
           '',
           `- **cc-ding:** ${TOOL_VERSION}`,
           `- **claude:** ${claudeCliVersion}`,
+          `- **codex:** ${codexVersion}`,
           `- **os:** ${os.hostname()} ${os.platform()} ${os.release()}`,
           `- **node:** ${process.version}`,
           `- **cardTemplateId:** ${this.config.cardTemplateId || '(未配置)'}`,
