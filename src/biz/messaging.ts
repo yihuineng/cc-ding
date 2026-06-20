@@ -1,5 +1,7 @@
 import { asyncUtil } from 'utils-ok';
 import urllib from 'urllib';
+import fs from 'fs';
+import path from 'path';
 import type { DingClaude } from './cc-ding-cli';
 import { ISendMsgOpts, IDingUserDetail } from './types';
 import { resolveSecret } from './secrets';
@@ -405,4 +407,123 @@ export async function sendOwnerMessage(self: DingClaude, content: string, msgTyp
     return false;
   }
   return sendMessageToUser(self, userId, content, msgType);
+}
+
+// ==================== 群消息：图片/文件推送 ====================
+
+/** 图片文件扩展名 */
+const IMAGE_EXTENSIONS = new Set([ '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg' ]);
+
+/**
+ * 判断文件是否为图片类型（基于扩展名）
+ */
+export function isImageFile(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  return IMAGE_EXTENSIONS.has(ext);
+}
+
+/**
+ * 上传文件到钉钉，获取 downloadCode/mediaId
+ * POST /v1.0/robot/messageFiles/upload
+ */
+export async function uploadMediaToDingTalk(
+  self: DingClaude,
+  filePath: string,
+): Promise<string | null> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+
+    const url = `${DING_API_BASE}/v1.0/robot/messageFiles/upload`;
+    const result = await urllib.request(url, {
+      method: 'POST',
+      headers: {
+        'x-acs-dingtalk-access-token': accessToken,
+      },
+      data: { file: fs.createReadStream(filePath) },
+      contentType: 'multipart/form-data',
+      dataType: 'json',
+      timeout: 30000,
+    });
+
+    if (result.status !== 200 || !result.data) {
+      console.error(`uploadMediaToDingTalk 返回非200: status=${result.status}`);
+      return null;
+    }
+
+    const body = result.data as Record<string, unknown>;
+    // 返回可能包含 downloadCode 或 mediaId
+    return (body.downloadCode as string) || (body.mediaId as string) || null;
+  } catch (err) {
+    console.error(`uploadMediaToDingTalk 失败: ${filePath}`, err);
+    return null;
+  }
+}
+
+/**
+ * 通过群消息 API 发送图片
+ * POST /v1.0/im/groupMessages/send with sampleImageMsg
+ */
+export async function sendGroupImageMessage(
+  self: DingClaude,
+  conversationId: string,
+  mediaId: string,
+): Promise<boolean> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `${DING_API_BASE}/v1.0/im/groupMessages/send`;
+
+    const result = await urllib.request(url, {
+      method: 'POST',
+      data: {
+        robotCode: self.clientId,
+        openConversationId: conversationId,
+        msgKey: 'sampleImageMsg',
+        msgParam: JSON.stringify({ mediaId }),
+      },
+      contentType: 'json',
+      headers: { 'x-acs-dingtalk-access-token': accessToken },
+      dataType: 'json',
+      timeout: 10000,
+    });
+
+    return result.status === 200;
+  } catch (err) {
+    console.error(`sendGroupImageMessage 失败: ${conversationId}`, err);
+    return false;
+  }
+}
+
+/**
+ * 通过群消息 API 发送文件
+ * POST /v1.0/im/groupMessages/send with sampleFileMsg
+ */
+export async function sendGroupFileMessage(
+  self: DingClaude,
+  conversationId: string,
+  mediaId: string,
+  fileName: string,
+): Promise<boolean> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `${DING_API_BASE}/v1.0/im/groupMessages/send`;
+
+    const result = await urllib.request(url, {
+      method: 'POST',
+      data: {
+        robotCode: self.clientId,
+        openConversationId: conversationId,
+        msgKey: 'sampleFileMsg',
+        msgParam: JSON.stringify({ mediaId, fileName }),
+      },
+      contentType: 'json',
+      headers: { 'x-acs-dingtalk-access-token': accessToken },
+      dataType: 'json',
+      timeout: 10000,
+    });
+
+    return result.status === 200;
+  } catch (err) {
+    console.error(`sendGroupFileMessage 失败: ${conversationId}`, err);
+    return false;
+  }
 }

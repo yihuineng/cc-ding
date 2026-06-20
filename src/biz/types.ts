@@ -42,6 +42,10 @@ export interface IConfig {
   maxTurnTimeMins?: number;
   /** Watchdog 超时自动恢复最大次数，默认 2 */
   maxAutoRecovery?: number;
+  /** AI Card 模板 ID（流式输出功能需要，在钉钉开放平台创建） */
+  cardTemplateId?: string;
+  /** AI Card 模板变量名，默认 "content" */
+  cardTemplateKey?: string;
 }
 
 export interface IConversation {
@@ -76,6 +80,8 @@ export interface IConversation {
   qaCfg?: IQaCfg;
   /** 会话级 Watchdog 超时时间（分钟），覆盖全局 maxTurnTimeMins */
   maxTurnTimeMins?: number;
+  /** 是否开启流式输出（AI Card），默认 false */
+  streaming?: boolean;
 }
 
 /** 问答模式配置 */

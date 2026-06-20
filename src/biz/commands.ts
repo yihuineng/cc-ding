@@ -605,6 +605,8 @@ export interface ICfgOptions {
   receiveReply?: boolean;
   preBash?: string;
   permissionMode?: string;
+  streaming?: boolean;
+  cardTemplateId?: string;
 }
 
 export function parseCfgCommand(text: string): ICfgOptions | null {
@@ -659,6 +661,11 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
       }
     } else if (token === '--permissionMode' && tokens[i + 1]) {
       result.permissionMode = tokens[++i];
+    } else if (token === '--streaming' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      result.streaming = val === 'true' || val === '1' || val === 'yes';
+    } else if (token === '--cardTemplateId' && tokens[i + 1]) {
+      result.cardTemplateId = tokens[++i];
     }
   }
 

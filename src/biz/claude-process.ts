@@ -9,6 +9,7 @@ import type { DingClaude } from './cc-ding-cli';
 const exec = promisify(execCb);
 import { IActiveSession, IClaudeSetting, ISession } from './types';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
+import { StreamingCard } from './streaming';
 import { timestamp, getReplyWebhook, getReplyConversationId } from './session';
 import {
   rotateApiKey,
@@ -260,6 +261,7 @@ function runClaudeOnce(
   dingGroupDir: string,
   stdinMessage: string,
   isRetry: boolean,
+  streamingCard?: StreamingCard | null,
 ): Promise<number> {
   let sessionDir = self.getSessionDir(session);
   let sessionLog = `${sessionDir}/session.log`;
@@ -387,6 +389,13 @@ function runClaudeOnce(
 
           if (parsed.content) {
             responseBuffer.push(parsed.content);
+            // 流式更新 AI Card
+            if (streamingCard && !streamingCard.failed) {
+              const fullContent = responseBuffer.join('\n').trim();
+              if (fullContent) {
+                streamingCard.update(fullContent).catch(() => { /* 忽略 */ });
+              }
+            }
           }
         }
 
@@ -401,11 +410,32 @@ function runClaudeOnce(
 
           if (fullResponse && !activeSession?.interrupted) {
             try { self.appendSessionLog(sessionDir, 'assistant', fullResponse); } catch { /* 日志写入失败不阻断消息发送 */ }
-            const activeSessionRef = self.activeSessions.get(session.conversationId);
-            const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
-            hasSentResponse = true;
-            sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
-              .catch(err => console.error('发送钉钉消息失败:', err));
+
+            // 流式卡片 finalize，成功后跳过普通消息，否则回退
+            if (streamingCard && !streamingCard.permissionDenied) {
+              streamingCard.finalize(fullResponse).then(ok => {
+                if (!ok || streamingCard.failed || streamingCard.permissionDenied) {
+                  const activeSessionRef = self.activeSessions.get(session.conversationId);
+                  const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
+                  hasSentResponse = true;
+                  sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
+                    .catch(err => console.error('发送钉钉消息失败:', err));
+                }
+              }).catch(() => {
+                // finalize 异常，回退到普通消息
+                const activeSessionRef = self.activeSessions.get(session.conversationId);
+                const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
+                hasSentResponse = true;
+                sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
+                  .catch(err => console.error('发送钉钉消息失败:', err));
+              });
+            } else {
+              const activeSessionRef = self.activeSessions.get(session.conversationId);
+              const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
+              hasSentResponse = true;
+              sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
+                .catch(err => console.error('发送钉钉消息失败:', err));
+            }
           } else {
             console.warn(`[${timestamp()}] Claude 返回了空的 result 且 responseBuffer 也为空，无内容可发送`);
           }
@@ -461,10 +491,28 @@ function runClaudeOnce(
         const fullResponse = responseBuffer.join('\n').trim();
         if (fullResponse) {
           try { self.appendSessionLog(sessionDir, 'assistant', fullResponse); } catch { /* 日志写入失败不阻断消息发送 */ }
-          const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
-          hasSentResponse = true;
-          sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
-            .catch(err => console.error('发送钉钉消息失败:', err));
+
+          // 流式卡片 finalize，成功后跳过普通消息，否则回退
+          if (streamingCard && !streamingCard.permissionDenied) {
+            streamingCard.finalize(fullResponse).then(ok => {
+              if (!ok || streamingCard.failed || streamingCard.permissionDenied) {
+                const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
+                hasSentResponse = true;
+                sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
+                  .catch(err => console.error('发送钉钉消息失败:', err));
+              }
+            }).catch(() => {
+              const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
+              hasSentResponse = true;
+              sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
+                .catch(err => console.error('发送钉钉消息失败:', err));
+            });
+          } else {
+            const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
+            hasSentResponse = true;
+            sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
+              .catch(err => console.error('发送钉钉消息失败:', err));
+          }
         }
       }
 
@@ -826,6 +874,23 @@ export async function executeClaudeQuery(
     return true;
   };
 
+  // 检查是否启用流式输出，创建 StreamingCard
+  const convCfg = self.getConversationConfig(session.conversationId);
+  let streamingCard: StreamingCard | null = null;
+  if (convCfg?.streaming && self.config.cardTemplateId && originalActiveSession) {
+    streamingCard = await StreamingCard.create({
+      self,
+      cardTemplateId: self.config.cardTemplateId,
+      cardTemplateKey: self.config.cardTemplateKey,
+      conversationId: session.conversationId,
+      conversationType: convCfg.conversationType,
+      senderStaffId: originalActiveSession.lastSenderStaffId || session.startStaffId,
+    });
+    if (!streamingCard) {
+      console.log(`[${timestamp()}] StreamingCard 创建失败，使用普通消息模式`);
+    }
+  }
+
   while (true) {
     if (!isSessionStillActive('停止重试')) return;
 
@@ -885,7 +950,7 @@ export async function executeClaudeQuery(
     self.debugLog(`发送消息: ${stdinMessage.substring(0, 100)}...`);
 
     try {
-      await runClaudeOnce(self, session, cmdArgs, entryCmd, dingGroupDir, stdinMessage, isRetry);
+      await runClaudeOnce(self, session, cmdArgs, entryCmd, dingGroupDir, stdinMessage, isRetry, streamingCard);
       return; // 成功，退出
     } catch (err) {
       // runClaudeOnce 可能因获取 claudeSessionId 而重命名了目录，需要重新计算路径

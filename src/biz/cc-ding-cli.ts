@@ -56,6 +56,7 @@ import { resolveSecret } from './secrets';
 import { ICommandRoute, route } from './command-route';
 import { CronEngine, formatCronJobList, formatCronJobInfo, isValidCronExpression } from './cron';
 import { TimerEngine, formatTimerList, formatTimerInfo } from './timer';
+import { SendQueueProcessor } from './send-queue';
 import { commandExists, isWindows, isWindowsPlatform, spawnCommand } from './platform';
 
 /** 工具版本号 */
@@ -91,6 +92,9 @@ export class DingClaude {
   /** 延时提醒引擎 */
   timerEngine!: TimerEngine;
 
+  /** 消息推送队列处理器 */
+  sendQueueProcessor!: SendQueueProcessor;
+
   /** 默认最大并发会话数 */
   readonly DEFAULT_SESSION_MAX_CONCURRENCY = 5;
   /** 默认任务处理器数量 */
@@ -116,6 +120,8 @@ export class DingClaude {
     this.cronEngine = new CronEngine(this);
     // 创建 TimerEngine
     this.timerEngine = new TimerEngine(this);
+    // 创建 SendQueueProcessor
+    this.sendQueueProcessor = new SendQueueProcessor(this);
   }
 
   // ==================== 委托方法 ====================
@@ -1031,7 +1037,7 @@ export class DingClaude {
         const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
         cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
-        cfgOpts.permissionMode !== undefined);
+        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId);
 
         if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
@@ -1043,6 +1049,9 @@ export class DingClaude {
           if (cfgOpts.receiveReply !== undefined) existingConv.receiveReply = cfgOpts.receiveReply;
           if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
           if (cfgOpts.permissionMode !== undefined) existingConv.permissionMode = cfgOpts.permissionMode;
+          if (cfgOpts.streaming !== undefined) existingConv.streaming = cfgOpts.streaming;
+          // cardTemplateId 是全局配置
+          if (cfgOpts.cardTemplateId) this.config.cardTemplateId = cfgOpts.cardTemplateId;
           if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
             existingConv.whiteUserList = cfgOpts.whiteUserList;
             for (const item of cfgOpts.whiteUserList) {
@@ -1066,6 +1075,9 @@ export class DingClaude {
           if (cfgOpts.receiveReply !== undefined) newConv.receiveReply = cfgOpts.receiveReply;
           if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
           if (cfgOpts.permissionMode !== undefined) newConv.permissionMode = cfgOpts.permissionMode;
+          if (cfgOpts.streaming !== undefined) newConv.streaming = cfgOpts.streaming;
+          // cardTemplateId 是全局配置
+          if (cfgOpts.cardTemplateId) this.config.cardTemplateId = cfgOpts.cardTemplateId;
           if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
             newConv.whiteUserList = cfgOpts.whiteUserList;
             for (const item of cfgOpts.whiteUserList) {
@@ -1100,6 +1112,7 @@ export class DingClaude {
         if (convToShow?.atSender === false) info.push('- **atSender:** false (不 @ 发送人)');
         if (convToShow?.receiveReply === false) info.push('- **receiveReply:** false (不回复确认消息)');
         if (convToShow?.permissionMode) info.push(`- **permissionMode:** ${convToShow.permissionMode}`);
+        if (convToShow?.streaming) info.push('- **streaming:** true (AI Card 流式输出)');
         if (convToShow?.whiteUserList?.length) {
           const display = convToShow.whiteUserList.map(item => {
             if (isMobile(item)) return item;
@@ -1148,6 +1161,7 @@ export class DingClaude {
           `- **claude:** ${claudeCliVersion}`,
           `- **os:** ${os.hostname()} ${os.platform()} ${os.release()}`,
           `- **node:** ${process.version}`,
+          `- **cardTemplateId:** ${this.config.cardTemplateId || '(未配置)'}`,
         ].join('\n');
         await this.sendDingMessage({
           conversationId,
@@ -2526,6 +2540,9 @@ export class DingClaude {
     // 启动 Timer 引擎
     this.timerEngine.start();
 
+    // 启动消息推送队列处理器
+    this.sendQueueProcessor.start();
+
     // 启动 /menu 待选状态过期清理定时器
     startSelectionCleanupTimer();
 
@@ -2554,9 +2571,10 @@ export class DingClaude {
       process.exit(1);
     });
 
-    // 进程退出时清理 Timer 引擎
+    // 进程退出时清理 Timer 引擎和消息推送队列
     const onShutdown = () => {
       this.timerEngine.destroy();
+      this.sendQueueProcessor.destroy();
     };
     process.on('SIGTERM', onShutdown);
     process.on('SIGINT', onShutdown);
