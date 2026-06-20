@@ -712,6 +712,15 @@ export async function switchToSession(
   return true;
 }
 
+/**
+ * 确保 activeSession.agent 已设置（agent 是运行时对象，无法持久化，重启或新会话都需要创建）
+ */
+export function ensureAgent(self: DingClaude, activeSession: IActiveSession): void {
+  if (!activeSession.agent) {
+    activeSession.agent = createAgent(activeSession.conversationConfig.agent || 'claude');
+  }
+}
+
 export async function startNewSession(self: DingClaude, opts: {
   conversationId: string;
   sessionWebhook: string;
@@ -756,6 +765,7 @@ export async function startNewSession(self: DingClaude, opts: {
     isProcessing: true,
     messageQueue: [],
     conversationConfig,
+    agent,
   });
   saveActiveSession(self, conversationId);
 
@@ -829,6 +839,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   }
 
   try {
+    ensureAgent(self, activeSession);
     const agent = activeSession.agent!;
     await agent.executeQuery(self, activeSession.session, {
       message,
@@ -852,6 +863,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
     activeSession.interrupted = false;
     activeSession.isProcessing = true;
     try {
+      ensureAgent(self, activeSession);
       const agent = activeSession.agent!;
       await agent.executeQuery(self, activeSession.session, {
         message: '继续',
@@ -943,6 +955,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     }
 
     try {
+      ensureAgent(self, activeSession);
       const agent = activeSession.agent!;
       await agent.executeQuery(self, activeSession.session, {
         message,
@@ -957,6 +970,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         activeSession.session.claudeSessionId = undefined;
         self.updateSessionFile(activeSession.session, {});
         try {
+          ensureAgent(self, activeSession);
           const agent = activeSession.agent!;
           await agent.executeQuery(self, activeSession.session, {
             message,

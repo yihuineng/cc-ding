@@ -35,6 +35,7 @@ import {
   getActiveSessionsFile, saveActiveSession, loadActiveSessions,
   endSession, switchToSession, startNewSession, handleSessionMessage,
   findActiveSession, cleanCache, destroyConversation,
+  ensureAgent,
   timestamp,
   resolveAllPhonesInConfig, resolveUserId, resolveToUserId, userIdToPhone, isMobile,
   resolveUserIdName,
@@ -2550,13 +2551,14 @@ export class DingClaude {
           });
           return;
         }
+        ensureAgent(this, activeSession);
         const agent = activeSession.agent;
         if (activeSession.currentProcess) {
           console.log(`[${timestamp()}] /goon: 终止当前 Agent 进程`);
-          agent.interrupt(activeSession, '/goon: 强制重启 Agent 进程');
+          agent!.interrupt(activeSession, '/goon: 强制重启 Agent 进程');
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: `🔄 正在重启 ${agent.getEntryCommand()} 进程...`,
+            content: `🔄 正在重启 ${agent!.getEntryCommand()} 进程...`,
           });
         } else {
           console.log(`[${timestamp()}] /goon: 无运行中进程，直接发送"继续"`);
@@ -2564,7 +2566,7 @@ export class DingClaude {
         activeSession.goonPending = false;
         activeSession.isProcessing = true;
         try {
-          await agent.executeQuery(this, activeSession.session, {
+          await agent!.executeQuery(this, activeSession.session, {
             message: '继续',
             senderNick: activeSession.session.startNickName,
             senderStaffId: activeSession.lastSenderStaffId,
@@ -2599,7 +2601,8 @@ export class DingClaude {
               content: '📥 已收到，正在处理...',
             }).catch(() => {});
           }
-          const agent = activeSession.agent;
+          ensureAgent(this, activeSession);
+          const agent = activeSession.agent!;
           await agent.executeQuery(this, activeSession.session, {
             message: ccMessage,
             senderNick,
