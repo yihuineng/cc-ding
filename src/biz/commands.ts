@@ -96,6 +96,13 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     category: '任务',
   },
   {
+    name: '/timer',
+    description: '设置一次性延时提醒，到期后自动执行',
+    usage: '/timer <5m|1h30m|2d> <提醒内容> | /timer list | /timer cancel <id>',
+    examples: [ '/timer 5m 提醒我检查部署', '/timer 1h30m 总结今天的PR', '/timer 2d 项目里程碑检查', '/timer list', '/timer cancel timer_123' ],
+    category: '任务',
+  },
+  {
     name: '/ls',
     description: '查看工作目录结构',
     usage: '/ls [目标目录] [展开层数]',
@@ -140,7 +147,7 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/cfg',
     description: '注册当前群到配置，或刷新指定字段(已注册群)',
-    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode]',
+    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode] [--enableMsgToUser true|false] [--ensureAt true|false] [--model model-name]',
     examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --permissionMode auto', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
     category: '管理',
   },
@@ -213,6 +220,13 @@ const COMMAND_REGISTRY: ICommandDef[] = [
     description: '问答模式：开启后 Claude 以只读 plan 模式运行，所有群成员均可使用',
     usage: '/qa | /qa exit | /qa --gitRepos https://github.com/a/b | /qa --docs url1,url2 | /qa --autoPull true|false',
     examples: [ '/qa', '/qa exit', '/qa --gitRepos https://github.com/user/repo.git', '/qa --docs https://example.com/doc --autoPull true' ],
+    category: '管理',
+  },
+  {
+    name: '/model',
+    description: '查看或切换当前会话使用的 Claude 模型',
+    usage: '/model | /model list | /model <model-name> | /model add <model-name> | /model rm <model-name>',
+    examples: [ '/model', '/model list', '/model claude-sonnet-4-20250514', '/model add claude-3-7-sonnet-20250219', '/model rm claude-haiku-4-20251001' ],
     category: '管理',
   },
 ];
@@ -336,6 +350,7 @@ export function formatConversationInfo(
   if (workDir) lines.push(`- **工作目录:** \`${workDir}\``);
   if (conv.linkConversationId) lines.push(`- **关联会话ID:** ${conv.linkConversationId}`);
   if (conv.agent) lines.push(`- **agent:** ${conv.agent}`);
+  if (conv.model) lines.push(`- **model:** ${conv.model}`);
   if (conv.dingToken) lines.push(`- **dingToken:** ${conv.dingToken.substring(0, 8)}...`);
   if (conv.whiteUserList?.length) {
     const display = conv.whiteUserList.map(uid => {
@@ -355,6 +370,7 @@ export function formatConversationInfo(
   if (conv.qaCfg?.gitRepos?.length) lines.push(`- **QA gitRepos:** ${conv.qaCfg.gitRepos.join(', ')}`);
   if (conv.qaCfg?.docs?.length) lines.push(`- **QA docs:** ${conv.qaCfg.docs.join(', ')}`);
   if (conv.qaCfg?.autoPull) lines.push(`- **QA autoPull:** 已开启`);
+  if (conv.ensureAt) lines.push(`- **ensureAt:** 已开启（追加 text 消息确保 @ 通知生效）`);
   return lines.join('\n');
 }
 
@@ -364,6 +380,7 @@ export function formatConversationInfo(
 export function formatGlobalConfig(cfg: IConfig): string {
   const lines = [
     `- **clientName:** ${cfg.clientName || '-'}`,
+    `- **model:** ${cfg.model || '(默认)'}`,
     `- **sessionMaxConcurrency:** ${cfg.sessionMaxConcurrency ?? 5}`,
     `- **taskHandlerCount:** ${cfg.taskHandlerCount ?? 1}`,
     `- **taskQueueSize:** ${cfg.taskQueueSize ?? 50}`,
@@ -378,6 +395,7 @@ export function formatGlobalConfig(cfg: IConfig): string {
     lines.push(`- **apiKeyCfg:** ${validCount}/${cfg.apiKeyCfg.claudeSettings.length} 有效`);
     lines.push(`  - **最近重置:** ${cfg.apiKeyCfg.resetTime || '-'}`);
   }
+  lines.push(`- **enableMsgToUser:** ${cfg.enableMsgToUser ?? false} (私聊消息开关)`);
   return lines.join('\n');
 }
 
@@ -581,11 +599,13 @@ export function parseResetApiKeyCfgCommand(text: string): boolean {
 
 /**
  * 解析 /cfg 命令
- * 格式: /cfg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false]
+ * 格式: /cfg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--enableMsgToUser true|false] [--ensureAt true|false]
  * - /cfg                                -> 注册当前群（所有选项均为默认值）
  * - /cfg --dingToken xxx               -> 指定 dingToken
  * - /cfg --atSender false              -> 关闭回复时 at 发送人
  * - /cfg --receiveReply false          -> 关闭"收到"确认消息
+ * - /cfg --enableMsgToUser true|false  -> 开启/关闭私聊消息能力
+ * - /cfg --ensureAt true|false         -> 开启/关闭 @ 通知保障
  * - 其他                                -> null
  */
 export interface ICfgOptions {
@@ -598,6 +618,14 @@ export interface ICfgOptions {
   receiveReply?: boolean;
   preBash?: string;
   permissionMode?: string;
+  streaming?: boolean;
+  cardTemplateId?: string;
+  model?: string;
+  reload?: boolean;
+  /** 是否开启单聊消息能力（oToMessages/batchSend），默认 false */
+  enableMsgToUser?: boolean;
+  /** markdown 回复后是否追加 text 消息确保 @ 通知生效，默认 false */
+  ensureAt?: boolean;
 }
 
 export function parseCfgCommand(text: string): ICfgOptions | null {
@@ -652,6 +680,21 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
       }
     } else if (token === '--permissionMode' && tokens[i + 1]) {
       result.permissionMode = tokens[++i];
+    } else if (token === '--streaming' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      result.streaming = val === 'true' || val === '1' || val === 'yes';
+    } else if (token === '--cardTemplateId' && tokens[i + 1]) {
+      result.cardTemplateId = tokens[++i];
+    } else if (token === '--model' && tokens[i + 1]) {
+      result.model = tokens[++i];
+    } else if (token === '--enableMsgToUser' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      result.enableMsgToUser = val === 'true' || val === '1' || val === 'yes';
+    } else if (token === '--ensureAt' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      result.ensureAt = val === 'true' || val === '1' || val === 'yes';
+    } else if (token === '--reload') {
+      result.reload = true;
     }
   }
 
@@ -1086,5 +1129,105 @@ export function parseRecorderCommandEnhanced(text: string): 'on' | 'exit' | null
   const trimmed = text.trim();
   if (/^\/recorder\s+on$/i.test(trimmed)) return 'on';
   if (/^\/recorder\s+exit$/i.test(trimmed)) return 'exit';
+  return null;
+}
+
+/**
+ * 解析 /timer 延时提醒命令
+ * - /timer 5m 提醒内容          -> { action: 'add', delayMs: 300000, prompt: '提醒内容', description: '提醒内容' }
+ * - /timer 1h30m 提醒内容        -> { action: 'add', delayMs: 5400000, prompt: '提醒内容', description: '提醒内容' }
+ * - /timer list                  -> { action: 'list' }
+ * - /timer cancel timer_xxx      -> { action: 'cancel', id: 'timer_xxx' }
+ * - 无效输入                     -> null
+ */
+export type TimerCommand =
+  | { action: 'add'; delayMs: number; prompt: string; description: string }
+  | { action: 'list' }
+  | { action: 'cancel'; id: string };
+
+export function parseTimerCommand(text: string): TimerCommand | null {
+  const trimmed = text.trim();
+  if (!/^\/timer(\b|$)/i.test(trimmed)) return null;
+
+  const rest = trimmed.substring(6).trim();
+  if (!rest) return null;
+
+  // /timer list
+  if (/^(list|ls)$/i.test(rest)) return { action: 'list' };
+
+  // /timer cancel <id>
+  const cancelMatch = rest.match(/^(?:cancel|rm|del(?:ete)?)\s+(\S+)$/i);
+  if (cancelMatch) return { action: 'cancel', id: cancelMatch[1] };
+
+  // /timer <delay> <prompt>
+  // 先提取延时部分（d/h/m/s 组合），剩余的是 prompt
+  const delayRegex = /^(\d+[dhms](?:\s*\d+[dhms])*)\s+(.+)$/;
+  const delayMatch = rest.match(delayRegex);
+  if (!delayMatch) return null;
+
+  const delayStr = delayMatch[1].replace(/\s+/g, '');
+  const prompt = delayMatch[2].trim();
+  if (!prompt) return null;
+
+  // 将 delayStr 转换为标准格式（如 "1h30m"）
+  const normalizedDelay = delayStr
+    .replace(/(\d+)d/g, '$1d')
+    .replace(/(\d+)h/g, '$1h')
+    .replace(/(\d+)m/g, '$1m')
+    .replace(/(\d+)s/g, '$1s');
+
+  // 解析延时
+  const regex = /^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/;
+  const match = normalizedDelay.match(regex);
+  if (!match) return null;
+
+  const days = parseInt(match[1] || '0', 10);
+  const hours = parseInt(match[2] || '0', 10);
+  const minutes = parseInt(match[3] || '0', 10);
+  const seconds = parseInt(match[4] || '0', 10);
+
+  if (days === 0 && hours === 0 && minutes === 0 && seconds === 0) return null;
+
+  const delayMs = ((days * 24 + hours) * 60 + minutes) * 60 * 1000 + seconds * 1000;
+
+  return { action: 'add', delayMs, prompt, description: prompt };
+}
+
+/**
+ * 解析 /model 命令
+ * - /model                      -> { action: 'list' }
+ * - /model list                 -> { action: 'list' }
+ * - /model <model-name>         -> { action: 'set', model: 'model-name' }
+ * - /model add <model-name>     -> { action: 'add', model: 'model-name' }
+ * - /model rm <model-name>      -> { action: 'remove', model: 'model-name' }
+ * - 无效输入                    -> null
+ */
+export type ModelCommand =
+  | { action: 'list' }
+  | { action: 'set'; model: string }
+  | { action: 'add'; model: string }
+  | { action: 'remove'; model: string };
+
+export function parseModelCommand(text: string): ModelCommand | null {
+  const trimmed = text.trim();
+  if (!/^\/model(\b|$)/i.test(trimmed)) return null;
+
+  const rest = trimmed.substring(6).trim();
+
+  // /model 或 /model list
+  if (!rest || /^(list|ls)$/i.test(rest)) return { action: 'list' };
+
+  // /model add <model-name>
+  const addMatch = rest.match(/^(?:add)\s+(\S+)$/i);
+  if (addMatch) return { action: 'add', model: addMatch[1] };
+
+  // /model rm <model-name>
+  const rmMatch = rest.match(/^(?:rm|del(?:ete)?)\s+(\S+)$/i);
+  if (rmMatch) return { action: 'remove', model: rmMatch[1] };
+
+  // /model <model-name> (切换)
+  const setMatch = rest.match(/^(\S+)$/);
+  if (setMatch) return { action: 'set', model: setMatch[1] };
+
   return null;
 }

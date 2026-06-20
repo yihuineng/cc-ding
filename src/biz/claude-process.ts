@@ -9,6 +9,7 @@ import type { DingClaude } from './cc-ding-cli';
 const exec = promisify(execCb);
 import { IActiveSession, IClaudeSetting, ISession } from './types';
 import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
+import { StreamingCard } from './streaming';
 import { timestamp, getReplyWebhook, getReplyConversationId } from './session';
 import {
   rotateApiKey,
@@ -22,6 +23,7 @@ import {
 } from './api-key-manager';
 import { resolveSecret } from './secrets';
 import { commandExists, formatClaudeCommandMissingMessage, isWindows, spawnCommand } from './platform';
+import { AgentWatchdog } from './watchdog';
 
 const MAX_FAST_FAIL = 20;
 const API_RETRY_DELAY_MS = 10_000;
@@ -30,10 +32,6 @@ const FAST_FAIL_THRESHOLD_MS = 10_000;
 const MAX_TOTAL_RETRIES = 10;
 /** 最大重试持续时间（ms），超过此值且重试 >=3 次视为无限重试循环 */
 const MAX_RETRY_DURATION_MS = 5 * 60 * 1000;
-/** Watchdog: 日志无更新超时时间（5 分钟） */
-const WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000;
-/** Watchdog: 检查间隔 */
-const WATCHDOG_CHECK_INTERVAL_MS = 30 * 1000;
 
 /** CLAUDE.md 注入内容的内存缓存，key=conversationId，value=上次注入的完整内容字符串 */
 const injectedContextCache = new Map<string, string>();
@@ -127,6 +125,14 @@ class ConversationNotFoundError extends Error {
   constructor() {
     super('Claude conversation not found');
     this.name = 'ConversationNotFoundError';
+  }
+}
+
+/** Watchdog 超时触发，需要自动恢复 */
+export class WatchdogTimeoutError extends Error {
+  constructor() {
+    super('Watchdog timeout: process inactive for too long');
+    this.name = 'WatchdogTimeoutError';
   }
 }
 
@@ -254,6 +260,7 @@ function runClaudeOnce(
   dingGroupDir: string,
   stdinMessage: string,
   isRetry: boolean,
+  streamingCard?: StreamingCard | null,
 ): Promise<number> {
   let sessionDir = self.getSessionDir(session);
   let sessionLog = `${sessionDir}/session.log`;
@@ -288,8 +295,7 @@ function runClaudeOnce(
     let stderrOutput = '';
     let stdoutOutput = ''; // 累积 stdout 原始输出，用于错误检测
     let hasSentResponse = false;
-    let settled = false;
-    let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+    let watchdogFired = false; // Watchdog 是否触发过超时
     const loggedToolUseIds = new Set<string>();
 
     const updateActivity = () => {
@@ -299,27 +305,28 @@ function runClaudeOnce(
     };
 
     // Watchdog: 定期检查是否长时间无活动
-    watchdogTimer = setInterval(() => {
-      if (settled) {
-        if (watchdogTimer) clearInterval(watchdogTimer);
-        return;
-      }
-      const lastActivity = activeSession?.lastActivityTime ?? startTime;
-      const elapsed = Date.now() - lastActivity;
-      if (elapsed >= WATCHDOG_TIMEOUT_MS) {
-        console.warn(`[${timestamp()}] Watchdog: Claude 进程 ${WATCHDOG_TIMEOUT_MS / 1000}s 无活动，通知用户`);
-        try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，${WATCHDOG_TIMEOUT_MS / 1000}s 无活动，已通知用户\n`, 'utf-8'); } catch { /* ignore */ }
-        if (watchdogTimer) clearInterval(watchdogTimer);
-        watchdogTimer = null;
-        const atUserId = activeSession?.lastSenderStaffId || session.startStaffId;
-        sendDingMessage(self, {
-          conversationId: getReplyConversationId(session),
-          sessionWebhook: getReplyWebhook(session),
-          atUserId,
-          content: `⏰ Claude 进程超过 ${WATCHDOG_TIMEOUT_MS / 1000}s 无响应，可发送 /goon 强制重启恢复，或 /end 结束会话`,
-        }).catch(err => console.error('发送 Watchdog 通知失败:', err));
-      }
-    }, WATCHDOG_CHECK_INTERVAL_MS);
+    const watchdog = new AgentWatchdog(self, session, activeSession, {
+      killChild: () => {
+        if (activeSession?.currentProcess) {
+          interruptClaudeProcess(activeSession, 'Watchdog: 自动终止超时进程');
+        }
+      },
+      onTimeout: (attempts, maxAutoRecovery, timeoutSec) => {
+        console.warn(`[${timestamp()}] Watchdog: Claude 进程 ${timeoutSec}s 无活动，执行自动恢复`);
+        try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，${timeoutSec}s 无活动，自动 kill 进程并恢复\n`, 'utf-8'); } catch { /* ignore */ }
+        // 标记 watchdog 超时，让 runClaudeOnce 以特殊方式退出
+        watchdogFired = true;
+        if (!activeSession?.currentProcess) {
+          // 进程已不存在，直接 reject
+          reject(new WatchdogTimeoutError());
+        }
+      },
+      onRecoveryFailed: (maxAutoRecovery) => {
+        console.warn(`[${timestamp()}] Watchdog: 已达最大自动恢复次数 ${maxAutoRecovery}`);
+        try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，已达最大自动恢复次数 ${maxAutoRecovery}\n`, 'utf-8'); } catch { /* ignore */ }
+      },
+    }, startTime);
+    watchdog.start();
 
     const rl = readline.createInterface({ input: child.stdout! });
     rl.on('line', (line) => {
@@ -371,6 +378,13 @@ function runClaudeOnce(
 
           if (parsed.content) {
             responseBuffer.push(parsed.content);
+            // 流式更新 AI Card
+            if (streamingCard && !streamingCard.failed) {
+              const fullContent = responseBuffer.join('\n').trim();
+              if (fullContent) {
+                streamingCard.update(fullContent).catch(() => { /* 忽略 */ });
+              }
+            }
           }
         }
 
@@ -385,11 +399,32 @@ function runClaudeOnce(
 
           if (fullResponse && !activeSession?.interrupted) {
             try { self.appendSessionLog(sessionDir, 'assistant', fullResponse); } catch { /* 日志写入失败不阻断消息发送 */ }
-            const activeSessionRef = self.activeSessions.get(session.conversationId);
-            const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
-            hasSentResponse = true;
-            sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
-              .catch(err => console.error('发送钉钉消息失败:', err));
+
+            // 流式卡片 finalize，成功后跳过普通消息，否则回退
+            if (streamingCard && !streamingCard.permissionDenied) {
+              streamingCard.finalize(fullResponse).then(ok => {
+                if (!ok || streamingCard.failed || streamingCard.permissionDenied) {
+                  const activeSessionRef = self.activeSessions.get(session.conversationId);
+                  const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
+                  hasSentResponse = true;
+                  sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
+                    .catch(err => console.error('发送钉钉消息失败:', err));
+                }
+              }).catch(() => {
+                // finalize 异常，回退到普通消息
+                const activeSessionRef = self.activeSessions.get(session.conversationId);
+                const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
+                hasSentResponse = true;
+                sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
+                  .catch(err => console.error('发送钉钉消息失败:', err));
+              });
+            } else {
+              const activeSessionRef = self.activeSessions.get(session.conversationId);
+              const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
+              hasSentResponse = true;
+              sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
+                .catch(err => console.error('发送钉钉消息失败:', err));
+            }
           } else {
             console.warn(`[${timestamp()}] Claude 返回了空的 result 且 responseBuffer 也为空，无内容可发送`);
           }
@@ -415,14 +450,22 @@ function runClaudeOnce(
     });
 
     child.on('close', (code) => {
-      settled = true;
-      if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+      watchdog.markSettled();
+      watchdog.markSettled();
+      watchdog.stop();
       console.log(`[${timestamp()}] Claude 进程退出，代码: ${code}`);
       try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Claude 查询结束，退出码: ${code}\n`, 'utf-8'); } catch { /* ignore */ }
 
       const activeSessionRef = self.activeSessions.get(session.conversationId);
       if (activeSessionRef) {
         activeSessionRef.currentProcess = undefined;
+      }
+
+      // Watchdog 触发的进程退出：reject 让外层处理自动恢复
+      if (watchdogFired) {
+        console.log(`[${timestamp()}] Watchdog 触发的进程退出，reject WatchdogTimeoutError`);
+        reject(new WatchdogTimeoutError());
+        return;
       }
 
       // 被中断时（/end、/new 等），丢弃未发送的 responseBuffer，不再发送残余消息
@@ -438,10 +481,28 @@ function runClaudeOnce(
         const fullResponse = responseBuffer.join('\n').trim();
         if (fullResponse) {
           try { self.appendSessionLog(sessionDir, 'assistant', fullResponse); } catch { /* 日志写入失败不阻断消息发送 */ }
-          const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
-          hasSentResponse = true;
-          sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
-            .catch(err => console.error('发送钉钉消息失败:', err));
+
+          // 流式卡片 finalize，成功后跳过普通消息，否则回退
+          if (streamingCard && !streamingCard.permissionDenied) {
+            streamingCard.finalize(fullResponse).then(ok => {
+              if (!ok || streamingCard.failed || streamingCard.permissionDenied) {
+                const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
+                hasSentResponse = true;
+                sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
+                  .catch(err => console.error('发送钉钉消息失败:', err));
+              }
+            }).catch(() => {
+              const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
+              hasSentResponse = true;
+              sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
+                .catch(err => console.error('发送钉钉消息失败:', err));
+            });
+          } else {
+            const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
+            hasSentResponse = true;
+            sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
+              .catch(err => console.error('发送钉钉消息失败:', err));
+          }
         }
       }
 
@@ -529,8 +590,9 @@ function runClaudeOnce(
     });
 
     child.on('error', (err) => {
-      settled = true;
-      if (watchdogTimer) { clearInterval(watchdogTimer); watchdogTimer = null; }
+      watchdog.markSettled();
+      watchdog.markSettled();
+      watchdog.stop();
       console.error('Claude 进程错误:', err);
       fs.appendFileSync(sessionLog, `[${timestamp()}] [ERROR]: 进程错误: ${err.message}\n`, 'utf-8');
       reject(err);
@@ -673,7 +735,7 @@ export async function executeClaudeQuery(
   self: DingClaude,
   session: ISession,
   message: string,
-  opts?: { skill?: string; agent?: string; settings?: string; senderNick?: string; senderStaffId?: string; permissionMode?: string; newSessionId?: string; conversationConfig?: { qaMode?: boolean; qaCfg?: { gitRepos?: string[]; docs?: string[]; autoPull?: boolean } } },
+  opts?: { skill?: string; agent?: string; settings?: string; senderNick?: string; senderStaffId?: string; permissionMode?: string; newSessionId?: string; model?: string; conversationConfig?: { qaMode?: boolean; qaCfg?: { gitRepos?: string[]; docs?: string[]; autoPull?: boolean } } },
 ): Promise<void> {
   const { skill, agent, senderNick, senderStaffId, newSessionId, conversationConfig } = opts || {};
   let sessionDir = self.getSessionDir(session);
@@ -779,11 +841,24 @@ export async function executeClaudeQuery(
     fixedCmdArgs.push('--agent', agent);
   }
 
+  // 解析模型优先级：opts.model > 会话级 config.model > 全局 config.model
+  const modelOverride = opts?.model;
+  const convModel = self.getConversationConfig(session.conversationId)?.model;
+  const globalModel = self.config.model;
+  const effectiveModel = modelOverride || convModel || globalModel;
+  if (effectiveModel) {
+    fixedCmdArgs.push('--model', effectiveModel);
+  }
+
   let consecutiveFastFail = 0;
   let totalRetries = 0;
   let retryStartTime = 0;
   const retryHistory: string[] = [];
   const originalActiveSession = self.activeSessions.get(session.conversationId);
+  // 新 turn 开始，重置自动恢复计数
+  if (originalActiveSession) {
+    originalActiveSession.autoRecoveryAttempts = 0;
+  }
 
   /** 检查会话是否仍在活跃状态（未被 /end 终止或 /goon 请求重启） */
   const isSessionStillActive = (reason: string): boolean => {
@@ -798,6 +873,23 @@ export async function executeClaudeQuery(
     }
     return true;
   };
+
+  // 检查是否启用流式输出，创建 StreamingCard
+  const convCfg = self.getConversationConfig(session.conversationId);
+  let streamingCard: StreamingCard | null = null;
+  if (convCfg?.streaming && self.config.cardTemplateId && originalActiveSession) {
+    streamingCard = await StreamingCard.create({
+      self,
+      cardTemplateId: self.config.cardTemplateId,
+      cardTemplateKey: self.config.cardTemplateKey,
+      conversationId: session.conversationId,
+      conversationType: convCfg.conversationType,
+      senderStaffId: originalActiveSession.lastSenderStaffId || session.startStaffId,
+    });
+    if (!streamingCard) {
+      console.log(`[${timestamp()}] StreamingCard 创建失败，使用普通消息模式`);
+    }
+  }
 
   while (true) {
     if (!isSessionStillActive('停止重试')) return;
@@ -858,7 +950,7 @@ export async function executeClaudeQuery(
     self.debugLog(`发送消息: ${stdinMessage.substring(0, 100)}...`);
 
     try {
-      await runClaudeOnce(self, session, cmdArgs, entryCmd, dingGroupDir, stdinMessage, isRetry);
+      await runClaudeOnce(self, session, cmdArgs, entryCmd, dingGroupDir, stdinMessage, isRetry, streamingCard);
       return; // 成功，退出
     } catch (err) {
       // runClaudeOnce 可能因获取 claudeSessionId 而重命名了目录，需要重新计算路径
@@ -934,6 +1026,52 @@ export async function executeClaudeQuery(
         }
         consecutiveFastFail = 0;
         continue;
+      }
+      // Watchdog 超时：自动 kill 进程 + 发送"继续"恢复
+      if (err instanceof WatchdogTimeoutError) {
+        const activeSessionNow = self.activeSessions.get(session.conversationId);
+        const convCfgNow = self.getConversationConfig(session.conversationId);
+        const maxAutoRecovery = self.config.maxAutoRecovery ?? 2;
+        const watchdogTimeoutMins = convCfgNow?.maxTurnTimeMins ?? self.config.maxTurnTimeMins ?? 5;
+        const currentAttempts = activeSessionNow?.autoRecoveryAttempts ?? 0;
+
+        if (currentAttempts < maxAutoRecovery) {
+          // 自动恢复：发送"继续"
+          const newAttempts = currentAttempts + 1;
+          if (activeSessionNow) {
+            activeSessionNow.autoRecoveryAttempts = newAttempts;
+          }
+          totalRetries++; retryStartTime = retryStartTime || Date.now();
+          retryHistory.push(`[${timestamp()}] Watchdog 超时，自动恢复 ${newAttempts}/${maxAutoRecovery}`);
+          console.log(`[${timestamp()}] Watchdog 超时，自动恢复 ${newAttempts}/${maxAutoRecovery}，发送"继续"`);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，自动恢复 ${newAttempts}/${maxAutoRecovery}\n`, 'utf-8');
+          const atUserId = senderStaffId || session.startStaffId;
+          await sendDingMessage(self, {
+            conversationId: getReplyConversationId(session),
+            sessionWebhook: getReplyWebhook(session),
+            atUserId,
+            content: ` Claude 进程超过 ${watchdogTimeoutMins} 分钟无响应，已自动重启恢复（${newAttempts}/${maxAutoRecovery}），继续执行中...`,
+          });
+          consecutiveFastFail = 0;
+          // 重置 interrupted 标志，允许继续执行
+          if (activeSessionNow) {
+            activeSessionNow.interrupted = false;
+          }
+          continue;
+        } else {
+          // 超过最大恢复次数，通知用户手动处理
+          console.log(`[${timestamp()}] Watchdog 超时，已达最大自动恢复次数 ${maxAutoRecovery}，通知用户`);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，已达最大自动恢复次数 ${maxAutoRecovery}\n`, 'utf-8');
+          const atUserId = senderStaffId || session.startStaffId;
+          await sendDingMessage(self, {
+            conversationId: getReplyConversationId(session),
+            sessionWebhook: getReplyWebhook(session),
+            atUserId,
+            content: `⏰ Claude 进程已超过 ${watchdogTimeoutMins} 分钟无响应，已尝试自动恢复 ${maxAutoRecovery} 次但仍超时。请发送 /goon 手动重启，或 /end 结束会话`,
+          });
+          // 不再重试，退出
+          return;
+        }
       }
       // 上下文窗口超长：自动发送 /compact 压缩上下文后继续
       if (err instanceof ContextWindowExceededError) {

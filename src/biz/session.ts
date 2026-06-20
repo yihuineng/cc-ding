@@ -5,10 +5,10 @@ import assert from 'assert';
 import crypto from 'crypto';
 import path from 'path';
 import type { DingClaude } from './cc-ding-cli';
-import { IActiveSession, IActiveSessionPersist, IConfig, ISession } from './types';
+import { IActiveSession, IActiveSessionPersist, IConfig, IMessageQueueItem, ISession } from './types';
 import { parseEndCommand } from './commands';
 import { sendDingMessage, queryUserIdByMobile, queryUserIdByJobNumber, queryDingUser } from './messaging';
-import { interruptClaudeProcess, executeClaudeQuery } from './claude-process';
+import { createAgent } from './agent-registry';
 import { isWindows } from './platform';
 
 /**
@@ -80,6 +80,35 @@ export function getClientConfig(self: DingClaude): IConfig {
   assert(cfg.clientSecret, 'config.json missing required field: clientSecret');
   assert(cfg.whiteUserList, 'config.json missing required field: whiteUserList');
   return cfg;
+}
+
+/**
+ * 重新从磁盘读取并验证 config.json，用于 /cfg --reload
+ * 失败时抛出 Error，不更新内存中的 config
+ * @returns 验证通过的新 IConfig 对象
+ */
+export function reloadClientConfig(self: DingClaude): { config: IConfig; configPath: string } {
+  const appCfgFile = path.join(getClientDir(self), 'config.json');
+  if (!fs.existsSync(appCfgFile)) {
+    throw new Error(`配置文件不存在: ${appCfgFile}`);
+  }
+  let cfg: IConfig;
+  try {
+    cfg = fileUtil.getJSON(appCfgFile) as IConfig;
+  } catch (err) {
+    throw new Error(`配置文件 JSON 解析失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  // 验证必填字段
+  const missing: string[] = [];
+  if (!cfg.clientSecret) missing.push('clientSecret');
+  if (!cfg.whiteUserList) missing.push('whiteUserList');
+  if (!cfg.owner) missing.push('owner');
+  if (!cfg.defaultDingToken) missing.push('defaultDingToken');
+  if (!Array.isArray(cfg.conversations)) missing.push('conversations');
+  if (missing.length > 0) {
+    throw new Error(`config.json 缺少必要字段: ${missing.join(', ')}`);
+  }
+  return { config: cfg, configPath: appCfgFile };
 }
 
 /** 将配置值解析为 userId：手机号走 resolvedPhones，userId 直接返回 */
@@ -478,7 +507,7 @@ export function findLatestSession(self: DingClaude, conversationId: string): ISe
 export function updateSessionFile(
   self: DingClaude,
   session: ISession,
-  opts: { claudeSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string },
+  opts: { claudeSessionId?: string; agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string },
 ): void {
   if (opts.claudeSessionId && !session.claudeSessionId) {
     const oldDir = getSessionDir(self, session);
@@ -489,6 +518,9 @@ export function updateSessionFile(
       console.log(`[${timestamp()}] 会话目录重命名: ${path.basename(oldDir)} -> ${path.basename(newDir)}`);
     }
   }
+  if (opts.agentSessionId && !session.agentSessionId) {
+    session.agentSessionId = opts.agentSessionId;
+  }
 
   const sessionFile = `${getSessionDir(self, session)}/session.json`;
   try {
@@ -496,7 +528,7 @@ export function updateSessionFile(
     if (opts.currentWebhook !== undefined) session.currentWebhook = opts.currentWebhook || undefined;
     if (opts.currentConversationId !== undefined) session.currentConversationId = opts.currentConversationId || undefined;
     fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2), 'utf-8');
-    const changedField = opts.claudeSessionId ? 'claudeSessionId' : opts.currentWebhook !== undefined ? 'currentWebhook' : 'sessionWebhook';
+    const changedField = opts.claudeSessionId ? 'claudeSessionId' : opts.agentSessionId ? 'agentSessionId' : opts.currentWebhook !== undefined ? 'currentWebhook' : 'sessionWebhook';
     console.log(`[${timestamp()}] 会话文件已保存: ${changedField}`);
     saveActiveSession(self, session.conversationId);
   } catch (err) {
@@ -588,7 +620,8 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
   const sessionId = getSessionId(session);
   console.log(`结束会话: 群=${conversationId}, 会话ID=${sessionId}`);
 
-  if (interruptClaudeProcess(activeSession, '结束会话时中断正在执行的 Claude 进程')) {
+  const agent = activeSession.agent;
+  if (agent?.interrupt(activeSession, '结束会话时中断正在执行的 Agent 进程')) {
     fs.appendFileSync(
       `${sessionDir}/session.log`,
       `[${timestamp()}] [SYSTEM]: 结束会话时中断 Claude 进程\n`,
@@ -648,7 +681,8 @@ export async function switchToSession(
   const currentActive = findActiveSession(self, conversationId);
   if (currentActive) {
     console.log(`切换会话，先结束当前会话: ${getSessionId(currentActive.session.session)}`);
-    interruptClaudeProcess(currentActive.session, '切换会话时中断正在执行的 Claude 进程');
+    const agent = currentActive.session.agent;
+    agent?.interrupt(currentActive.session, '切换会话时中断正在执行的 Agent 进程');
     self.activeSessions.delete(currentActive.key);
     saveActiveSession(self, currentActive.key);
     fs.appendFileSync(
@@ -676,6 +710,15 @@ export async function switchToSession(
 
   console.log(`已切换到历史会话: 群=${conversationId}, 会话ID=${displayId}, 有Claude上下文=${hasClaudeSession}`);
   return true;
+}
+
+/**
+ * 确保 activeSession.agent 已设置（agent 是运行时对象，无法持久化，重启或新会话都需要创建）
+ */
+export function ensureAgent(self: DingClaude, activeSession: IActiveSession): void {
+  if (!activeSession.agent) {
+    activeSession.agent = createAgent(activeSession.conversationConfig.agent || 'claude');
+  }
 }
 
 export async function startNewSession(self: DingClaude, opts: {
@@ -715,12 +758,14 @@ export async function startNewSession(self: DingClaude, opts: {
   fs.mkdirSync(sessionDir, { recursive: true });
   fs.writeFileSync(`${sessionDir}/session.json`, JSON.stringify(session, null, 2), 'utf-8');
 
+  const agent = createAgent(conversationConfig.agent || 'claude');
   self.activeSessions.set(conversationId, {
     session,
     lastSenderStaffId: senderStaffId,
     isProcessing: true,
     messageQueue: [],
     conversationConfig,
+    agent,
   });
   saveActiveSession(self, conversationId);
 
@@ -732,17 +777,15 @@ export async function startNewSession(self: DingClaude, opts: {
   }
 
   try {
-    await executeClaudeQuery(self, session, message, {
+    await agent.executeQuery(self, session, {
+      message,
       skill: conversationConfig.taskCfg?.skill,
-      agent: conversationConfig.agent,
       senderNick,
       senderStaffId,
-      permissionMode: conversationConfig.permissionMode,
       newSessionId,
-      conversationConfig,
     });
   } catch (err) {
-    console.error('执行 Claude 查询失败:', err);
+    console.error('执行 Agent 查询失败:', err);
     await sendDingMessage(self, {
       conversationId, sessionWebhook, atUserId: senderStaffId,
       content: `❌ 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
@@ -765,13 +808,23 @@ export async function startNewSession(self: DingClaude, opts: {
  */
 export async function processMessageQueue(self: DingClaude, conversationId: string): Promise<void> {
   const activeSession = self.activeSessions.get(conversationId);
-  if (!activeSession || activeSession.messageQueue.length === 0) return;
+  if (!activeSession || !activeSession.messageQueue || activeSession.messageQueue.length === 0) return;
 
   const entry = activeSession.messageQueue.shift()!;
-  const { message, senderStaffId, senderNick } = entry;
-  const sessionWebhook = activeSession.session.sessionWebhook;
+  const { message, senderStaffId, senderNick, sessionWebhook, conversationId: entryConvId, enqueueTime } = entry;
 
-  console.log(`处理队列消息: 群=${conversationId}, 剩余 ${activeSession.messageQueue.length} 条`);
+  // 检查消息是否过期（超过 10 分钟跳过）
+  const MAX_QUEUE_AGE_MS = 10 * 60 * 1000;
+  if (Date.now() - enqueueTime > MAX_QUEUE_AGE_MS) {
+    console.log(`队列消息已过期，跳过: 入队时间=${new Date(enqueueTime).toLocaleString()}, 群=${entryConvId}`);
+    // 继续处理下一条
+    if (activeSession.messageQueue.length > 0) {
+      await processMessageQueue(self, conversationId);
+    }
+    return;
+  }
+
+  console.log(`处理队列消息: 群=${entryConvId}, 剩余 ${activeSession.messageQueue.length} 条`);
 
   activeSession.isProcessing = true;
   activeSession.lastSenderStaffId = senderStaffId;
@@ -780,25 +833,25 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   if (activeSession.conversationConfig.receiveReply !== false) {
     const preview = message.length > 50 ? message.substring(0, 50) + '…' : message;
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
+      conversationId: entryConvId, sessionWebhook, atUserId: senderStaffId,
       content: `🚀 开始处理消息「${preview}」`,
     }).catch(() => {});
   }
 
   try {
-    await executeClaudeQuery(self, activeSession.session, message, {
+    ensureAgent(self, activeSession);
+    const agent = activeSession.agent!;
+    await agent.executeQuery(self, activeSession.session, {
+      message,
       skill: activeSession.conversationConfig.taskCfg?.skill,
-      agent: activeSession.conversationConfig.agent,
       senderNick,
       senderStaffId,
-      permissionMode: activeSession.conversationConfig.permissionMode,
-      conversationConfig: activeSession.conversationConfig,
     });
   } catch (err) {
-    console.error('执行队列 Claude 查询失败:', err);
+    console.error('执行队列 Agent 查询失败:', err);
     await sendDingMessage(self, {
-      conversationId, sessionWebhook, atUserId: senderStaffId,
-      content: `❌ 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
+      conversationId: entryConvId, sessionWebhook, atUserId: senderStaffId,
+      content: ` 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
     });
   } finally {
     activeSession.isProcessing = false;
@@ -810,11 +863,12 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
     activeSession.interrupted = false;
     activeSession.isProcessing = true;
     try {
-      await executeClaudeQuery(self, activeSession.session, '继续', {
+      ensureAgent(self, activeSession);
+      const agent = activeSession.agent!;
+      await agent.executeQuery(self, activeSession.session, {
+        message: '继续',
         senderNick: activeSession.session.startNickName,
         senderStaffId: activeSession.lastSenderStaffId,
-        permissionMode: activeSession.conversationConfig.permissionMode,
-        conversationConfig: activeSession.conversationConfig,
       });
     } catch (err) {
       console.error('goonPending 恢复执行失败:', err);
@@ -824,7 +878,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   }
 
   // 如果队列还有消息，继续处理
-  if (activeSession.messageQueue.length > 0) {
+  if (activeSession.messageQueue && activeSession.messageQueue.length > 0) {
     await processMessageQueue(self, conversationId);
   }
 }
@@ -861,7 +915,12 @@ export async function handleSessionMessage(self: DingClaude, opts: {
 
     if (activeSession.isProcessing) {
       // 正在处理中，将消息加入队列
-      const queueEntry = { message, senderStaffId, senderNick };
+      const queueEntry: IMessageQueueItem = {
+        message, senderStaffId, senderNick,
+        sessionWebhook, conversationId,
+        enqueueTime: Date.now(),
+      };
+      if (!activeSession.messageQueue) activeSession.messageQueue = [];
       activeSession.messageQueue.push(queueEntry);
       const queuePos = activeSession.messageQueue.length;
       console.log(`会话 ${conversationId} 消息已入队，排队第 ${queuePos} 条`);
@@ -896,13 +955,13 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     }
 
     try {
-      await executeClaudeQuery(self, activeSession.session, message, {
+      ensureAgent(self, activeSession);
+      const agent = activeSession.agent!;
+      await agent.executeQuery(self, activeSession.session, {
+        message,
         skill: conversationConfig.taskCfg?.skill,
-        agent: conversationConfig.agent,
         senderNick,
         senderStaffId,
-        permissionMode: conversationConfig.permissionMode,
-        conversationConfig,
       });
     } catch (err) {
       // 恢复会话失败（可能会话已失效），清除 claudeSessionId 重新发起一次
@@ -911,17 +970,17 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         activeSession.session.claudeSessionId = undefined;
         self.updateSessionFile(activeSession.session, {});
         try {
-          await executeClaudeQuery(self, activeSession.session, message, {
+          ensureAgent(self, activeSession);
+          const agent = activeSession.agent!;
+          await agent.executeQuery(self, activeSession.session, {
+            message,
             skill: conversationConfig.taskCfg?.skill,
-            agent: conversationConfig.agent,
             senderNick,
             senderStaffId,
-            permissionMode: conversationConfig.permissionMode,
-            conversationConfig,
           });
           return;
         } catch (retryErr) {
-          console.error('重试执行 Claude 查询失败:', retryErr);
+          console.error('重试执行 Agent 查询失败:', retryErr);
           await sendDingMessage(self, {
             conversationId, sessionWebhook, atUserId: senderStaffId,
             content: `❌ 处理消息时发生错误: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
@@ -931,7 +990,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
           return;
         }
       }
-      console.error('执行 Claude 查询失败:', err);
+      console.error('执行 Agent 查询失败:', err);
       await sendDingMessage(self, {
         conversationId, sessionWebhook, atUserId: senderStaffId,
         content: `❌ 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
@@ -1073,4 +1132,128 @@ export function cleanCache(self: DingClaude, conversationId: string | null, keep
   }
 
   return result;
+}
+
+// ==================== 群销毁 ====================
+
+export interface IDestroyResult {
+  success: boolean;
+  steps: Array<{ label: string; ok: boolean; detail?: string }>;
+}
+
+/**
+ * 完整清理指定会话的所有数据
+ */
+export async function destroyConversation(self: DingClaude, conversationId: string): Promise<IDestroyResult> {
+  const steps: Array<{ label: string; ok: boolean; detail?: string }> = [];
+  const convCfg = self.getConversationConfig(conversationId);
+  const hasLinkConv = !!convCfg?.linkConversationId;
+
+  // 1. 停止该会话的活跃 Claude 进程
+  const activeSession = self.activeSessions.get(conversationId);
+  if (activeSession?.currentProcess) {
+    try { activeSession.currentProcess.kill('SIGTERM'); } catch { /* ignore */ }
+  }
+  self.activeSessions.delete(conversationId);
+  steps.push({ label: '停止活跃会话', ok: true, detail: activeSession ? '已清除' : '无活跃会话' });
+
+  // 2. 清理定时任务 (cronEngine)
+  try {
+    const cronJobs = self.cronEngine?.listJobs(conversationId) || [];
+    let removed = 0;
+    for (const job of cronJobs) {
+      if (self.cronEngine?.removeJob(job.id)) removed++;
+    }
+    steps.push({ label: '清理定时任务', ok: true, detail: `移除 ${removed} 个` });
+  } catch (err) {
+    steps.push({ label: '清理定时任务', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 3. 清理 Todo 数据
+  try {
+    const todoFile = path.join(getClientDir(self), 'todo.json');
+    if (fs.existsSync(todoFile)) {
+      const data = fileUtil.getJSON(todoFile) as { conversations?: Record<string, unknown[]> };
+      if (data?.conversations?.[conversationId]) {
+        delete data.conversations[conversationId];
+        fs.writeFileSync(todoFile, JSON.stringify(data, null, 2), 'utf-8');
+      }
+    }
+    steps.push({ label: '清理 Todo 数据', ok: true });
+  } catch (err) {
+    steps.push({ label: '清理 Todo 数据', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 4. 清理快捷菜单数据
+  try {
+    const menuFile = path.join(getClientDir(self), 'menu.json');
+    if (fs.existsSync(menuFile)) {
+      const data = fileUtil.getJSON(menuFile) as { user?: Record<string, unknown> };
+      if (data?.user) {
+        const keysToDelete = Object.keys(data.user).filter(k => k.startsWith(`${conversationId}:`));
+        for (const k of keysToDelete) delete data.user[k];
+        fs.writeFileSync(menuFile, JSON.stringify(data, null, 2), 'utf-8');
+      }
+    }
+    steps.push({ label: '清理快捷菜单', ok: true });
+  } catch (err) {
+    steps.push({ label: '清理快捷菜单', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 5. 清理延时任务 (timerEngine)
+  try {
+    const timers = self.timerEngine?.listTimers(conversationId) || [];
+    let removed = 0;
+    for (const t of timers) {
+      if (self.timerEngine?.removeTimer(t.id)) removed++;
+    }
+    steps.push({ label: '清理延时任务', ok: true, detail: `移除 ${removed} 个` });
+  } catch (err) {
+    steps.push({ label: '清理延时任务', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 6. 清理会话工作目录（关联群不删除关联目录）
+  try {
+    const convDir = getConversationDir(self, conversationId);
+    if (fs.existsSync(convDir)) {
+      fs.rmSync(convDir, { recursive: true, force: true });
+      steps.push({ label: '删除工作目录', ok: true });
+    } else {
+      steps.push({ label: '删除工作目录', ok: true, detail: '目录不存在' });
+    }
+    // 如果有 linkConversationId，不删除关联目录
+    if (hasLinkConv) {
+      steps.push({ label: '关联目录', ok: true, detail: `保留 (linkConversationId=${convCfg!.linkConversationId})` });
+    }
+  } catch (err) {
+    steps.push({ label: '删除工作目录', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 7. 从 config.conversations 中移除该会话
+  const convIndex = self.config.conversations.findIndex(c => c.conversationId === conversationId);
+  if (convIndex >= 0) {
+    self.config.conversations.splice(convIndex, 1);
+    steps.push({ label: '移除配置', ok: true });
+  } else {
+    steps.push({ label: '移除配置', ok: true, detail: '未在配置中找到' });
+  }
+
+  // 8. 移除活跃会话持久化
+  try {
+    saveActiveSession(self, conversationId);
+    steps.push({ label: '清理持久化文件', ok: true });
+  } catch (err) {
+    steps.push({ label: '清理持久化文件', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 持久化配置
+  try {
+    const { saveClientConfig } = require('./api-key-manager');
+    saveClientConfig(self);
+  } catch (err) {
+    console.error(`[${timestamp()}] 销毁后保存配置失败:`, err);
+  }
+
+  const allOk = steps.every(s => s.ok);
+  return { success: allOk, steps };
 }

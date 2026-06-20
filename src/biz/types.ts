@@ -1,9 +1,12 @@
 import type { ChildProcess } from 'child_process';
+import type { IAgent } from './agent';
 import { RobotTextMessage } from 'utils-ok';
 
 // config.json
 export interface IConfig {
   clientName?: string;
+  /** 全局默认模型，群维度 model 优先 */
+  model?: string;
   whiteUserList: string[]; // 白名单（手机号或工号）
   owner: string; // 机器人 owner（手机号或工号，拥有所有权限）
   /** 管理员列表（手机号、工号或userId），除管理员人员管理(/auth admin add/rm/list)外与 owner 同权 */
@@ -38,6 +41,14 @@ export interface IConfig {
     /** 保存目录，默认为会话工作目录下的 .recorder */
     dist?: string;
   };
+  /** Watchdog 超时时间（分钟），默认 5 */
+  maxTurnTimeMins?: number;
+  /** Watchdog 超时自动恢复最大次数，默认 2 */
+  maxAutoRecovery?: number;
+  /** AI Card 模板 ID（流式输出功能需要，在钉钉开放平台创建） */
+  cardTemplateId?: string;
+  /** AI Card 模板变量名，默认 "content" */
+  cardTemplateKey?: string;
 }
 
 export interface IConversation {
@@ -50,6 +61,8 @@ export interface IConversation {
   mobile?: string;
   whiteUserList?: string[]; // 机器人实例维度白名单, 定义时优先级高于Client维度
   agent?: string; // 指定agent
+  /** 指定模型，优先于全局 model */
+  model?: string;
   useLocalOcr?: boolean; // 本地 OCR 降级（用于不支持图片识别的模型），默认 true
   atSender?: boolean; // 回复时是否 at 发送人，默认 true
   /** 是否回复"收到"等确认消息，默认 true */
@@ -70,6 +83,12 @@ export interface IConversation {
   qaMode?: boolean;
   /** 问答模式配置 */
   qaCfg?: IQaCfg;
+  /** 会话级 Watchdog 超时时间（分钟），覆盖全局 maxTurnTimeMins */
+  maxTurnTimeMins?: number;
+  /** 是否开启流式输出（AI Card），默认 false */
+  streaming?: boolean;
+  /** markdown 回复后是否追加 text 消息确保 @ 通知生效，默认 false */
+  ensureAt?: boolean;
 }
 
 /** 问答模式配置 */
@@ -93,6 +112,7 @@ export interface ISession {
   startStaffId: string;
   startNickName: string;
   claudeSessionId?: string;
+  agentSessionId?: string; // Agent 会话 ID（Claude 用 claudeSessionId，Codex 用 thread_id）
 }
 
 // 任务信息
@@ -111,6 +131,17 @@ export interface ITask {
 }
 
 // 活跃会话状态
+
+/** 消息队列中的单条消息 */
+export interface IMessageQueueItem {
+  message: string;
+  senderStaffId: string;
+  senderNick: string;
+  sessionWebhook: string;     // 入队时的 webhook 地址（消费时使用，webhook 可能过期）
+  conversationId: string;     // 入队时的会话ID（消费时确认来源，避免跨会话混用）
+  enqueueTime: number;        // 入队时间戳（用于超时清理或优先级排序）
+}
+
 export interface IActiveSession {
   session: ISession;
   lastSenderStaffId: string;
@@ -120,8 +151,12 @@ export interface IActiveSession {
   interrupted?: boolean; // 是否被用户中断
   goonPending?: boolean; // 是否收到 /goon 请求，待重启
   lastActivityTime?: number; // 最近一次 Claude 进程活动时间（watchdog 用）
+  /** 当前 turn 自动超时恢复次数 */
+  autoRecoveryAttempts?: number;
   /** 排队中的消息，当前查询完成后依次处理 */
-  messageQueue: Array<{ message: string; senderStaffId: string; senderNick: string }>;
+  messageQueue?: IMessageQueueItem[];
+  /** 当前会话使用的 Agent 实例（避免每次从 config 重新创建） */
+  agent?: IAgent;
 }
 
 // 活跃会话持久化数据（不含运行时字段）

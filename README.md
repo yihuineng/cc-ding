@@ -171,6 +171,23 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `permissionMode` | Claude 进程权限模式（默认 `acceptEdits`；`bypassPermissions` 需显式配置，启动时会告警），可选: `default`、`acceptEdits`、`plan`、`auto`、`bypassPermissions`、`dontAsk` |
 | `freedomMode` | 自由模式开关（默认 `false`，开启后跳过群用户白名单限制） |
 | `preBash` | 全局 `/bash` 前置命令 |
+| `agent` | AI 执行引擎：`claude`（默认）或 `codex`（OpenAI Codex CLI） |
+
+### 多 Agent 架构（v1.1.0）
+
+cc-ding 引入了多 Agent 抽象层，支持在不同 AI 执行引擎之间切换。通过在群配置中设置 `agent` 字段，可以为不同群指定不同的执行引擎：
+
+```json
+{
+  "conversationId": "群ID",
+  "agent": "claude"  // 或 "codex"
+}
+```
+
+- **`claude`**（默认）：使用 Claude Code CLI，支持 `--resume` 会话恢复、API Key 轮换、上下文压缩等完整功能
+- **`codex`**：使用 OpenAI Codex CLI，支持线程恢复（`thread_id`）、沙箱模式（`full-auto`）、自动超时恢复等
+
+所有命令（`/goon`、`/!`、`/new`、`/cc` 等）均支持多 Agent 路由，无需额外配置。
 
 #### 安全说明
 
@@ -184,7 +201,7 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 
 | 类型 | 路径 |
 |------|------|
-| 会话 | `{MD5}/.sessions/{claudeSessionId}/session.{json,log}` |
+| 会话 | `{MD5}/.sessions/{claudeSessionId|agentSessionId}/session.{json,log}` |
 | 任务 | `{MD5}/.tasks/{时间戳}/task.{json,log}` |
 | 定时任务 | `cron.json` |
 | 图片缓存 | `{MD5}/.images/` |
@@ -358,6 +375,23 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `permissionMode` | Claude process permission mode (default `acceptEdits`; `bypassPermissions` must be set explicitly and warns at startup), options: `default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk` |
 | `freedomMode` | Freedom mode toggle (default `false`; when enabled, skips group whitelist check) |
 | `preBash` | Global pre-bash command for `/bash` |
+| `agent` | AI execution engine: `claude` (default) or `codex` (OpenAI Codex CLI) |
+
+### Multi-Agent Architecture (v1.1.0)
+
+cc-ding introduces a multi-Agent abstraction layer, allowing different AI execution engines to be switched per group. Set the `agent` field in group config to choose the engine:
+
+```json
+{
+  "conversationId": "group_id",
+  "agent": "claude"  // or "codex"
+}
+```
+
+- **`claude`** (default): Uses Claude Code CLI, supports `--resume` session recovery, API Key rotation, context compaction, and full feature set
+- **`codex`**: Uses OpenAI Codex CLI, supports thread recovery (`thread_id`), sandbox mode (`full-auto`), auto-timeout recovery, etc.
+
+All commands (`/goon`, `/!`, `/new`, `/cc`, etc.) support multi-Agent routing without additional configuration.
 
 #### Security Notes
 
@@ -371,7 +405,7 @@ All data is stored under `~/.cc-ding/{clientId}/`:
 
 | Type | Path |
 |------|------|
-| Sessions | `{MD5}/.sessions/{claudeSessionId}/session.{json,log}` |
+| Sessions | `{MD5}/.sessions/{claudeSessionId|agentSessionId}/session.{json,log}` |
 | Tasks | `{MD5}/.tasks/{timestamp}/task.{json,log}` |
 | Cron jobs | `cron.json` |
 | Image cache | `{MD5}/.images/` |

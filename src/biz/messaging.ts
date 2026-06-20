@@ -1,11 +1,53 @@
 import { asyncUtil } from 'utils-ok';
 import urllib from 'urllib';
+import fs from 'fs';
+import path from 'path';
 import type { DingClaude } from './cc-ding-cli';
 import { ISendMsgOpts, IDingUserDetail } from './types';
 import { resolveSecret } from './secrets';
 
 const DING_API_BASE = 'https://api.dingtalk.com';
 const DING_OAPI_BASE = 'https://oapi.dingtalk.com';
+
+// ==================== 用户名缓存（@提及还原） ====================
+
+/** 用户名缓存：staffId → nickName（进程内，重启后清空） */
+const userNameCache = new Map<string, string>();
+
+/** 缓存用户名（每次收到消息/消息回调时调用） */
+export function cacheUserName(staffId: string, nickName: string): void {
+  if (staffId && nickName) {
+    userNameCache.set(staffId, nickName);
+  }
+}
+
+/** 获取缓存的用户名 */
+export function getCachedUserName(staffId: string): string | undefined {
+  return userNameCache.get(staffId);
+}
+
+/**
+ * 还原消息中的 @提及：将钉钉替换的 @机器人 文本恢复为 @实际用户
+ * 优先级：回调原文(atUsers.displayName) > userNameCache 查找 > 保持原样
+ */
+export function restoreMentions(
+  content: string,
+  atUsers: Array<{ staffId?: string; dingtalkId?: string; displayName?: string }>,
+): string {
+  let result = content;
+  for (const user of atUsers) {
+    const id = user.staffId || user.dingtalkId;
+    if (!id) continue;
+
+    // 优先用回调自带的 displayName，其次查缓存
+    const cachedName = user.displayName || getCachedUserName(id);
+    if (!cachedName) continue;
+
+    // 替换占位符（钉钉通常用零宽空格或 @机器人名 作为占位）
+    result = result.replace(/\u200b/g, `${cachedName}(${id})`);
+  }
+  return result;
+}
 
 /**
  * 通过钉钉服务端 API 获取引用消息的文本内容
@@ -357,6 +399,18 @@ export async function sendClaudeResponseToDing(
       }
     }
   }
+
+  // ensureAt: 追加一条 text 消息，确保钉钉 @ 通知生效
+  const convCfg = self.config.conversations.find(c => c.conversationId === conversationId);
+  if (convCfg?.ensureAt && atUserId) {
+    await sendDingMessage(self, {
+      conversationId,
+      sessionWebhook,
+      atUserId,
+      content: '',
+      msgType: 'text',
+    });
+  }
 }
 
 /**
@@ -405,4 +459,123 @@ export async function sendOwnerMessage(self: DingClaude, content: string, msgTyp
     return false;
   }
   return sendMessageToUser(self, userId, content, msgType);
+}
+
+// ==================== 群消息：图片/文件推送 ====================
+
+/** 图片文件扩展名 */
+const IMAGE_EXTENSIONS = new Set([ '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg' ]);
+
+/**
+ * 判断文件是否为图片类型（基于扩展名）
+ */
+export function isImageFile(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  return IMAGE_EXTENSIONS.has(ext);
+}
+
+/**
+ * 上传文件到钉钉，获取 downloadCode/mediaId
+ * POST /v1.0/robot/messageFiles/upload
+ */
+export async function uploadMediaToDingTalk(
+  self: DingClaude,
+  filePath: string,
+): Promise<string | null> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+
+    const url = `${DING_API_BASE}/v1.0/robot/messageFiles/upload`;
+    const result = await urllib.request(url, {
+      method: 'POST',
+      headers: {
+        'x-acs-dingtalk-access-token': accessToken,
+      },
+      data: { file: fs.createReadStream(filePath) },
+      contentType: 'multipart/form-data',
+      dataType: 'json',
+      timeout: 30000,
+    });
+
+    if (result.status !== 200 || !result.data) {
+      console.error(`uploadMediaToDingTalk 返回非200: status=${result.status}`);
+      return null;
+    }
+
+    const body = result.data as Record<string, unknown>;
+    // 返回可能包含 downloadCode 或 mediaId
+    return (body.downloadCode as string) || (body.mediaId as string) || null;
+  } catch (err) {
+    console.error(`uploadMediaToDingTalk 失败: ${filePath}`, err);
+    return null;
+  }
+}
+
+/**
+ * 通过群消息 API 发送图片
+ * POST /v1.0/im/groupMessages/send with sampleImageMsg
+ */
+export async function sendGroupImageMessage(
+  self: DingClaude,
+  conversationId: string,
+  mediaId: string,
+): Promise<boolean> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `${DING_API_BASE}/v1.0/im/groupMessages/send`;
+
+    const result = await urllib.request(url, {
+      method: 'POST',
+      data: {
+        robotCode: self.clientId,
+        openConversationId: conversationId,
+        msgKey: 'sampleImageMsg',
+        msgParam: JSON.stringify({ mediaId }),
+      },
+      contentType: 'json',
+      headers: { 'x-acs-dingtalk-access-token': accessToken },
+      dataType: 'json',
+      timeout: 10000,
+    });
+
+    return result.status === 200;
+  } catch (err) {
+    console.error(`sendGroupImageMessage 失败: ${conversationId}`, err);
+    return false;
+  }
+}
+
+/**
+ * 通过群消息 API 发送文件
+ * POST /v1.0/im/groupMessages/send with sampleFileMsg
+ */
+export async function sendGroupFileMessage(
+  self: DingClaude,
+  conversationId: string,
+  mediaId: string,
+  fileName: string,
+): Promise<boolean> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `${DING_API_BASE}/v1.0/im/groupMessages/send`;
+
+    const result = await urllib.request(url, {
+      method: 'POST',
+      data: {
+        robotCode: self.clientId,
+        openConversationId: conversationId,
+        msgKey: 'sampleFileMsg',
+        msgParam: JSON.stringify({ mediaId, fileName }),
+      },
+      contentType: 'json',
+      headers: { 'x-acs-dingtalk-access-token': accessToken },
+      dataType: 'json',
+      timeout: 10000,
+    });
+
+    return result.status === 200;
+  } catch (err) {
+    console.error(`sendGroupFileMessage 失败: ${conversationId}`, err);
+    return false;
+  }
 }

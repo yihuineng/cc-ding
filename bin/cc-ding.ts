@@ -8,6 +8,7 @@ import { DingClaude, IConfig } from '../src/biz/cc-ding-cli';
 import { acquirePidLock } from '../src/biz/lock';
 import { printDoctorResults, runDoctor } from '../src/biz/doctor';
 import { sendNotify } from '../src/biz/notify';
+import { writeSendSignal, type ISendSignal } from '../src/biz/send-queue';
 import fs from 'fs';
 
 loadEnv();
@@ -163,6 +164,53 @@ program
 
     console.log(`\n✅ 成功: ${result.success}, ❌ 失败: ${result.fail}`);
     process.exit(result.fail > 0 ? 1 : 0);
+  });
+
+program
+  .command('push')
+  .description('主动向钉钉群推送图片或文件（通过文件信号队列异步投递）')
+  .requiredOption('-ci, --clientId <value>', 'clientId')
+  .requiredOption('-c, --conversationId <value>', '目标会话ID')
+  .option('-i, --image <path>', '图片文件路径（与 --file 二选一必填）')
+  .option('-f, --file <path>', '文件路径（与 --image 二选一必填）')
+  .option('--caption <value>', '附加说明文字')
+  .action((opts) => {
+    const { clientId, conversationId, image, file, caption } = opts;
+
+    // --image 和 --file 二选一必填
+    if (!image && !file) {
+      console.error('❌ 请指定 --image 或 --file 参数');
+      process.exit(1);
+    }
+    if (image && file) {
+      console.error(' --image 和 --file 不能同时指定');
+      process.exit(1);
+    }
+
+    const filePath = image || file!;
+    const absolutePath = path.isAbsolute(filePath) ? filePath : path.resolve(filePath);
+
+    // 检查文件是否存在
+    if (!fs.existsSync(absolutePath)) {
+      console.error(`❌ 文件不存在: ${absolutePath}`);
+      process.exit(1);
+    }
+
+    const type: 'image' | 'file' = image ? 'image' : 'file';
+    const signal: ISendSignal = {
+      type,
+      path: absolutePath,
+      conversationId,
+      caption,
+      timestamp: Date.now(),
+    };
+
+    writeSendSignal(clientId, signal);
+    console.log(`✅ 推送信号已写入，等待主进程处理`);
+    console.log(`   类型: ${type}`);
+    console.log(`   会话: ${conversationId}`);
+    console.log(`   文件: ${absolutePath}`);
+    if (caption) console.log(`   说明: ${caption}`);
   });
 
 program.parse(process.argv);

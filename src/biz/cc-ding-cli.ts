@@ -4,7 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { projUtil } from '../common';
-import { IConfig, IActiveSession, ISession, IRawCallbackData, IAuthRequest } from './types';
+import { IConfig, IActiveSession, ISession, IRawCallbackData, IAuthRequest, IConversation } from './types';
 import { extractQuoteInfo, formatPromptWithQuote, enrichQuoteInfo } from './quote';
 import { sendMessageToUser, sendOwnerMessage } from './messaging';
 import { processPictureMessage, processRichTextMessage, processFileMessage, extractDownloadCode } from './image';
@@ -16,9 +16,9 @@ import {
   parseCronCommand, parseVersionCommand, parseOpenCommand, parseCleanCommand, parseResetApiKeyCfgCommand, parseCfgCommand, parseAuthCommand,
   parseBashCommand, parseMqCommand, parseRecorderCommandEnhanced,
   parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
-  parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand, parseFreedomCommand, parseQaCommand,
+  parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand, parseFreedomCommand, parseQaCommand, parseTimerCommand, parseModelCommand,
 } from './commands';
-import { sendDingMessage, sendClaudeResponseToDing } from './messaging';
+import { sendDingMessage, sendClaudeResponseToDing, cacheUserName, getCachedUserName, restoreMentions } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts, refreshSessionContext } from './claude-process';
 import { recordMessage, getRecorderDir } from './recorder';
 import {
@@ -27,14 +27,15 @@ import {
   getUserTrigger, setUserTrigger, loadMenuData, startSelectionCleanupTimer,
 } from './menu';
 import {
-  getClientDir, getClientConfig, authCheck, isOwner, isAdmin, isOwnerOrAdmin, debugLog,
+  getClientDir, getClientConfig, reloadClientConfig, authCheck, isOwner, isAdmin, isOwnerOrAdmin, debugLog,
   hashConversationId, getConversationConfig,
   getConversationDir, getSessionsDir, getTasksDir,
   getSessionDir, getSessionId, formatSessionInfo, readSessionLogTail,
   findHistorySession, findLatestSession, updateSessionFile, appendSessionLog,
   getActiveSessionsFile, saveActiveSession, loadActiveSessions,
   endSession, switchToSession, startNewSession, handleSessionMessage,
-  findActiveSession, cleanCache,
+  findActiveSession, cleanCache, destroyConversation,
+  ensureAgent,
   timestamp,
   resolveAllPhonesInConfig, resolveUserId, resolveToUserId, userIdToPhone, isMobile,
   resolveUserIdName,
@@ -55,10 +56,105 @@ import { resetApiKeyCfg, scheduleApiKeyCfgDailyReset, startupCheck, saveClientCo
 import { resolveSecret } from './secrets';
 import { ICommandRoute, route } from './command-route';
 import { CronEngine, formatCronJobList, formatCronJobInfo, isValidCronExpression } from './cron';
+import { TimerEngine, formatTimerList, formatTimerInfo } from './timer';
+import { SendQueueProcessor } from './send-queue';
+import { initModelOptions, loadModelOptions, addModelOptions, removeModelOptions, resolveCurrentModel, setConversationModel } from './model';
 import { commandExists, isWindows, isWindowsPlatform, spawnCommand } from './platform';
 
 /** 工具版本号 */
 const TOOL_VERSION = projUtil().getPkgVersion();
+
+/**
+ * 对比新旧配置，返回变更摘要行数组
+ */
+function buildConfigDiff(oldCfg: IConfig, newCfg: IConfig): string[] {
+  const lines: string[] = [];
+
+  // 全局字段对比
+  const globalFields: { key: keyof IConfig; label: string }[] = [
+    { key: 'model', label: 'model' },
+    { key: 'owner', label: 'owner' },
+    { key: 'defaultDingToken', label: 'defaultDingToken' },
+    { key: 'includeThinking', label: 'includeThinking' },
+    { key: 'resultOnly', label: 'resultOnly' },
+    { key: 'debug', label: 'debug' },
+    { key: 'preBash', label: 'preBash' },
+    { key: 'maxTurnTimeMins', label: 'maxTurnTimeMins' },
+    { key: 'maxAutoRecovery', label: 'maxAutoRecovery' },
+    { key: 'cardTemplateId', label: 'cardTemplateId' },
+    { key: 'sessionMaxConcurrency', label: 'sessionMaxConcurrency' },
+    { key: 'clientName', label: 'clientName' },
+    { key: 'enableMsgToUser', label: 'enableMsgToUser' },
+  ];
+
+  const globalChanges: string[] = [];
+  for (const { key, label } of globalFields) {
+    const oldVal = oldCfg[key];
+    const newVal = newCfg[key];
+    if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+      const fmt = (v: any) => (v === undefined || v === null ? '(未设置)' : JSON.stringify(v));
+      globalChanges.push(`${label}: ${fmt(oldVal)} → ${fmt(newVal)}`);
+    }
+  }
+
+  // conversations 对比
+  const oldConvIds = new Set(oldCfg.conversations.map(c => c.conversationId));
+  const newConvIds = new Set(newCfg.conversations.map(c => c.conversationId));
+  const oldConvMap = new Map(oldCfg.conversations.map(c => [ c.conversationId, c ]));
+  const newConvMap = new Map(newCfg.conversations.map(c => [ c.conversationId, c ]));
+
+  // 新增会话
+  const added: string[] = [];
+  for (const id of newConvIds) {
+    if (!oldConvIds.has(id)) added.push(id);
+  }
+
+  // 移除会话
+  const removed: string[] = [];
+  for (const id of oldConvIds) {
+    if (!newConvIds.has(id)) removed.push(id);
+  }
+
+  // 变更的会话（比较关键字段）
+  const convChangeFields: { key: keyof IConversation; label: string }[] = [
+    { key: 'dingToken', label: 'dingToken' },
+    { key: 'model', label: 'model' },
+    { key: 'linkConversationId', label: 'linkConversationId' },
+    { key: 'conversationTitle', label: 'conversationTitle' },
+    { key: 'whiteUserList', label: 'whiteUserList' },
+    { key: 'atSender', label: 'atSender' },
+    { key: 'receiveReply', label: 'receiveReply' },
+    { key: 'preBash', label: 'preBash' },
+    { key: 'permissionMode', label: 'permissionMode' },
+    { key: 'streaming', label: 'streaming' },
+    { key: 'freedomMode', label: 'freedomMode' },
+    { key: 'qaMode', label: 'qaMode' },
+    { key: 'maxTurnTimeMins', label: 'maxTurnTimeMins' },
+  ];
+  const convChanges: string[] = [];
+  for (const id of newConvIds) {
+    if (!oldConvIds.has(id)) continue; // 新增的已单独统计
+    const oldConv = oldConvMap.get(id)!;
+    const newConv = newConvMap.get(id)!;
+    const changedFields: string[] = [];
+    for (const { key, label } of convChangeFields) {
+      if (JSON.stringify((oldConv as any)[key]) !== JSON.stringify((newConv as any)[key])) {
+        changedFields.push(label);
+      }
+    }
+    if (changedFields.length > 0) {
+      const title = newConv.conversationTitle || id;
+      convChanges.push(`${title}(${id}): ${changedFields.join(', ')}`);
+    }
+  }
+
+  if (added.length > 0) lines.push(`- 新增会话: ${added.map(id => `{${id}}`).join(', ')}`);
+  if (removed.length > 0) lines.push(`- 移除会话: ${removed.map(id => `{${id}}`).join(', ')}`);
+  if (convChanges.length > 0) lines.push(`- 变更会话: ${convChanges.map(c => `{${c}}`).join(', ')}`);
+  if (globalChanges.length > 0) lines.push(`- 全局变更: ${globalChanges.join(', ')}`);
+
+  return lines;
+}
 
 /**
  * 钉钉 Claude Code 机器人
@@ -84,8 +180,17 @@ export class DingClaude {
   /** 等待确认开启自由模式的会话 ID -> 发起时间戳（60s 超时，不持久化） */
   pendingFreedomConvs = new Map<string, number>();
 
+  /** 等待确认销毁群的会话 ID -> 定时器 ID（60s 超时，不持久化） */
+  pendingDestroyConfirmations = new Map<string, NodeJS.Timeout>();
+
   /** 定时任务引擎 */
   cronEngine!: CronEngine;
+
+  /** 延时提醒引擎 */
+  timerEngine!: TimerEngine;
+
+  /** 消息推送队列处理器 */
+  sendQueueProcessor!: SendQueueProcessor;
 
   /** 默认最大并发会话数 */
   readonly DEFAULT_SESSION_MAX_CONCURRENCY = 5;
@@ -110,6 +215,12 @@ export class DingClaude {
     }
     // 在 clientId 和 config 初始化完成后再创建 CronEngine
     this.cronEngine = new CronEngine(this);
+    // 创建 TimerEngine
+    this.timerEngine = new TimerEngine(this);
+    // 创建 SendQueueProcessor
+    this.sendQueueProcessor = new SendQueueProcessor(this);
+    // 初始化预设模型列表
+    initModelOptions(this);
   }
 
   // ==================== 委托方法 ====================
@@ -152,7 +263,7 @@ export class DingClaude {
   // session - persistence
   findHistorySession = (conversationId: string, sessionId: string) => findHistorySession(this, conversationId, sessionId);
   findLatestSession = (conversationId: string) => findLatestSession(this, conversationId);
-  updateSessionFile = (session: ISession, opts: { claudeSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string }) =>
+  updateSessionFile = (session: ISession, opts: { claudeSessionId?: string; agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string }) =>
     updateSessionFile(this, session, opts);
   appendSessionLog = appendSessionLog;
   getActiveSessionsFile = (conversationId: string) => getActiveSessionsFile(this, conversationId);
@@ -464,6 +575,63 @@ export class DingClaude {
     }
   }
 
+  // ==================== /timer 命令处理 ====================
+
+  /**
+   * 处理 /timer 延时提醒命令
+   */
+  private async handleTimerCommand(
+    cmd: import('./commands').TimerCommand,
+    ctx: { conversationId: string; sessionWebhook: string; senderStaffId: string; senderNick: string },
+  ): Promise<void> {
+    const { conversationId, sessionWebhook, senderStaffId, senderNick } = ctx;
+
+    switch (cmd.action) {
+      case 'list': {
+        const jobs = this.timerEngine.listTimers(conversationId);
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: formatTimerList(jobs),
+          msgType: 'markdown',
+        });
+        return;
+      }
+
+      case 'cancel': {
+        const ok = this.timerEngine.removeTimer(cmd.id);
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: ok
+            ? `✅ 定时提醒 **${cmd.id}** 已取消`
+            : `❌ 未找到定时提醒: ${cmd.id}`,
+          msgType: 'markdown',
+        });
+        return;
+      }
+
+      case 'add': {
+        const now = Date.now();
+        const job = this.timerEngine.addTimer({
+          id: `timer_${now}`,
+          conversationId,
+          delayMs: cmd.delayMs,
+          fireAt: now + cmd.delayMs,
+          prompt: cmd.prompt,
+          description: cmd.description,
+          createdAt: new Date(now).toLocaleString(),
+          senderStaffId,
+          senderNick,
+        });
+        await this.sendDingMessage({
+          conversationId, sessionWebhook,
+          content: formatTimerInfo(job),
+          msgType: 'markdown',
+        });
+        return;
+      }
+    }
+  }
+
   // ==================== /menu 命令处理 ====================
 
   private async handleMenuCommand(
@@ -741,6 +909,20 @@ export class DingClaude {
     const { senderNick, senderStaffId, conversationId, conversationTitle, sessionWebhook, msgtype, conversationType } = rawData;
     const textContent = rawData.text?.content?.trim() ?? '';
 
+    // ---- 缓存用户名（用于 @提及还原） ----
+    cacheUserName(senderStaffId, senderNick);
+    if (rawData.atUsers) {
+      for (const u of rawData.atUsers) {
+        const id = u.staffId || (u as any).dingtalkId;
+        const displayName = (u as any).displayName;
+        if (id && displayName) cacheUserName(id, displayName);
+      }
+    }
+    const repliedMsg = rawData.text?.repliedMsg;
+    if (repliedMsg?.senderStaffId && repliedMsg.senderNick) {
+      cacheUserName(repliedMsg.senderStaffId, repliedMsg.senderNick);
+    }
+
     this.debugLog(`收到消息: 群=${conversationTitle}(${conversationId}), 发送者=${senderNick}(${senderStaffId}), 类型=${msgtype}, 内容=${textContent.substring(0, 50)}`);
 
     // 权限校验
@@ -955,6 +1137,54 @@ export class DingClaude {
         }
         if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
+        // ---- /cfg --reload: 重新加载配置 ----
+        if (cfgOpts.reload) {
+          let newCfg: IConfig;
+          try {
+            const { config } = reloadClientConfig(this);
+            newCfg = config;
+          } catch (err: any) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: `❌ 配置重载失败: ${err.message}`,
+              msgType: 'markdown',
+            });
+            return;
+          }
+
+          const oldCfg = this.config;
+          // 生成变更摘要
+          const changes = buildConfigDiff(oldCfg, newCfg);
+
+          // 更新内存中的 config
+          this.config = newCfg;
+
+          // 重新解析手机号
+          await resolveAllPhonesInConfig(this).catch(err => {
+            console.warn('[reload] 手机号解析失败:', err);
+          });
+
+          // 重新初始化模型选项
+          initModelOptions(this);
+
+          console.log(`[${timestamp()}] 配置已重新加载`);
+
+          // 组装回复
+          const info: string[] = [ '✅ 配置已重新加载' ];
+          if (changes.length > 0) {
+            info.push('', '📋 变更摘要:');
+            for (const c of changes) info.push(c);
+          } else {
+            info.push('', 'ℹ️ 配置无变更');
+          }
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: info.join('\n'),
+            msgType: 'markdown',
+          });
+          return;
+        }
+
         // 确定目标 conversationId
         const targetConvId = cfgOpts.conversationId || conversationId;
         const isTargetOther = targetConvId !== conversationId;
@@ -968,7 +1198,7 @@ export class DingClaude {
         const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
         cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
-        cfgOpts.permissionMode !== undefined);
+        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model || cfgOpts.enableMsgToUser !== undefined || cfgOpts.ensureAt !== undefined);
 
         if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
@@ -980,6 +1210,13 @@ export class DingClaude {
           if (cfgOpts.receiveReply !== undefined) existingConv.receiveReply = cfgOpts.receiveReply;
           if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
           if (cfgOpts.permissionMode !== undefined) existingConv.permissionMode = cfgOpts.permissionMode;
+          if (cfgOpts.streaming !== undefined) existingConv.streaming = cfgOpts.streaming;
+          if (cfgOpts.ensureAt !== undefined) existingConv.ensureAt = cfgOpts.ensureAt;
+          if (cfgOpts.model) existingConv.model = cfgOpts.model;
+          // cardTemplateId 是全局配置
+          if (cfgOpts.cardTemplateId) this.config.cardTemplateId = cfgOpts.cardTemplateId;
+          // enableMsgToUser 是全局配置
+          if (cfgOpts.enableMsgToUser !== undefined) this.config.enableMsgToUser = cfgOpts.enableMsgToUser;
           if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
             existingConv.whiteUserList = cfgOpts.whiteUserList;
             for (const item of cfgOpts.whiteUserList) {
@@ -1003,6 +1240,13 @@ export class DingClaude {
           if (cfgOpts.receiveReply !== undefined) newConv.receiveReply = cfgOpts.receiveReply;
           if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
           if (cfgOpts.permissionMode !== undefined) newConv.permissionMode = cfgOpts.permissionMode;
+          if (cfgOpts.streaming !== undefined) newConv.streaming = cfgOpts.streaming;
+          if (cfgOpts.ensureAt !== undefined) newConv.ensureAt = cfgOpts.ensureAt;
+          if (cfgOpts.model) newConv.model = cfgOpts.model;
+          // cardTemplateId 是全局配置
+          if (cfgOpts.cardTemplateId) this.config.cardTemplateId = cfgOpts.cardTemplateId;
+          // enableMsgToUser 是全局配置
+          if (cfgOpts.enableMsgToUser !== undefined) this.config.enableMsgToUser = cfgOpts.enableMsgToUser;
           if (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) {
             newConv.whiteUserList = cfgOpts.whiteUserList;
             for (const item of cfgOpts.whiteUserList) {
@@ -1037,6 +1281,9 @@ export class DingClaude {
         if (convToShow?.atSender === false) info.push('- **atSender:** false (不 @ 发送人)');
         if (convToShow?.receiveReply === false) info.push('- **receiveReply:** false (不回复确认消息)');
         if (convToShow?.permissionMode) info.push(`- **permissionMode:** ${convToShow.permissionMode}`);
+        if (convToShow?.streaming) info.push('- **streaming:** true (AI Card 流式输出)');
+        if (convToShow?.ensureAt) info.push('- **ensureAt:** true (追加 text 消息确保 @ 通知生效)');
+        if (convToShow?.model) info.push(`- **model:** ${convToShow.model}`);
         if (convToShow?.whiteUserList?.length) {
           const display = convToShow.whiteUserList.map(item => {
             if (isMobile(item)) return item;
@@ -1045,6 +1292,7 @@ export class DingClaude {
           info.push(`- **whiteUserList:** ${display}`);
         }
         info.push(`- **工作目录:** ${workDir}`);
+        info.push(`- **enableMsgToUser:** ${this.config.enableMsgToUser ? 'true' : 'false'} (私聊消息开关)`);
         info.push('\n💡 可编辑 config.json 补充更多配置');
         await this.sendDingMessage({
           conversationId,
@@ -1085,6 +1333,8 @@ export class DingClaude {
           `- **claude:** ${claudeCliVersion}`,
           `- **os:** ${os.hostname()} ${os.platform()} ${os.release()}`,
           `- **node:** ${process.version}`,
+          `- **cardTemplateId:** ${this.config.cardTemplateId || '(未配置)'}`,
+          `- **model:** ${conversationConfig?.model || this.config.model || '(默认)'}`,
         ].join('\n');
         await this.sendDingMessage({
           conversationId,
@@ -1186,7 +1436,7 @@ export class DingClaude {
 
     // 已注册群的命令路由表
     const commandRoutes: ICommandRoute[] = [
-      // /destroy 命令：注销当前群机器人，删除工作目录和配置
+      // /destroy 命令：注销当前群机器人，二次确认后删除工作目录和配置
       route('/destroy', () => parseDestroyCommand(prompt), async destroyOpts => {
         if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
@@ -1205,7 +1455,7 @@ export class DingClaude {
         if (convIndex < 0) {
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: '⚠️ 该群未在配置中注册，无需注销',
+            content: '️ 该群未在配置中注册，无需注销',
             msgType: 'markdown',
           });
           return;
@@ -1214,48 +1464,70 @@ export class DingClaude {
         const conv = this.config.conversations[convIndex];
         const convTitle = conv.conversationTitle || targetConvId;
 
-        // 从配置中移除
-        this.config.conversations.splice(convIndex, 1);
+        // ---- 二次确认流程 ----
+        const existingTimer = this.pendingDestroyConfirmations.get(targetConvId);
+        if (existingTimer) {
+          // 60 秒内第二次执行 /destroy → 确认并执行清理
+          clearTimeout(existingTimer);
+          this.pendingDestroyConfirmations.delete(targetConvId);
 
-        // 删除工作目录
-        const workDir = this.getConversationDir(targetConvId);
-        let dirDeleted = false;
-        try {
-          if (fs.existsSync(workDir)) {
-            fs.rmSync(workDir, { recursive: true, force: true });
-            dirDeleted = true;
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: `⏳ 正在清理 ${convTitle}(${targetConvId}) 的所有数据...`,
+            msgType: 'markdown',
+          });
+
+          const result = await destroyConversation(this, targetConvId);
+          this.recorderModeConversations.delete(targetConvId);
+          console.log(`[${timestamp()}] 已注销群: ${convTitle}(${targetConvId})`);
+
+          const icon = result.success ? '✅' : '️';
+          const parts: string[] = [
+            `${icon} 已注销并清理所有数据`,
+            `- **群名称:** ${convTitle}`,
+            `- **群ID:** ${targetConvId}`,
+          ];
+          for (const s of result.steps) {
+            const sIcon = s.ok ? '✓' : '';
+            parts.push(`${sIcon} ${s.label}${s.detail ? `: ${s.detail}` : ''}`);
           }
-        } catch (err) {
-          console.error(`[${timestamp()}] 删除工作目录失败:`, err);
+          parts.push('\n⚠️ 该群下次发送消息时将收到"未注册"提示');
+          parts.push('💡 如需重新注册，请使用 `/cfg` 命令');
+
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: parts.join('\n'),
+            msgType: 'markdown',
+          });
+          return;
         }
 
-        // 清除内存状态
-        const activeSession = this.activeSessions.get(targetConvId);
-        if (activeSession?.currentProcess) {
-          try { activeSession.currentProcess.kill('SIGTERM'); } catch { /* ignore */ }
-        }
-        this.activeSessions.delete(targetConvId);
-        this.recorderModeConversations.delete(targetConvId);
+        // 第一次执行 /destroy → 记录确认请求，设置 60 秒超时
+        const timer = setTimeout(() => {
+          this.pendingDestroyConfirmations.delete(targetConvId);
+          console.log(`[${timestamp()}] 销毁确认超时: ${targetConvId}`);
+        }, 60_000);
+        this.pendingDestroyConfirmations.set(targetConvId, timer);
 
-        // 持久化配置
-        saveClientConfig(this);
-
-        console.log(`[${timestamp()}] 已注销群: ${convTitle}(${targetConvId})`);
-
-        const parts: string[] = [
-          '✅ 群机器人已注销',
-          `- **群名称:** ${convTitle}`,
-          `- **群ID:** ${targetConvId}`,
+        const dataScope: string[] = [
+          '- 会话工作目录及所有会话记录',
+          '- 定时任务配置 (cron.json)',
+          '- Todo 数据 (todo.json)',
+          '- 快捷菜单数据 (menu.json)',
+          '- 延时任务数据 (timers.json)',
+          '- 群配置 (config.json 中该群的条目)',
         ];
-        if (dirDeleted) parts.push('- **工作目录:** 已删除');
-        else parts.push('- **工作目录:** (不存在或无法删除)');
-        if (activeSession) parts.push('- **活跃会话:** 已清除');
-        parts.push('\n⚠️ 该群下次发送消息时将收到"未注册"提示');
-        parts.push('💡 如需重新注册，请使用 `/cfg` 命令');
 
         await this.sendDingMessage({
           conversationId, sessionWebhook,
-          content: parts.join('\n'),
+          content: [
+            '⚠️ 即将注销群机器人并删除工作目录！此操作不可恢复。',
+            '',
+            '数据清理范围:',
+            ...dataScope,
+            '',
+            `请在 **60 秒内**再次发送 \`/destroy\` 确认操作。`,
+          ].join('\n'),
           msgType: 'markdown',
         });
       }),
@@ -1796,6 +2068,92 @@ export class DingClaude {
         await this.handleCronCommand(cronCmd, { conversationId, sessionWebhook, senderStaffId, senderNick, conversationConfig });
       }),
 
+      // /timer 命令：延时提醒
+      route('/timer', () => parseTimerCommand(prompt), async timerCmd => {
+        await this.handleTimerCommand(timerCmd, { conversationId, sessionWebhook, senderStaffId, senderNick });
+      }),
+
+      // /model 命令：查看或切换当前会话使用的模型
+      route('/model', () => parseModelCommand(prompt), async modelCmd => {
+        if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
+
+        const models = loadModelOptions(this);
+        const currentModel = resolveCurrentModel(this, conversationId);
+        const globalModel = this.config.model || '(未设置)';
+        const convModel = conversationConfig?.model;
+
+        if (modelCmd.action === 'list') {
+          const lines = [
+            '###  模型设置',
+            '',
+            `- **当前生效模型:** ${currentModel || '(默认)'}`,
+            `- **会话级 model:** ${convModel || '(未设置)'}`,
+            `- **全局 model:** ${globalModel}`,
+            '',
+            '**可用模型列表:**',
+          ];
+          for (const m of models) {
+            const marker = m === currentModel ? ' ✅' : '';
+            lines.push(`- \`${m}\`${marker}`);
+          }
+          lines.push('');
+          lines.push('💡 使用 `/model <model-name>` 切换当前会话模型');
+          lines.push('💡 使用 `/model add <model-name>` 添加自定义模型');
+          lines.push('💡 使用 `/model rm <model-name>` 从列表移除模型');
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: lines.join('\n'),
+            msgType: 'markdown',
+          });
+        } else if (modelCmd.action === 'set') {
+          setConversationModel(this, conversationId, modelCmd.model);
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: `✅ 已设置当前会话模型为: \`${modelCmd.model}\`\n\n💡 仅影响后续新建的 Claude 会话`,
+            msgType: 'markdown',
+          });
+        } else if (modelCmd.action === 'add') {
+          const updated = addModelOptions(this, [ modelCmd.model ]);
+          const lines = [
+            `✅ 已添加模型: \`${modelCmd.model}\``,
+            '',
+            '**当前可用模型:**',
+          ];
+          for (const m of updated) {
+            lines.push(`- \`${m}\``);
+          }
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: lines.join('\n'),
+            msgType: 'markdown',
+          });
+        } else if (modelCmd.action === 'remove') {
+          const presetModels = [ 'claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-haiku-4-20251001' ];
+          if (presetModels.includes(modelCmd.model)) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: `❌ 无法移除预设模型: \`${modelCmd.model}\``,
+              msgType: 'markdown',
+            });
+            return;
+          }
+          const updated = removeModelOptions(this, [ modelCmd.model ]);
+          const lines = [
+            `✅ 已移除模型: \`${modelCmd.model}\``,
+            '',
+            '**当前可用模型:**',
+          ];
+          for (const m of updated) {
+            lines.push(`- \`${m}\``);
+          }
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: lines.join('\n'),
+            msgType: 'markdown',
+          });
+        }
+      }),
+
       // /todo 命令：待办管理
       route('/todo', () => parseTodoCommand(prompt, rawData.atUsers), async todoCmd => {
         await this.handleTodoCommand(todoCmd, { conversationId, sessionWebhook, senderStaffId, senderNick });
@@ -1856,7 +2214,7 @@ export class DingClaude {
         const activeFound = this.findActiveSession(conversationId);
         if (activeFound) {
           console.log(`收到新会话命令，结束旧会话: 群=${activeFound.session.session.conversationId}, 会话ID=${this.getSessionId(activeFound.session.session)}`);
-          this.interruptClaudeProcess(activeFound.session, '新会话命令中断正在执行的 Claude 进程');
+          activeFound.session.agent?.interrupt(activeFound.session, '新会话命令中断正在执行的 Agent 进程');
           this.activeSessions.delete(activeFound.key);
           this.saveActiveSession(activeFound.key);
         }
@@ -2164,14 +2522,14 @@ export class DingClaude {
         // 提取 !/！ 后的内容（去掉命令前缀）
         const contentAfter = parsed === '' ? '' : parsed.replace(/^[/！!]\s*/, '');
 
-        // 中断后原调用栈中的 executeClaudeQuery 会结束，finally 释放 isProcessing 并自动 drain 消息队列
-        interruptClaudeProcess(activeSession, `/!: ${senderNick} 中断当前任务`);
-        const queued = activeSession.messageQueue.length;
+        // 中断后原调用栈中的 agent.executeQuery 会结束，finally 释放 isProcessing 并自动 drain 消息队列
+        activeSession.agent?.interrupt(activeSession, `/!: ${senderNick} 中断当前任务`);
+        const queued = activeSession.messageQueue?.length ?? 0;
         await this.sendDingMessage({
           conversationId, sessionWebhook,
           content: queued > 0
-            ? `⏹ 已中断当前任务，开始处理队列中的 ${queued} 条消息`
-            : '⏹ 已中断当前任务',
+            ? ` 已中断当前任务，开始处理队列中的 ${queued} 条消息`
+            : ' 已中断当前任务',
         });
 
         // 如果 ! 后有内容，作为新消息发送
@@ -2183,53 +2541,38 @@ export class DingClaude {
         }
       }),
 
-      // /goon 命令：强制重启 Claude 进程
+      // /goon 命令：强制重启 Agent 进程
       route('/goon', () => parseGoonCommand(prompt), async () => {
         const activeSession = this.activeSessions.get(conversationId);
         if (!activeSession) {
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: '⚠️ 当前没有活跃会话',
+            content: '️ 当前没有活跃会话',
           });
           return;
         }
+        ensureAgent(this, activeSession);
+        const agent = activeSession.agent;
         if (activeSession.currentProcess) {
-          console.log(`[${timestamp()}] /goon: 终止当前 Claude 进程`);
-          activeSession.interrupted = true;
-          // Windows 不支持 SIGINT，使用默认 kill
-          if (isWindows()) {
-            activeSession.currentProcess.kill();
-          } else {
-            activeSession.currentProcess.kill('SIGINT');
-          }
+          console.log(`[${timestamp()}] /goon: 终止当前 Agent 进程`);
+          agent!.interrupt(activeSession, '/goon: 强制重启 Agent 进程');
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: '🔄 正在重启 Claude 进程...',
+            content: `🔄 正在重启 ${agent!.getEntryCommand()} 进程...`,
           });
-          // 直接在当前处理 goonPending，避免依赖 processMessageQueue（队列为空时会跳过 goonPending 检查）
-          activeSession.goonPending = false;
-          activeSession.isProcessing = true;
-          try {
-            await executeClaudeQuery(this, activeSession.session, '继续', {
-              senderNick: activeSession.session.startNickName,
-              senderStaffId: activeSession.lastSenderStaffId,
-              permissionMode: activeSession.conversationConfig.permissionMode,
-            });
-          } finally {
-            activeSession.isProcessing = false;
-          }
         } else {
           console.log(`[${timestamp()}] /goon: 无运行中进程，直接发送"继续"`);
-          activeSession.isProcessing = true;
-          try {
-            await executeClaudeQuery(this, activeSession.session, '继续', {
-              senderNick,
-              senderStaffId,
-              permissionMode: activeSession.conversationConfig.permissionMode,
-            });
-          } finally {
-            activeSession.isProcessing = false;
-          }
+        }
+        activeSession.goonPending = false;
+        activeSession.isProcessing = true;
+        try {
+          await agent!.executeQuery(this, activeSession.session, {
+            message: '继续',
+            senderNick: activeSession.session.startNickName,
+            senderStaffId: activeSession.lastSenderStaffId,
+          });
+        } finally {
+          activeSession.isProcessing = false;
         }
       }),
 
@@ -2258,10 +2601,12 @@ export class DingClaude {
               content: '📥 已收到，正在处理...',
             }).catch(() => {});
           }
-          await executeClaudeQuery(this, activeSession.session, ccMessage, {
+          ensureAgent(this, activeSession);
+          const agent = activeSession.agent!;
+          await agent.executeQuery(this, activeSession.session, {
+            message: ccMessage,
             senderNick,
             senderStaffId,
-            permissionMode: activeSession.conversationConfig.permissionMode,
           });
         } finally {
           activeSession.isProcessing = false;
@@ -2298,6 +2643,7 @@ export class DingClaude {
     // 将 atUsers 中的 @提及 userId 替换为 昵称(userId)，写入日志
     let finalPrompt = prompt;
     const mentionedIds: string[] = [];
+    const restoredMentions: string[] = [];
 
     // 从 atUsers 提取（排除机器人自身、发送者、空值）
     if (rawData.atUsers && rawData.atUsers.length > 0) {
@@ -2310,12 +2656,36 @@ export class DingClaude {
     }
 
     if (mentionedIds.length > 0) {
-      // 逐个替换消息中的零宽空格占位符 (U+200B)
+      // 优先使用缓存还原 @提及，缓存没有再调用 API
       for (const id of mentionedIds) {
-        const name = await resolveUserIdName(this, id);
-        const replacement = name ? `${name}(${id})` : id;
-        finalPrompt = finalPrompt.replace(/\u200b/g, replacement);
+        let name: string | null = null;
+        // 1. 优先从缓存/回调原文取
+        const cached = getCachedUserName(id);
+        if (cached) {
+          name = cached;
+          restoredMentions.push(`${name}(${id})`);
+        }
+        // 2. 缓存没有，调 API 查询并缓存
+        if (!name) {
+          const resolved = await resolveUserIdName(this, id);
+          if (resolved) {
+            name = resolved;
+            cacheUserName(id, resolved);
+            restoredMentions.push(`${name}(${id})`);
+          }
+        }
+        // 替换零宽空格占位符
+        if (name) {
+          finalPrompt = finalPrompt.replace(/\u200b/g, `${name}(${id})`);
+        }
       }
+      // 也使用 restoreMentions 做一轮兜底替换（处理非零宽空格格式的占位）
+      finalPrompt = restoreMentions(finalPrompt, rawData.atUsers || []);
+    }
+
+    // 被@的用户信息注入到 prompt 中
+    if (restoredMentions.length > 0) {
+      finalPrompt = `[被@的用户: ${restoredMentions.join(', ')}]\n${finalPrompt}`;
     }
 
     // 防止 / 开头的非 /cc 命令被 Claude CLI 误识别为未知命令
@@ -2455,6 +2825,12 @@ export class DingClaude {
     // 启动 Cron 引擎
     this.cronEngine.start();
 
+    // 启动 Timer 引擎
+    this.timerEngine.start();
+
+    // 启动消息推送队列处理器
+    this.sendQueueProcessor.start();
+
     // 启动 /menu 待选状态过期清理定时器
     startSelectionCleanupTimer();
 
@@ -2482,6 +2858,14 @@ export class DingClaude {
       console.error('Fatal error', error);
       process.exit(1);
     });
+
+    // 进程退出时清理 Timer 引擎和消息推送队列
+    const onShutdown = () => {
+      this.timerEngine.destroy();
+      this.sendQueueProcessor.destroy();
+    };
+    process.on('SIGTERM', onShutdown);
+    process.on('SIGINT', onShutdown);
 
     await Promise.all([ receiverPromise, ...handlerPromises ]);
   }
