@@ -20,6 +20,7 @@ import {
 } from './commands';
 import { sendDingMessage, sendClaudeResponseToDing, cacheUserName, getCachedUserName, restoreMentions } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts, refreshSessionContext } from './claude-process';
+import { createAgent } from './agent-registry';
 import { recordMessage, getRecorderDir } from './recorder';
 import {
   getMergedMenu, addMenuItem, deleteMenuItem, formatMenuDisplay, formatMenuList,
@@ -262,7 +263,7 @@ export class DingClaude {
   // session - persistence
   findHistorySession = (conversationId: string, sessionId: string) => findHistorySession(this, conversationId, sessionId);
   findLatestSession = (conversationId: string) => findLatestSession(this, conversationId);
-  updateSessionFile = (session: ISession, opts: { claudeSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string }) =>
+  updateSessionFile = (session: ISession, opts: { claudeSessionId?: string; agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string }) =>
     updateSessionFile(this, session, opts);
   appendSessionLog = appendSessionLog;
   getActiveSessionsFile = (conversationId: string) => getActiveSessionsFile(this, conversationId);
@@ -2213,7 +2214,8 @@ export class DingClaude {
         const activeFound = this.findActiveSession(conversationId);
         if (activeFound) {
           console.log(`收到新会话命令，结束旧会话: 群=${activeFound.session.session.conversationId}, 会话ID=${this.getSessionId(activeFound.session.session)}`);
-          this.interruptClaudeProcess(activeFound.session, '新会话命令中断正在执行的 Claude 进程');
+          const agent = createAgent(activeFound.session.conversationConfig?.agent || 'claude');
+          agent.interrupt(activeFound.session, '新会话命令中断正在执行的 Agent 进程');
           this.activeSessions.delete(activeFound.key);
           this.saveActiveSession(activeFound.key);
         }
@@ -2521,14 +2523,15 @@ export class DingClaude {
         // 提取 !/！ 后的内容（去掉命令前缀）
         const contentAfter = parsed === '' ? '' : parsed.replace(/^[/！!]\s*/, '');
 
-        // 中断后原调用栈中的 executeClaudeQuery 会结束，finally 释放 isProcessing 并自动 drain 消息队列
-        interruptClaudeProcess(activeSession, `/!: ${senderNick} 中断当前任务`);
+        // 中断后原调用栈中的 agent.executeQuery 会结束，finally 释放 isProcessing 并自动 drain 消息队列
+        const agent = createAgent(activeSession.conversationConfig?.agent || 'claude');
+        agent.interrupt(activeSession, `/!: ${senderNick} 中断当前任务`);
         const queued = activeSession.messageQueue?.length ?? 0;
         await this.sendDingMessage({
           conversationId, sessionWebhook,
           content: queued > 0
-            ? `⏹ 已中断当前任务，开始处理队列中的 ${queued} 条消息`
-            : '⏹ 已中断当前任务',
+            ? ` 已中断当前任务，开始处理队列中的 ${queued} 条消息`
+            : ' 已中断当前任务',
         });
 
         // 如果 ! 后有内容，作为新消息发送
@@ -2540,37 +2543,33 @@ export class DingClaude {
         }
       }),
 
-      // /goon 命令：强制重启 Claude 进程
+      // /goon 命令：强制重启 Agent 进程
       route('/goon', () => parseGoonCommand(prompt), async () => {
         const activeSession = this.activeSessions.get(conversationId);
         if (!activeSession) {
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: '⚠️ 当前没有活跃会话',
+            content: '️ 当前没有活跃会话',
           });
           return;
         }
+        const agent = createAgent(activeSession.conversationConfig?.agent || 'claude');
         if (activeSession.currentProcess) {
-          console.log(`[${timestamp()}] /goon: 终止当前 Claude 进程`);
-          activeSession.interrupted = true;
-          // Windows 不支持 SIGINT，使用默认 kill
-          if (isWindows()) {
-            activeSession.currentProcess.kill();
-          } else {
-            activeSession.currentProcess.kill('SIGINT');
-          }
+          console.log(`[${timestamp()}] /goon: 终止当前 Agent 进程`);
+          agent.interrupt(activeSession, '/goon: 强制重启 Agent 进程');
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: '🔄 正在重启 Claude 进程...',
+            content: `🔄 正在重启 ${agent.getEntryCommand()} 进程...`,
           });
-          // 直接在当前处理 goonPending，避免依赖 processMessageQueue（队列为空时会跳过 goonPending 检查）
           activeSession.goonPending = false;
           activeSession.isProcessing = true;
           try {
-            await executeClaudeQuery(this, activeSession.session, '继续', {
+            await agent.executeQuery(this, activeSession.session, {
+              message: '继续',
               senderNick: activeSession.session.startNickName,
               senderStaffId: activeSession.lastSenderStaffId,
               permissionMode: activeSession.conversationConfig.permissionMode,
+              model: activeSession.conversationConfig.model,
             });
           } finally {
             activeSession.isProcessing = false;
@@ -2579,10 +2578,12 @@ export class DingClaude {
           console.log(`[${timestamp()}] /goon: 无运行中进程，直接发送"继续"`);
           activeSession.isProcessing = true;
           try {
-            await executeClaudeQuery(this, activeSession.session, '继续', {
+            await agent.executeQuery(this, activeSession.session, {
+              message: '继续',
               senderNick,
               senderStaffId,
               permissionMode: activeSession.conversationConfig.permissionMode,
+              model: activeSession.conversationConfig.model,
             });
           } finally {
             activeSession.isProcessing = false;
@@ -2615,10 +2616,13 @@ export class DingClaude {
               content: '📥 已收到，正在处理...',
             }).catch(() => {});
           }
-          await executeClaudeQuery(this, activeSession.session, ccMessage, {
+          const agent = createAgent(activeSession.conversationConfig?.agent || 'claude');
+          await agent.executeQuery(this, activeSession.session, {
+            message: ccMessage,
             senderNick,
             senderStaffId,
             permissionMode: activeSession.conversationConfig.permissionMode,
+            model: activeSession.conversationConfig.model,
           });
         } finally {
           activeSession.isProcessing = false;

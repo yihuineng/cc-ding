@@ -8,7 +8,7 @@ import type { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IActiveSessionPersist, IConfig, IMessageQueueItem, ISession } from './types';
 import { parseEndCommand } from './commands';
 import { sendDingMessage, queryUserIdByMobile, queryUserIdByJobNumber, queryDingUser } from './messaging';
-import { interruptClaudeProcess, executeClaudeQuery } from './claude-process';
+import { createAgent } from './agent-registry';
 import { isWindows } from './platform';
 
 /**
@@ -507,7 +507,7 @@ export function findLatestSession(self: DingClaude, conversationId: string): ISe
 export function updateSessionFile(
   self: DingClaude,
   session: ISession,
-  opts: { claudeSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string },
+  opts: { claudeSessionId?: string; agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string },
 ): void {
   if (opts.claudeSessionId && !session.claudeSessionId) {
     const oldDir = getSessionDir(self, session);
@@ -518,6 +518,9 @@ export function updateSessionFile(
       console.log(`[${timestamp()}] 会话目录重命名: ${path.basename(oldDir)} -> ${path.basename(newDir)}`);
     }
   }
+  if (opts.agentSessionId && !session.agentSessionId) {
+    session.agentSessionId = opts.agentSessionId;
+  }
 
   const sessionFile = `${getSessionDir(self, session)}/session.json`;
   try {
@@ -525,7 +528,7 @@ export function updateSessionFile(
     if (opts.currentWebhook !== undefined) session.currentWebhook = opts.currentWebhook || undefined;
     if (opts.currentConversationId !== undefined) session.currentConversationId = opts.currentConversationId || undefined;
     fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2), 'utf-8');
-    const changedField = opts.claudeSessionId ? 'claudeSessionId' : opts.currentWebhook !== undefined ? 'currentWebhook' : 'sessionWebhook';
+    const changedField = opts.claudeSessionId ? 'claudeSessionId' : opts.agentSessionId ? 'agentSessionId' : opts.currentWebhook !== undefined ? 'currentWebhook' : 'sessionWebhook';
     console.log(`[${timestamp()}] 会话文件已保存: ${changedField}`);
     saveActiveSession(self, session.conversationId);
   } catch (err) {
@@ -617,7 +620,8 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
   const sessionId = getSessionId(session);
   console.log(`结束会话: 群=${conversationId}, 会话ID=${sessionId}`);
 
-  if (interruptClaudeProcess(activeSession, '结束会话时中断正在执行的 Claude 进程')) {
+  const agent = createAgent(activeSession.conversationConfig?.agent || 'claude');
+  if (agent.interrupt(activeSession, '结束会话时中断正在执行的 Agent 进程')) {
     fs.appendFileSync(
       `${sessionDir}/session.log`,
       `[${timestamp()}] [SYSTEM]: 结束会话时中断 Claude 进程\n`,
@@ -677,7 +681,8 @@ export async function switchToSession(
   const currentActive = findActiveSession(self, conversationId);
   if (currentActive) {
     console.log(`切换会话，先结束当前会话: ${getSessionId(currentActive.session.session)}`);
-    interruptClaudeProcess(currentActive.session, '切换会话时中断正在执行的 Claude 进程');
+    const agent = createAgent(currentActive.session.conversationConfig?.agent || 'claude');
+    agent.interrupt(currentActive.session, '切换会话时中断正在执行的 Agent 进程');
     self.activeSessions.delete(currentActive.key);
     saveActiveSession(self, currentActive.key);
     fs.appendFileSync(
@@ -761,17 +766,19 @@ export async function startNewSession(self: DingClaude, opts: {
   }
 
   try {
-    await executeClaudeQuery(self, session, message, {
+    const agent = createAgent(conversationConfig.agent || 'claude');
+    await agent.executeQuery(self, session, {
+      message,
       skill: conversationConfig.taskCfg?.skill,
       agent: conversationConfig.agent,
       senderNick,
       senderStaffId,
       permissionMode: conversationConfig.permissionMode,
       newSessionId,
-      conversationConfig,
+      model: conversationConfig.model,
     });
   } catch (err) {
-    console.error('执行 Claude 查询失败:', err);
+    console.error('执行 Agent 查询失败:', err);
     await sendDingMessage(self, {
       conversationId, sessionWebhook, atUserId: senderStaffId,
       content: `❌ 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
@@ -825,16 +832,18 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   }
 
   try {
-    await executeClaudeQuery(self, activeSession.session, message, {
+    const agent = createAgent(activeSession.conversationConfig.agent || 'claude');
+    await agent.executeQuery(self, activeSession.session, {
+      message,
       skill: activeSession.conversationConfig.taskCfg?.skill,
       agent: activeSession.conversationConfig.agent,
       senderNick,
       senderStaffId,
       permissionMode: activeSession.conversationConfig.permissionMode,
-      conversationConfig: activeSession.conversationConfig,
+      model: activeSession.conversationConfig.model,
     });
   } catch (err) {
-    console.error('执行队列 Claude 查询失败:', err);
+    console.error('执行队列 Agent 查询失败:', err);
     await sendDingMessage(self, {
       conversationId: entryConvId, sessionWebhook, atUserId: senderStaffId,
       content: ` 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
@@ -849,11 +858,13 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
     activeSession.interrupted = false;
     activeSession.isProcessing = true;
     try {
-      await executeClaudeQuery(self, activeSession.session, '继续', {
+      const agent = createAgent(activeSession.conversationConfig.agent || 'claude');
+      await agent.executeQuery(self, activeSession.session, {
+        message: '继续',
         senderNick: activeSession.session.startNickName,
         senderStaffId: activeSession.lastSenderStaffId,
         permissionMode: activeSession.conversationConfig.permissionMode,
-        conversationConfig: activeSession.conversationConfig,
+        model: activeSession.conversationConfig.model,
       });
     } catch (err) {
       console.error('goonPending 恢复执行失败:', err);
@@ -940,13 +951,15 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     }
 
     try {
-      await executeClaudeQuery(self, activeSession.session, message, {
+      const agent = createAgent(conversationConfig.agent || 'claude');
+      await agent.executeQuery(self, activeSession.session, {
+        message,
         skill: conversationConfig.taskCfg?.skill,
         agent: conversationConfig.agent,
         senderNick,
         senderStaffId,
         permissionMode: conversationConfig.permissionMode,
-        conversationConfig,
+        model: conversationConfig.model,
       });
     } catch (err) {
       // 恢复会话失败（可能会话已失效），清除 claudeSessionId 重新发起一次
@@ -955,17 +968,19 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         activeSession.session.claudeSessionId = undefined;
         self.updateSessionFile(activeSession.session, {});
         try {
-          await executeClaudeQuery(self, activeSession.session, message, {
+          const agent = createAgent(conversationConfig.agent || 'claude');
+          await agent.executeQuery(self, activeSession.session, {
+            message,
             skill: conversationConfig.taskCfg?.skill,
             agent: conversationConfig.agent,
             senderNick,
             senderStaffId,
             permissionMode: conversationConfig.permissionMode,
-            conversationConfig,
+            model: conversationConfig.model,
           });
           return;
         } catch (retryErr) {
-          console.error('重试执行 Claude 查询失败:', retryErr);
+          console.error('重试执行 Agent 查询失败:', retryErr);
           await sendDingMessage(self, {
             conversationId, sessionWebhook, atUserId: senderStaffId,
             content: `❌ 处理消息时发生错误: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`,
@@ -975,7 +990,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
           return;
         }
       }
-      console.error('执行 Claude 查询失败:', err);
+      console.error('执行 Agent 查询失败:', err);
       await sendDingMessage(self, {
         conversationId, sessionWebhook, atUserId: senderStaffId,
         content: `❌ 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,

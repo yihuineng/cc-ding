@@ -111,6 +111,7 @@ export interface ISession {
   startStaffId: string;
   startNickName: string;
   claudeSessionId?: string;
+  agentSessionId?: string; // Agent 会话 ID（Claude 用 claudeSessionId，Codex 用 thread_id）
 }
 
 // 任务信息
