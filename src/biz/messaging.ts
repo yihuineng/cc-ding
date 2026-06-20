@@ -9,6 +9,46 @@ import { resolveSecret } from './secrets';
 const DING_API_BASE = 'https://api.dingtalk.com';
 const DING_OAPI_BASE = 'https://oapi.dingtalk.com';
 
+// ==================== 用户名缓存（@提及还原） ====================
+
+/** 用户名缓存：staffId → nickName（进程内，重启后清空） */
+const userNameCache = new Map<string, string>();
+
+/** 缓存用户名（每次收到消息/消息回调时调用） */
+export function cacheUserName(staffId: string, nickName: string): void {
+  if (staffId && nickName) {
+    userNameCache.set(staffId, nickName);
+  }
+}
+
+/** 获取缓存的用户名 */
+export function getCachedUserName(staffId: string): string | undefined {
+  return userNameCache.get(staffId);
+}
+
+/**
+ * 还原消息中的 @提及：将钉钉替换的 @机器人 文本恢复为 @实际用户
+ * 优先级：回调原文(atUsers.displayName) > userNameCache 查找 > 保持原样
+ */
+export function restoreMentions(
+  content: string,
+  atUsers: Array<{ staffId?: string; dingtalkId?: string; displayName?: string }>,
+): string {
+  let result = content;
+  for (const user of atUsers) {
+    const id = user.staffId || user.dingtalkId;
+    if (!id) continue;
+
+    // 优先用回调自带的 displayName，其次查缓存
+    const cachedName = user.displayName || getCachedUserName(id);
+    if (!cachedName) continue;
+
+    // 替换占位符（钉钉通常用零宽空格或 @机器人名 作为占位）
+    result = result.replace(/\u200b/g, `${cachedName}(${id})`);
+  }
+  return result;
+}
+
 /**
  * 通过钉钉服务端 API 获取引用消息的文本内容
  * GET /v1.0/im/api/messages/{messageId}

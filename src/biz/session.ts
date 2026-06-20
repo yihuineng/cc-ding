@@ -82,6 +82,35 @@ export function getClientConfig(self: DingClaude): IConfig {
   return cfg;
 }
 
+/**
+ * 重新从磁盘读取并验证 config.json，用于 /cfg --reload
+ * 失败时抛出 Error，不更新内存中的 config
+ * @returns 验证通过的新 IConfig 对象
+ */
+export function reloadClientConfig(self: DingClaude): { config: IConfig; configPath: string } {
+  const appCfgFile = path.join(getClientDir(self), 'config.json');
+  if (!fs.existsSync(appCfgFile)) {
+    throw new Error(`配置文件不存在: ${appCfgFile}`);
+  }
+  let cfg: IConfig;
+  try {
+    cfg = fileUtil.getJSON(appCfgFile) as IConfig;
+  } catch (err) {
+    throw new Error(`配置文件 JSON 解析失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  // 验证必填字段
+  const missing: string[] = [];
+  if (!cfg.clientSecret) missing.push('clientSecret');
+  if (!cfg.whiteUserList) missing.push('whiteUserList');
+  if (!cfg.owner) missing.push('owner');
+  if (!cfg.defaultDingToken) missing.push('defaultDingToken');
+  if (!Array.isArray(cfg.conversations)) missing.push('conversations');
+  if (missing.length > 0) {
+    throw new Error(`config.json 缺少必要字段: ${missing.join(', ')}`);
+  }
+  return { config: cfg, configPath: appCfgFile };
+}
+
 /** 将配置值解析为 userId：手机号走 resolvedPhones，userId 直接返回 */
 export function resolveToUserId(self: DingClaude, value: string): string {
   return isMobile(value) ? (self.resolvedPhones[value] || value) : value;
@@ -1073,4 +1102,128 @@ export function cleanCache(self: DingClaude, conversationId: string | null, keep
   }
 
   return result;
+}
+
+// ==================== 群销毁 ====================
+
+export interface IDestroyResult {
+  success: boolean;
+  steps: Array<{ label: string; ok: boolean; detail?: string }>;
+}
+
+/**
+ * 完整清理指定会话的所有数据
+ */
+export async function destroyConversation(self: DingClaude, conversationId: string): Promise<IDestroyResult> {
+  const steps: Array<{ label: string; ok: boolean; detail?: string }> = [];
+  const convCfg = self.getConversationConfig(conversationId);
+  const hasLinkConv = !!convCfg?.linkConversationId;
+
+  // 1. 停止该会话的活跃 Claude 进程
+  const activeSession = self.activeSessions.get(conversationId);
+  if (activeSession?.currentProcess) {
+    try { activeSession.currentProcess.kill('SIGTERM'); } catch { /* ignore */ }
+  }
+  self.activeSessions.delete(conversationId);
+  steps.push({ label: '停止活跃会话', ok: true, detail: activeSession ? '已清除' : '无活跃会话' });
+
+  // 2. 清理定时任务 (cronEngine)
+  try {
+    const cronJobs = self.cronEngine?.listJobs(conversationId) || [];
+    let removed = 0;
+    for (const job of cronJobs) {
+      if (self.cronEngine?.removeJob(job.id)) removed++;
+    }
+    steps.push({ label: '清理定时任务', ok: true, detail: `移除 ${removed} 个` });
+  } catch (err) {
+    steps.push({ label: '清理定时任务', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 3. 清理 Todo 数据
+  try {
+    const todoFile = path.join(getClientDir(self), 'todo.json');
+    if (fs.existsSync(todoFile)) {
+      const data = fileUtil.getJSON(todoFile) as { conversations?: Record<string, unknown[]> };
+      if (data?.conversations?.[conversationId]) {
+        delete data.conversations[conversationId];
+        fs.writeFileSync(todoFile, JSON.stringify(data, null, 2), 'utf-8');
+      }
+    }
+    steps.push({ label: '清理 Todo 数据', ok: true });
+  } catch (err) {
+    steps.push({ label: '清理 Todo 数据', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 4. 清理快捷菜单数据
+  try {
+    const menuFile = path.join(getClientDir(self), 'menu.json');
+    if (fs.existsSync(menuFile)) {
+      const data = fileUtil.getJSON(menuFile) as { user?: Record<string, unknown> };
+      if (data?.user) {
+        const keysToDelete = Object.keys(data.user).filter(k => k.startsWith(`${conversationId}:`));
+        for (const k of keysToDelete) delete data.user[k];
+        fs.writeFileSync(menuFile, JSON.stringify(data, null, 2), 'utf-8');
+      }
+    }
+    steps.push({ label: '清理快捷菜单', ok: true });
+  } catch (err) {
+    steps.push({ label: '清理快捷菜单', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 5. 清理延时任务 (timerEngine)
+  try {
+    const timers = self.timerEngine?.listTimers(conversationId) || [];
+    let removed = 0;
+    for (const t of timers) {
+      if (self.timerEngine?.removeTimer(t.id)) removed++;
+    }
+    steps.push({ label: '清理延时任务', ok: true, detail: `移除 ${removed} 个` });
+  } catch (err) {
+    steps.push({ label: '清理延时任务', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 6. 清理会话工作目录（关联群不删除关联目录）
+  try {
+    const convDir = getConversationDir(self, conversationId);
+    if (fs.existsSync(convDir)) {
+      fs.rmSync(convDir, { recursive: true, force: true });
+      steps.push({ label: '删除工作目录', ok: true });
+    } else {
+      steps.push({ label: '删除工作目录', ok: true, detail: '目录不存在' });
+    }
+    // 如果有 linkConversationId，不删除关联目录
+    if (hasLinkConv) {
+      steps.push({ label: '关联目录', ok: true, detail: `保留 (linkConversationId=${convCfg!.linkConversationId})` });
+    }
+  } catch (err) {
+    steps.push({ label: '删除工作目录', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 7. 从 config.conversations 中移除该会话
+  const convIndex = self.config.conversations.findIndex(c => c.conversationId === conversationId);
+  if (convIndex >= 0) {
+    self.config.conversations.splice(convIndex, 1);
+    steps.push({ label: '移除配置', ok: true });
+  } else {
+    steps.push({ label: '移除配置', ok: true, detail: '未在配置中找到' });
+  }
+
+  // 8. 移除活跃会话持久化
+  try {
+    saveActiveSession(self, conversationId);
+    steps.push({ label: '清理持久化文件', ok: true });
+  } catch (err) {
+    steps.push({ label: '清理持久化文件', ok: false, detail: err instanceof Error ? err.message : String(err) });
+  }
+
+  // 持久化配置
+  try {
+    const { saveClientConfig } = require('./api-key-manager');
+    saveClientConfig(self);
+  } catch (err) {
+    console.error(`[${timestamp()}] 销毁后保存配置失败:`, err);
+  }
+
+  const allOk = steps.every(s => s.ok);
+  return { success: allOk, steps };
 }

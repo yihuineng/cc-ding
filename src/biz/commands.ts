@@ -617,6 +617,7 @@ export interface ICfgOptions {
   streaming?: boolean;
   cardTemplateId?: string;
   model?: string;
+  reload?: boolean;
 }
 
 export function parseCfgCommand(text: string): ICfgOptions | null {
@@ -678,6 +679,8 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
       result.cardTemplateId = tokens[++i];
     } else if (token === '--model' && tokens[i + 1]) {
       result.model = tokens[++i];
+    } else if (token === '--reload') {
+      result.reload = true;
     }
   }
 
