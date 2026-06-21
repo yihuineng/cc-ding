@@ -18,6 +18,8 @@ import {
   parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
   parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand, parseFreedomCommand, parseQaCommand, parseTimerCommand, parseModelCommand,
 } from './commands';
+import { parseA2ACommand, formatAgentList, formatHubAgents, formatAgentInfo, formatTaskStatus } from './commands-a2a';
+import { createA2AClient, createHubClient } from './a2a/client';
 import { sendDingMessage, sendClaudeResponseToDing, cacheUserName, getCachedUserName, restoreMentions } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts, refreshSessionContext } from './claude-process';
 import { recordMessage, getRecorderDir } from './recorder';
@@ -191,6 +193,9 @@ export class DingClaude {
 
   /** 消息推送队列处理器 */
   sendQueueProcessor!: SendQueueProcessor;
+
+  /** A2A Hub heartbeat timer */
+  hubHeartbeatTimer: NodeJS.Timeout | null = null;
 
   /** 默认最大并发会话数 */
   readonly DEFAULT_SESSION_MAX_CONCURRENCY = 5;
@@ -1354,6 +1359,11 @@ export class DingClaude {
           content: md,
           msgType: 'markdown',
         });
+      }),
+
+      // /a2a 命令：Agent-to-Agent 协议
+      route('/a2a', () => parseA2ACommand(prompt), async a2aCmd => {
+        await this.handleA2ACommand(a2aCmd, { conversationId, sessionWebhook });
       }),
 
       // /{cmd} --help 命令：查看单个命令详细帮助
@@ -2802,6 +2812,174 @@ export class DingClaude {
   }
 
   /**
+   * 处理 /a2a 命令
+   */
+  private async handleA2ACommand(
+    cmd: ReturnType<typeof parseA2ACommand>,
+    ctx: { conversationId: string; sessionWebhook: string },
+  ): Promise<void> {
+    if (!cmd) return;
+    const { conversationId, sessionWebhook } = ctx;
+    const remoteAgents = this.config.a2aCfg?.remoteAgents || [];
+
+    const msg = (content: string, msgType: 'text' | 'markdown' = 'markdown') =>
+      this.sendDingMessage({ conversationId, sessionWebhook, content, msgType });
+
+    switch (cmd.type) {
+      case 'list':
+        await msg(formatAgentList(remoteAgents));
+        break;
+
+      case 'agents': {
+        const hubClient = createHubClient(this);
+        if (!hubClient) { await msg('未配置 hubUrl，无法查询 Hub Agent 列表'); return; }
+        try {
+          const result = await hubClient.listAgents() as { agents?: Array<{ id: string; name: string; description?: string; status: string; baseUrl: string }> };
+          await msg(formatHubAgents(result.agents || []));
+        } catch (err) {
+          await msg(`查询 Hub Agent 失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+
+      case 'info': {
+        const agent = remoteAgents.find(a => a.id === cmd.agentId);
+        if (!agent) { await msg(`Agent 未找到: ${cmd.agentId}`); return; }
+        try {
+          const client = createA2AClient(cmd.agentId, this);
+          const card = client ? await client.getAgentCard() : undefined;
+          await msg(formatAgentInfo(agent, card as Record<string, unknown>));
+        } catch (err) {
+          await msg(`获取 Agent 信息失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+
+      case 'send': {
+        const taskId = `a2a-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const hubClient = createHubClient(this);
+
+        if (hubClient) {
+          // Hub 模式：通过 Hub 路由
+          await msg(`通过 Hub 发送任务到 ${cmd.agentId}...`);
+          try {
+            const result = await hubClient.sendTask(cmd.agentId, taskId, {
+              role: 'user',
+              parts: [{ type: 'text', text: cmd.message }],
+            });
+            const r = result as { status?: { state?: string; message?: string } };
+            await msg(`**任务已发送**\n\n**Task ID:** ${taskId}\n**状态:** ${r.status?.state || 'unknown'}`);
+          } catch (err) {
+            await msg(`发送任务失败: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else {
+          // 直连模式：直接调用远端
+          const agent = remoteAgents.find(a => a.id === cmd.agentId);
+          if (!agent) { await msg(`Agent 未找到: ${cmd.agentId}`); return; }
+          await msg(`正在发送任务到 ${agent.name}...`);
+          try {
+            const client = createA2AClient(cmd.agentId, this);
+            if (!client) throw new Error('创建 A2A 客户端失败');
+            const result = await client.sendTask(taskId, {
+              role: 'user',
+              parts: [{ type: 'text', text: cmd.message }],
+            });
+            const r = result as { status?: { state?: string; message?: string } };
+            await msg(`**任务已发送**\n\n**Task ID:** ${taskId}\n**状态:** ${r.status?.state || 'unknown'}`);
+          } catch (err) {
+            await msg(`发送任务失败: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        break;
+      }
+
+      case 'status': {
+        const hubClient = createHubClient(this);
+        try {
+          const result = hubClient
+            ? await hubClient.getTaskStatus(cmd.agentId, cmd.taskId)
+            : await createA2AClient(cmd.agentId, this)?.getTaskStatus(cmd.taskId);
+          if (!result) throw new Error('无法连接到 Agent');
+          const r = result as { status?: { state?: string; message?: string } };
+          await msg(formatTaskStatus(cmd.taskId, r.status?.state || 'unknown', r.status?.message));
+        } catch (err) {
+          await msg(`获取任务状态失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+
+      case 'cancel': {
+        const hubClient = createHubClient(this);
+        try {
+          if (hubClient) {
+            await hubClient.cancelTask(cmd.agentId, cmd.taskId);
+          } else {
+            const client = createA2AClient(cmd.agentId, this);
+            if (!client) throw new Error('无法连接到 Agent');
+            await client.cancelTask(cmd.taskId);
+          }
+          await msg(`任务已取消\n\n**Task ID:** ${cmd.taskId}`);
+        } catch (err) {
+          await msg(`取消任务失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+
+      case 'discover': {
+        try {
+          const url = new URL(cmd.url);
+          const agentUrl = `${url.protocol}//${url.host}`;
+          const cardRes = await fetch(`${agentUrl}/.well-known/agent.json`);
+          if (!cardRes.ok) throw new Error(`HTTP ${cardRes.status}`);
+          const card = await cardRes.json() as Record<string, unknown>;
+          await msg(`**发现远端 Agent**\n\n**名称:** ${card.name}\n**描述:** ${card.description}\n**版本:** ${card.version}\n**URL:** \`${agentUrl}\`\n\n使用 /cfg 添加到配置`);
+        } catch (err) {
+          await msg(`发现 Agent 失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+    }
+  }
+
+  /**
+   * 向 A2A Hub 注册自己，并启动心跳
+   * 每个 conversation 注册为独立 agent，ID 格式: <clientId>:<conversationId>
+   */
+  private registerToHub(hubClient: import('./a2a/client').HubClient): void {
+    const conversations = Array.isArray(this.config.conversations) ? this.config.conversations : [];
+    const name = this.config.clientName || this.clientId;
+
+    // 注册每个 conversation 为独立 agent
+    for (const conv of conversations) {
+      const agentId = `${this.clientId}:${conv.conversationId}`;
+      const agentName = conv.conversationTitle || name;
+
+      hubClient.registerAgent({
+        id: agentId,
+        name: agentName,
+        baseUrl: '',
+        apiKey: this.config.a2aCfg?.apiKey,
+        description: `cc-ding conversation: ${agentName}`,
+      }).then(() => {
+        console.log(`[A2A-Hub] 已注册: ${agentId} (${agentName})`);
+      }).catch(err => {
+        console.error(`[A2A-Hub] 注册失败 ${agentId}: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
+
+    // 心跳按 client 维度发送（client 在线 = 所有 conversation 在线）
+    if (conversations.length > 0) {
+      this.hubHeartbeatTimer = setInterval(() => {
+        // 取第一个 conversation 的 agent ID 作为 client 心跳标识
+        const firstAgentId = `${this.clientId}:${conversations[0].conversationId}`;
+        hubClient.heartbeat(firstAgentId).catch(err => {
+          console.warn(`[A2A-Hub] 心跳发送失败: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }, 30000);
+    }
+  }
+
+  /**
    * 启动服务
    */
   async run(): Promise<void> {
@@ -2843,6 +3021,12 @@ export class DingClaude {
     // 启动消息推送队列处理器
     this.sendQueueProcessor.start();
 
+    // 向 A2A Hub 注册（中心化路由模式，有 hubUrl 就自动注册）
+    const hubClient = createHubClient(this);
+    if (hubClient) {
+      this.registerToHub(hubClient);
+    }
+
     // 启动 /menu 待选状态过期清理定时器
     startSelectionCleanupTimer();
 
@@ -2873,6 +3057,7 @@ export class DingClaude {
 
     // 进程退出时清理 Timer 引擎和消息推送队列
     const onShutdown = () => {
+      if (this.hubHeartbeatTimer) clearInterval(this.hubHeartbeatTimer);
       this.timerEngine.destroy();
       this.sendQueueProcessor.destroy();
     };

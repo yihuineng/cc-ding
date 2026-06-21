@@ -49,6 +49,21 @@ export interface IConfig {
   cardTemplateId?: string;
   /** AI Card 模板变量名，默认 "content" */
   cardTemplateKey?: string;
+  /** A2A (Agent-to-Agent) 协议配置（中心化 Hub 模式） */
+  a2aCfg?: {
+    /** 中心化 Hub URL（配置后自动向 Hub 注册 + 心跳） */
+    hubUrl?: string;
+    /** Hub 认证密钥 */
+    apiKey?: string;
+    /** 本地配置的远端 Agent 列表（备用，Hub 不可用时直连） */
+    remoteAgents?: Array<{
+      id: string;
+      name: string;
+      baseUrl: string;
+      apiKey?: string;
+      defaultSkill?: string;
+    }>;
+  };
 }
 
 export interface IConversation {

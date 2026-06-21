@@ -213,4 +213,54 @@ program
     if (caption) console.log(`   说明: ${caption}`);
   });
 
+program
+  .command('a2a-server')
+  .description('启动中心化 A2A Hub 服务（Agent 注册表 + 任务路由）')
+  .requiredOption('-k, --apiKey <value>', 'Hub API Key（用于认证，相同 key 的 server 自动组成集群）')
+  .option('-p, --port <value>', 'HTTP 端口', '3000')
+  .option('-t, --timeout <value>', '心跳超时秒数', '60')
+  .option('-s, --serverId <value>', 'Server ID（唯一标识，默认 hostname）')
+  .option('-B, --baseUrl <value>', '本 Server 的公开 URL（用于其他 server 连接）')
+  .option('-P, --peers <value>', '其他 peer server URL 列表，逗号分隔')
+  .action(async (opts) => {
+    const { A2AHub } = await import('../src/biz/a2a/hub');
+    const port = parseInt(opts.port, 10);
+    const timeout = parseInt(opts.timeout, 10);
+    const serverId = opts.serverId || require('os').hostname() || 'default';
+
+    const hub = new A2AHub({
+      port,
+      apiKey: opts.apiKey,
+      heartbeatTimeout: timeout,
+      serverId,
+      peerServers: opts.peers ? opts.peers.split(',').map((u: string) => u.trim()) : undefined,
+    });
+
+    hub.start();
+
+    console.log(`[A2A-Hub] Server ID: ${serverId}`);
+    console.log(`[A2A-Hub] API Key: ${opts.apiKey}`);
+    console.log(`[A2A-Hub] 心跳超时: ${timeout}s`);
+    if (opts.peers) console.log(`[A2A-Hub] Peer servers: ${opts.peers}`);
+    console.log(`[A2A-Hub] 端点:`);
+    console.log(`  GET  /health              - 健康检查`);
+    console.log(`  GET  /hub/agents          - 列出所有 Agent`);
+    console.log(`  GET  /hub/servers         - 列出所有 peer server`);
+    console.log(`  POST /hub/register        - Agent 注册`);
+    console.log(`  POST /hub/heartbeat       - Agent 心跳`);
+    console.log(`  POST /a2a/{id}/tasks/send - 任务路由`);
+
+    // 优雅退出
+    process.on('SIGINT', async () => {
+      console.log('\n[A2A-Hub] 正在关闭...');
+      await hub.stop();
+      console.log('[A2A-Hub] 已关闭');
+      process.exit(0);
+    });
+    process.on('SIGTERM', async () => {
+      await hub.stop();
+      process.exit(0);
+    });
+  });
+
 program.parse(process.argv);
