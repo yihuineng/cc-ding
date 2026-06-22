@@ -1221,6 +1221,7 @@ export class DingClaude {
           if (cfgOpts.streaming !== undefined) existingConv.streaming = cfgOpts.streaming;
           if (cfgOpts.ensureAt !== undefined) existingConv.ensureAt = cfgOpts.ensureAt;
           if (cfgOpts.model) existingConv.model = cfgOpts.model;
+          if (cfgOpts.agent) existingConv.agent = cfgOpts.agent;
           // cardTemplateId 是全局配置
           if (cfgOpts.cardTemplateId) this.config.cardTemplateId = cfgOpts.cardTemplateId;
           // enableMsgToUser 是全局配置
@@ -1251,6 +1252,7 @@ export class DingClaude {
           if (cfgOpts.streaming !== undefined) newConv.streaming = cfgOpts.streaming;
           if (cfgOpts.ensureAt !== undefined) newConv.ensureAt = cfgOpts.ensureAt;
           if (cfgOpts.model) newConv.model = cfgOpts.model;
+          if (cfgOpts.agent) newConv.agent = cfgOpts.agent;
           // cardTemplateId 是全局配置
           if (cfgOpts.cardTemplateId) this.config.cardTemplateId = cfgOpts.cardTemplateId;
           // enableMsgToUser 是全局配置

@@ -621,6 +621,8 @@ export interface ICfgOptions {
   streaming?: boolean;
   cardTemplateId?: string;
   model?: string;
+  /** 指定使用的 agent: claude / codex */
+  agent?: string;
   reload?: boolean;
   /** 是否开启单聊消息能力（oToMessages/batchSend），默认 false */
   enableMsgToUser?: boolean;
@@ -687,6 +689,8 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
       result.cardTemplateId = tokens[++i];
     } else if (token === '--model' && tokens[i + 1]) {
       result.model = tokens[++i];
+    } else if (token === '--agent' && tokens[i + 1]) {
+      result.agent = tokens[++i];
     } else if (token === '--enableMsgToUser' && tokens[i + 1]) {
       const val = tokens[++i].toLowerCase();
       result.enableMsgToUser = val === 'true' || val === '1' || val === 'yes';
