@@ -194,6 +194,9 @@ export class DingClaude {
   /** 消息推送队列处理器 */
   sendQueueProcessor!: SendQueueProcessor;
 
+  /** A2A Hub WebSocket client */
+  a2aHubClient: import('./a2a/client').HubClient | null = null;
+
   /** A2A Hub heartbeat timer */
   hubHeartbeatTimer: NodeJS.Timeout | null = null;
 
@@ -2942,41 +2945,29 @@ export class DingClaude {
   }
 
   /**
-   * 向 A2A Hub 注册自己，并启动心跳
-   * 每个 conversation 注册为独立 agent，ID 格式: <clientId>:<conversationId>
+   * 连接到 A2A Hub（WebSocket），并注册所有 conversation 为独立 agent
+   * Agent ID 格式: <clientId>:<conversationId>
    */
-  private registerToHub(hubClient: import('./a2a/client').HubClient): void {
+  private async connectToHub(hubClient: import('./a2a/client').HubClient): Promise<void> {
     const conversations = Array.isArray(this.config.conversations) ? this.config.conversations : [];
     const name = this.config.clientName || this.clientId;
 
-    // 注册每个 conversation 为独立 agent
-    for (const conv of conversations) {
-      const agentId = `${this.clientId}:${conv.conversationId}`;
-      const agentName = conv.conversationTitle || name;
+    // 构建 agent 列表
+    const agents = conversations.map(conv => ({
+      id: `${this.clientId}:${conv.conversationId}`,
+      name: conv.conversationTitle || name,
+      description: `cc-ding conversation: ${conv.conversationTitle || conv.conversationId}`,
+    }));
 
-      hubClient.registerAgent({
-        id: agentId,
-        name: agentName,
-        baseUrl: '',
-        apiKey: this.config.a2aCfg?.apiKey,
-        description: `cc-ding conversation: ${agentName}`,
-      }).then(() => {
-        console.log(`[A2A-Hub] 已注册: ${agentId} (${agentName})`);
-      }).catch(err => {
-        console.error(`[A2A-Hub] 注册失败 ${agentId}: ${err instanceof Error ? err.message : String(err)}`);
-      });
-    }
+    // 连接 WebSocket 并注册
+    await hubClient.connect(this.clientId, name, agents);
+    console.log(`[A2A-Hub] 已连接并注册 ${agents.length} 个 agent`);
 
-    // 心跳按 client 维度发送（client 在线 = 所有 conversation 在线）
-    if (conversations.length > 0) {
-      this.hubHeartbeatTimer = setInterval(() => {
-        // 取第一个 conversation 的 agent ID 作为 client 心跳标识
-        const firstAgentId = `${this.clientId}:${conversations[0].conversationId}`;
-        hubClient.heartbeat(firstAgentId).catch(err => {
-          console.warn(`[A2A-Hub] 心跳发送失败: ${err instanceof Error ? err.message : String(err)}`);
-        });
-      }, 30000);
-    }
+    // 启动心跳定时器（按 client 维度）
+    this.a2aHubClient = hubClient;
+    this.hubHeartbeatTimer = setInterval(() => {
+      hubClient.heartbeat(this.clientId);
+    }, 30000);
   }
 
   /**
@@ -3021,10 +3012,10 @@ export class DingClaude {
     // 启动消息推送队列处理器
     this.sendQueueProcessor.start();
 
-    // 向 A2A Hub 注册（中心化路由模式，有 hubUrl 就自动注册）
+    // 连接到 A2A Hub（WebSocket 模式）
     const hubClient = createHubClient(this);
     if (hubClient) {
-      this.registerToHub(hubClient);
+      await this.connectToHub(hubClient);
     }
 
     // 启动 /menu 待选状态过期清理定时器
@@ -3058,6 +3049,7 @@ export class DingClaude {
     // 进程退出时清理 Timer 引擎和消息推送队列
     const onShutdown = () => {
       if (this.hubHeartbeatTimer) clearInterval(this.hubHeartbeatTimer);
+      this.a2aHubClient?.disconnect();
       this.timerEngine.destroy();
       this.sendQueueProcessor.destroy();
     };
