@@ -63,6 +63,7 @@ import { SendQueueProcessor } from './send-queue';
 import { initModelOptions, loadModelOptions, addModelOptions, removeModelOptions, resolveCurrentModel, setConversationModel } from './model';
 import { commandExists, isWindows, isWindowsPlatform, spawnCommand } from './platform';
 import { isOldMessage, messageDedup, bounceDedup, PROCESS_START_TIME } from './dedup';
+import { checkForUpdates, formatVersionInfo } from './version-check';
 
 /** 工具版本号 */
 const TOOL_VERSION = projUtil().getPkgVersion();
@@ -1370,10 +1371,11 @@ export class DingClaude {
           codexVersion = stdout.trim() || '未知';
         } catch { /* ignore */ }
 
-        const md = [
-          '### 📦 cc-ding 版本信息',
+        // 拼接版本检查信息 + 运行环境信息
+        const versionInfo = formatVersionInfo();
+        const envInfo = [
           '',
-          `- **cc-ding:** ${TOOL_VERSION}`,
+          '---',
           `- **claude:** ${claudeCliVersion}`,
           `- **codex:** ${codexVersion}`,
           `- **os:** ${os.hostname()} ${os.platform()} ${os.release()}`,
@@ -1381,10 +1383,11 @@ export class DingClaude {
           `- **cardTemplateId:** ${this.config.cardTemplateId || '(未配置)'}`,
           `- **model:** ${conversationConfig?.model || this.config.model || '(默认)'}`,
         ].join('\n');
+
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: md,
+          content: versionInfo + envInfo,
           msgType: 'markdown',
         });
       }),
@@ -3045,6 +3048,9 @@ export class DingClaude {
 
     // 启动自检
     startupCheck(this);
+
+    // 异步检查版本更新（不阻塞启动）
+    checkForUpdates().catch(() => { /* ignore */ });
 
     // 解析 config 中的手机号为 userId
     await resolveAllPhonesInConfig(this);
