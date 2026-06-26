@@ -2745,7 +2745,8 @@ export class DingClaude {
         }
         activeSession.isProcessing = true;
         try {
-          if (activeSession.conversationConfig.receiveReply !== false) {
+          // streaming 开启时跳过确认（卡片本身即为进度反馈）
+          if (activeSession.conversationConfig.receiveReply !== false && !activeSession.conversationConfig.streaming) {
             const mode = activeSession.conversationConfig.receiveReplyMode ?? 'reaction';
             // ackReaction 未配置时默认 '👀'，配置为空字符串时不发送表情
             const emoji = activeSession.conversationConfig.ackReaction !== undefined ? activeSession.conversationConfig.ackReaction : '👀';
