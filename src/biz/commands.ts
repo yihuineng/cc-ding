@@ -147,7 +147,7 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/cfg',
     description: '注册当前群到配置，或刷新指定字段(已注册群)',
-    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode] [--enableMsgToUser true|false] [--ensureAt true|false] [--model model-name]',
+    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--receiveReplyMode reaction|text] [--ackReaction emoji] [--preBash "命令"] [--permissionMode mode] [--enableMsgToUser true|false] [--ensureAt true|false] [--model model-name] [--agent claude|codex] [--streaming true|false] [--cardTemplateId xxx] [--reload]',
     examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --permissionMode auto', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
     category: '管理',
   },
@@ -371,6 +371,8 @@ export function formatConversationInfo(
   if (conv.qaCfg?.docs?.length) lines.push(`- **QA docs:** ${conv.qaCfg.docs.join(', ')}`);
   if (conv.qaCfg?.autoPull) lines.push(`- **QA autoPull:** 已开启`);
   if (conv.ensureAt) lines.push(`- **ensureAt:** 已开启（追加 text 消息确保 @ 通知生效）`);
+  if (conv.receiveReplyMode) lines.push(`- **receiveReplyMode:** ${conv.receiveReplyMode}（默认 reaction=表情确认，text=文本确认）`);
+  if (conv.ackReaction && conv.ackReaction !== '') lines.push(`- **ackReaction:** ${conv.ackReaction}`);
   return lines.join('\n');
 }
 
@@ -602,11 +604,14 @@ export function parseResetApiKeyCfgCommand(text: string): boolean {
 
 /**
  * 解析 /cfg 命令
- * 格式: /cfg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--enableMsgToUser true|false] [--ensureAt true|false]
+ * 格式: /cfg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--receiveReplyMode reaction|text] [--ackReaction emoji] [--enableMsgToUser true|false] [--ensureAt true|false]
  * - /cfg                                -> 注册当前群（所有选项均为默认值）
  * - /cfg --dingToken xxx               -> 指定 dingToken
  * - /cfg --atSender false              -> 关闭回复时 at 发送人
  * - /cfg --receiveReply false          -> 关闭"收到"确认消息
+ * - /cfg --receiveReplyMode reaction   -> 使用表情确认（默认）
+ * - /cfg --receiveReplyMode text       -> 使用文本确认
+ * - /cfg --ackReaction 👍              -> 自定义确认表情
  * - /cfg --enableMsgToUser true|false  -> 开启/关闭私聊消息能力
  * - /cfg --ensureAt true|false         -> 开启/关闭 @ 通知保障
  * - 其他                                -> null
@@ -626,6 +631,10 @@ export interface ICfgOptions {
   model?: string;
   /** 指定使用的 agent: claude / codex */
   agent?: string;
+  /** 消息接收确认模式：'reaction' 为贴表情（默认），'text' 为发文本消息 */
+  receiveReplyMode?: 'reaction' | 'text';
+  /** 确认表情的 emoji 文本，默认 ''，6 个中英文字符以内 */
+  ackReaction?: string;
   reload?: boolean;
   /** 是否开启单聊消息能力（oToMessages/batchSend），默认 false */
   enableMsgToUser?: boolean;
@@ -700,6 +709,13 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
     } else if (token === '--ensureAt' && tokens[i + 1]) {
       const val = tokens[++i].toLowerCase();
       result.ensureAt = val === 'true' || val === '1' || val === 'yes';
+    } else if (token === '--receiveReplyMode' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      if (val === 'reaction' || val === 'text') {
+        result.receiveReplyMode = val as 'reaction' | 'text';
+      }
+    } else if (token === '--ackReaction' && tokens[i + 1]) {
+      result.ackReaction = tokens[++i];
     } else if (token === '--reload') {
       result.reload = true;
     }

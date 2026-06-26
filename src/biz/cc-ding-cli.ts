@@ -6,7 +6,7 @@ import path from 'path';
 import { projUtil } from '../common';
 import { IConfig, IActiveSession, ISession, IRawCallbackData, IAuthRequest, IConversation } from './types';
 import { extractQuoteInfo, formatPromptWithQuote, enrichQuoteInfo } from './quote';
-import { sendMessageToUser, sendOwnerMessage } from './messaging';
+import { sendMessageToUser, sendOwnerMessage, attachReaction } from './messaging';
 import { processPictureMessage, processRichTextMessage, processFileMessage, extractDownloadCode } from './image';
 import {
   parseInfoCommand, formatConversationInfo, formatGlobalConfig, parseLogCommand,
@@ -287,12 +287,12 @@ export class DingClaude {
   startNewSession = (opts: {
     conversationId: string; sessionWebhook: string; senderStaffId: string;
     senderNick: string; message: string; conversationConfig: IConfig['conversations'][0];
-    msgCreateAt?: number;
+    msgCreateAt?: number; msgId?: string;
   }) => startNewSession(this, opts);
   handleSessionMessage = (opts: {
     conversationId: string; sessionWebhook: string; senderStaffId: string;
     senderNick: string; message: string; conversationConfig: IConfig['conversations'][0];
-    msgCreateAt?: number;
+    msgCreateAt?: number; msgId?: string;
   }) => handleSessionMessage(this, opts);
   cleanCache = (conversationId: string | null, keepActiveSession = true) => cleanCache(this, conversationId, keepActiveSession);
 
@@ -1230,7 +1230,7 @@ export class DingClaude {
         const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
         cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
-        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model || cfgOpts.agent || cfgOpts.enableMsgToUser !== undefined || cfgOpts.ensureAt !== undefined);
+        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model || cfgOpts.agent || cfgOpts.enableMsgToUser !== undefined || cfgOpts.ensureAt !== undefined || cfgOpts.receiveReplyMode !== undefined || cfgOpts.ackReaction !== undefined);
 
         if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
@@ -1244,6 +1244,8 @@ export class DingClaude {
           if (cfgOpts.permissionMode !== undefined) existingConv.permissionMode = cfgOpts.permissionMode;
           if (cfgOpts.streaming !== undefined) existingConv.streaming = cfgOpts.streaming;
           if (cfgOpts.ensureAt !== undefined) existingConv.ensureAt = cfgOpts.ensureAt;
+          if (cfgOpts.receiveReplyMode !== undefined) existingConv.receiveReplyMode = cfgOpts.receiveReplyMode;
+          if (cfgOpts.ackReaction !== undefined) existingConv.ackReaction = cfgOpts.ackReaction;
           if (cfgOpts.model) existingConv.model = cfgOpts.model;
           if (cfgOpts.agent) existingConv.agent = cfgOpts.agent;
           // cardTemplateId 是全局配置
@@ -1275,6 +1277,8 @@ export class DingClaude {
           if (cfgOpts.permissionMode !== undefined) newConv.permissionMode = cfgOpts.permissionMode;
           if (cfgOpts.streaming !== undefined) newConv.streaming = cfgOpts.streaming;
           if (cfgOpts.ensureAt !== undefined) newConv.ensureAt = cfgOpts.ensureAt;
+          if (cfgOpts.receiveReplyMode !== undefined) newConv.receiveReplyMode = cfgOpts.receiveReplyMode;
+          if (cfgOpts.ackReaction !== undefined) newConv.ackReaction = cfgOpts.ackReaction;
           if (cfgOpts.model) newConv.model = cfgOpts.model;
           if (cfgOpts.agent) newConv.agent = cfgOpts.agent;
           // cardTemplateId 是全局配置
@@ -2684,10 +2688,18 @@ export class DingClaude {
         activeSession.isProcessing = true;
         try {
           if (activeSession.conversationConfig.receiveReply !== false) {
-            await this.sendDingMessage({
-              conversationId, sessionWebhook,
-              content: '📥 已收到，正在处理...',
-            }).catch(() => {});
+            const mode = activeSession.conversationConfig.receiveReplyMode ?? 'reaction';
+            // ackReaction 未配置时默认 '👀'，配置为空字符串时不发送表情
+            const emoji = activeSession.conversationConfig.ackReaction !== undefined ? activeSession.conversationConfig.ackReaction : '👀';
+            const msgId = res.headers.messageId;
+            if (mode === 'reaction' && msgId && emoji) {
+              await attachReaction(this, conversationId, msgId, emoji).catch(() => {});
+            } else {
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: '📥 已收到，正在处理...',
+              }).catch(() => {});
+            }
           }
           ensureAgent(this, activeSession);
           const agent = activeSession.agent!;
@@ -2790,6 +2802,7 @@ export class DingClaude {
       message: finalPrompt,
       conversationConfig,
       msgCreateAt,
+      msgId: res.headers.messageId,
     });
   }
 

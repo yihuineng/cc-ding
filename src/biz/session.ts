@@ -7,10 +7,59 @@ import path from 'path';
 import type { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IActiveSessionPersist, IConfig, IMessageQueueItem, ISession } from './types';
 import { parseEndCommand } from './commands';
-import { sendDingMessage, queryUserIdByMobile, queryUserIdByJobNumber, queryDingUser } from './messaging';
+import { sendDingMessage, queryUserIdByMobile, queryUserIdByJobNumber, queryDingUser, attachReaction, recallReaction } from './messaging';
 import { createAgent } from './agent-registry';
 import { isWindows } from './platform';
 import { userMessageWatermark } from './dedup';
+
+// ==================== 消息确认辅助函数 ====================
+
+/**
+ * 发送消息确认（Reaction 表情 或 文本消息）
+ * - receiveReplyMode === 'reaction' 且有 msgId 时，贴表情
+ * - 否则发文本消息（text 模式 或 无 msgId 降级）
+ * - best-effort: Reaction 失败不影响主流程
+ */
+async function sendAckConfirmation(
+  self: DingClaude,
+  conversationId: string,
+  sessionWebhook: string,
+  conversationConfig: IConfig['conversations'][0],
+  msgId: string | undefined,
+  textContent: string,
+): Promise<void> {
+  const mode = conversationConfig.receiveReplyMode ?? 'reaction';
+  // ackReaction 未配置时默认 '👀'，配置为空字符串时不发送表情
+  const emoji = conversationConfig.ackReaction !== undefined ? conversationConfig.ackReaction : '👀';
+
+  if (mode === 'reaction' && msgId && emoji) {
+    // Reaction 模式：有 msgId 且 emoji 非空时贴表情
+    await attachReaction(self, conversationId, msgId, emoji).catch(() => {});
+  } else {
+    // text 模式、无 msgId 降级、或 emoji 为空时发文本
+    await sendDingMessage(self, {
+      conversationId, sessionWebhook,
+      content: textContent,
+    }).catch(() => {});
+  }
+}
+
+/**
+ * 撤回确认表情（处理完成时）
+ */
+async function recallAckReaction(
+  self: DingClaude,
+  conversationId: string,
+  msgId: string | undefined,
+  conversationConfig: IConfig['conversations'][0],
+): Promise<void> {
+  const mode = conversationConfig.receiveReplyMode ?? 'reaction';
+  const emoji = conversationConfig.ackReaction !== undefined ? conversationConfig.ackReaction : '👀';
+
+  if (mode === 'reaction' && msgId && emoji) {
+    await recallReaction(self, conversationId, msgId, emoji).catch(() => {});
+  }
+}
 
 /**
  * 获取当前时间戳字符串 (YYYY-MM-DD HH:mm:ss)
@@ -730,8 +779,9 @@ export async function startNewSession(self: DingClaude, opts: {
   message: string;
   conversationConfig: IConfig['conversations'][0];
   msgCreateAt?: number; // 消息创建时间戳（用于水印）
+  msgId?: string; // 钉钉消息ID（用于 Reaction 确认）
 }): Promise<void> {
-  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig, msgCreateAt } = opts;
+  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig, msgCreateAt, msgId } = opts;
 
   const maxConcurrency = self.config.sessionMaxConcurrency ?? self.DEFAULT_SESSION_MAX_CONCURRENCY;
   if (self.activeSessions.size >= maxConcurrency) {
@@ -775,10 +825,10 @@ export async function startNewSession(self: DingClaude, opts: {
   if (msgCreateAt) userMessageWatermark.markInFlight(conversationId, msgCreateAt);
 
   if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
-    await sendDingMessage(self, {
-      conversationId, sessionWebhook,
-      content: `✅ 收到，我来处理...\n🆔 ${newSessionId}`,
-    });
+    await sendAckConfirmation(
+      self, conversationId, sessionWebhook, conversationConfig, msgId,
+      `✅ 收到，我来处理...\n🆔 ${newSessionId}`,
+    );
   }
 
   try {
@@ -802,6 +852,10 @@ export async function startNewSession(self: DingClaude, opts: {
     }
     // 水印：新会话处理完成
     if (msgCreateAt) userMessageWatermark.markCompleted(conversationId, msgCreateAt);
+    // 处理完成，撤回确认表情
+    if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
+      await recallAckReaction(self, conversationId, msgId, conversationConfig);
+    }
   }
   // 检查并处理排队消息（含 /new 后的 drain）
   const finalSession = self.activeSessions.get(conversationId);
@@ -852,10 +906,11 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
 
   if (activeSession.conversationConfig.receiveReply !== false) {
     const preview = message.length > 50 ? message.substring(0, 50) + '…' : message;
-    await sendDingMessage(self, {
-      conversationId: entryConvId, sessionWebhook, atUserId: senderStaffId,
-      content: `🚀 开始处理消息「${preview}」`,
-    }).catch(() => {});
+    // 队列消息无 msgId，自动降级为文本确认
+    await sendAckConfirmation(
+      self, entryConvId, sessionWebhook, activeSession.conversationConfig, undefined,
+      `🚀 开始处理消息「${preview}」`,
+    );
   }
 
   try {
@@ -913,8 +968,9 @@ export async function handleSessionMessage(self: DingClaude, opts: {
   message: string;
   conversationConfig: IConfig['conversations'][0];
   msgCreateAt?: number; // 消息创建时间戳（用于水印时序检查）
+  msgId?: string; // 钉钉消息ID（用于 Reaction 确认）
 }): Promise<void> {
-  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig, msgCreateAt } = opts;
+  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig, msgCreateAt, msgId } = opts;
 
   // 剥离可能存在的 [提及用户: ...] 前缀，确保命令精确匹配
   const rawMessage = message.replace(/^\[提及用户: .+\]\n/, '');
@@ -990,10 +1046,10 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     updateSessionFile(self, activeSession.session, { currentWebhook: sessionWebhook, currentConversationId: conversationId });
 
     if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
-      await sendDingMessage(self, {
-        conversationId, sessionWebhook,
-        content: '✅ 收到，我来处理...',
-      });
+      await sendAckConfirmation(
+        self, conversationId, sessionWebhook, conversationConfig, msgId,
+        '✅ 收到，我来处理...',
+      );
     }
 
     try {
@@ -1041,6 +1097,10 @@ export async function handleSessionMessage(self: DingClaude, opts: {
       activeSession.isProcessing = false;
       // 水印：标记处理完成
       if (msgCreateAt) userMessageWatermark.markCompleted(conversationId, msgCreateAt);
+      // 处理完成，撤回确认表情
+      if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
+        await recallAckReaction(self, conversationId, msgId, conversationConfig);
+      }
     }
     // 检查并处理排队消息
     await processMessageQueue(self, conversationId);

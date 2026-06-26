@@ -82,6 +82,10 @@ export interface IConversation {
   atSender?: boolean; // 回复时是否 at 发送人，默认 true
   /** 是否回复"收到"等确认消息，默认 true */
   receiveReply?: boolean;
+  /** 消息接收确认模式：'reaction' 为贴表情（默认），'text' 为发文本消息 */
+  receiveReplyMode?: 'reaction' | 'text';
+  /** 确认表情的 emoji 文本，默认 ''，6 个中英文字符以内 */
+  ackReaction?: string;
   /** /bash 执行前的前置命令（群级别，与全局 preBash 叠加执行） */
   preBash?: string;
   /** Claude 进程权限模式，默认 acceptEdits（bypassPermissions 需显式配置，启动时会告警）。可选值: default | acceptEdits | plan | auto | bypassPermissions | dontAsk */

@@ -461,6 +461,79 @@ export async function sendOwnerMessage(self: DingClaude, content: string, msgTyp
   return sendMessageToUser(self, userId, content, msgType);
 }
 
+// ==================== Reaction 表情 API ====================
+
+/**
+ * 在指定消息下贴表情 Reaction（收到确认）
+ * POST /v1.0/contact/rpc/interaction/emoji/submit
+ * @see https://open.dingtalk.com/document/orgapp/submit-emoji-reactions
+ */
+export async function attachReaction(
+  self: DingClaude,
+  conversationId: string,
+  msgId: string,
+  emotionId: string,
+): Promise<boolean> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `${DING_API_BASE}/v1.0/contact/rpc/interaction/emoji/submit`;
+
+    const result = await urllib.request(url, {
+      method: 'POST',
+      data: { conversationId, msgId, emotionId },
+      contentType: 'json',
+      headers: { 'x-acs-dingtalk-access-token': accessToken },
+      dataType: 'json',
+      timeout: 5000,
+    });
+
+    if (result.status === 200) {
+      self.debugLog(`attachReaction 成功: msgId=${msgId}, emotionId=${emotionId}`);
+      return true;
+    }
+    self.debugLog(`attachReaction 返回非200: status=${result.status}, data=${JSON.stringify(result.data)}`);
+    return false;
+  } catch (err) {
+    console.warn(`attachReaction 失败 (msgId=${msgId}):`, err);
+    return false;
+  }
+}
+
+/**
+ * 撤回指定消息的表情 Reaction（处理完成确认）
+ * POST /v1.0/contact/rpc/interaction/emoji/recall
+ */
+export async function recallReaction(
+  self: DingClaude,
+  conversationId: string,
+  msgId: string,
+  emotionId: string,
+): Promise<boolean> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `${DING_API_BASE}/v1.0/contact/rpc/interaction/emoji/recall`;
+
+    const result = await urllib.request(url, {
+      method: 'POST',
+      data: { conversationId, msgId, emotionId },
+      contentType: 'json',
+      headers: { 'x-acs-dingtalk-access-token': accessToken },
+      dataType: 'json',
+      timeout: 5000,
+    });
+
+    if (result.status === 200) {
+      self.debugLog(`recallReaction 成功: msgId=${msgId}, emotionId=${emotionId}`);
+      return true;
+    }
+    self.debugLog(`recallReaction 返回非200: status=${result.status}, data=${JSON.stringify(result.data)}`);
+    return false;
+  } catch (err) {
+    console.warn(`recallReaction 失败 (msgId=${msgId}):`, err);
+    return false;
+  }
+}
+
 // ==================== 群消息：图片/文件推送 ====================
 
 /** 图片文件扩展名 */
