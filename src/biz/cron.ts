@@ -123,7 +123,7 @@ export function isValidCronExpression(expression: string): boolean {
   return fields.every(f => fieldPattern.test(f));
 }
 
-// ==================== Claude Analysis ====================
+// ==================== Agent 分析 ====================
 
 const ANALYSIS_PROMPT = `分析以下定时任务描述，提取cron表达式和任务内容。
 
@@ -161,13 +161,13 @@ async function analyzeCronWithClaude(
     console.error(`[${timestamp()}] Cron分析失败: ${combined.trim().substring(0, 200)}`);
     // 根据错误类型给出更具体的提示
     if (/\b429\b/.test(combined)) {
-      throw new Error('Claude 配额已耗尽(429)，请稍后重试或明天再试');
+      throw new Error('Agent 配额已耗尽(429)，请稍后重试或明天再试');
     }
     if (/\b422\b/.test(combined) || /TPM|额度超限/i.test(combined)) {
-      throw new Error('Claude TPM 限流(422)，请稍后重试');
+      throw new Error('Agent TPM 限流(422)，请稍后重试');
     }
     if (/\b401\b/.test(combined) || /auth|认证|permission/i.test(combined)) {
-      throw new Error('Claude 认证失败(401)，请检查 API Key 配置');
+      throw new Error('Agent 认证失败(401)，请检查 API Key 配置');
     }
     throw new Error(`分析失败: ${combined.trim().substring(0, 200) || '无输出，请检查 claude 是否可用'}`);
   }
@@ -183,7 +183,7 @@ async function analyzeCronWithClaude(
   } catch {
     throw new Error('JSON 解析失败');
   }
-  throw new Error('Claude 返回格式不正确');
+  throw new Error('Agent 返回格式不正确');
 }
 
 // ==================== Formatting ====================
@@ -311,7 +311,7 @@ export class CronEngine {
       const result = await analyzeCronWithClaude(this.dc, conversationId, input);
 
       if (!isValidCronExpression(result.cron)) {
-        return { error: `Claude 返回的cron表达式无效: ${result.cron}` };
+        return { error: `Agent 返回的cron表达式无效: ${result.cron}` };
       }
 
       const job = this.addJob({

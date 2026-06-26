@@ -7,7 +7,7 @@ export function generateAgentCard(self: DingClaude, config: IA2AConfig): IAgentC
 
   return {
     name,
-    description: `DingTalk AI bot powered by Claude Code (${name})`,
+    description: `DingTalk AI bot (${name})`,
     url: baseUrl,
     version: require('../../../package.json').version,
     capabilities: {
@@ -21,10 +21,10 @@ export function generateAgentCard(self: DingClaude, config: IA2AConfig): IAgentC
       },
     }] : undefined,
     skills: [{
-      id: 'claude-query',
-      name: 'Claude Query',
-      description: 'Execute a Claude AI query in a DingTalk group context',
-      tags: [ 'ai', 'claude', 'chat' ],
+      id: 'agent-query',
+      name: 'Agent Query',
+      description: 'Execute an AI query in a DingTalk group context',
+      tags: [ 'ai', 'agent', 'chat' ],
       inputMode: [ 'text' ],
       outputMode: [ 'text' ],
     }],

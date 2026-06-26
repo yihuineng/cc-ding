@@ -237,8 +237,8 @@ export class DingClaude {
 
   // messaging
   sendDingMessage = (opts: import('./types').ISendMsgOpts) => sendDingMessage(this, opts);
-  sendClaudeResponseToDing = (conversationId: string, sessionWebhook: string, atUserId: string, content: string) =>
-    sendClaudeResponseToDing(this, conversationId, sessionWebhook, atUserId, content);
+  sendClaudeResponseToDing = (conversationId: string, sessionWebhook: string, atUserId: string, content: string, atUserName?: string) =>
+    sendClaudeResponseToDing(this, conversationId, sessionWebhook, atUserId, content, atUserName);
 
   // claude-process
   parseClaudeStreamLine = parseClaudeStreamLine;
@@ -273,7 +273,7 @@ export class DingClaude {
   // session - persistence
   findHistorySession = (conversationId: string, sessionId: string) => findHistorySession(this, conversationId, sessionId);
   findLatestSession = (conversationId: string) => findLatestSession(this, conversationId);
-  updateSessionFile = (session: ISession, opts: { claudeSessionId?: string; agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string }) =>
+  updateSessionFile = (session: ISession, opts: { agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string }) =>
     updateSessionFile(this, session, opts);
   appendSessionLog = appendSessionLog;
   getActiveSessionsFile = (conversationId: string) => getActiveSessionsFile(this, conversationId);
@@ -1739,7 +1739,7 @@ export class DingClaude {
           refreshSessionContext(this, conversationId);
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: '✅ 问答模式已开启\n- Claude 将以只读 plan 模式运行\n- 所有群成员均可使用\n- 使用 `/qa --gitRepos https://github.com/user/repo.git` 配置仓库(首次 clone，后续 pull)\n- 使用 `/qa --docs url1,url2` 配置参考文档\n- 使用 `/qa --autoPull true` 开启自动拉取',
+            content: '✅ 问答模式已开启\n- Agent 将以只读 plan 模式运行\n- 所有群成员均可使用\n- 使用 `/qa --gitRepos https://github.com/user/repo.git` 配置仓库(首次 clone，后续 pull)\n- 使用 `/qa --docs url1,url2` 配置参考文档\n- 使用 `/qa --autoPull true` 开启自动拉取',
             msgType: 'markdown',
           });
         } else if (qaOpts.action === 'exit') {
@@ -2259,7 +2259,7 @@ export class DingClaude {
           setConversationModel(this, conversationId, modelCmd.model);
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: `✅ 已设置当前会话模型为: \`${modelCmd.model}\`\n\n💡 仅影响后续新建的 Claude 会话`,
+            content: `✅ 已设置当前会话模型为: \`${modelCmd.model}\`\n\n💡 仅影响后续新建的 Agent 会话`,
             msgType: 'markdown',
           });
         } else if (modelCmd.action === 'add') {
@@ -2918,37 +2918,59 @@ export class DingClaude {
   }
 
   /**
-   * 连接健康监控：定期检查 dingStreamClient 是否已连接，
-   * 如果长时间 disconnected 且未自动重连，强制重新 connect
+   * WebSocket 连接健康监控：每 5 分钟检查一次 DingStreamClient 连接状态，
+   * 检测到断线自动重连，重连失败通知 owner，配合 dedup.ts 过滤重连回放消息。
    */
-  private startConnectionWatchdog(): void {
-    const CHECK_INTERVAL_MS = 30 * 1000;  // 每 30 秒检查一次
-    const DISCONNECT_THRESHOLD_MS = 60 * 1000;  // 超过 60 秒未连接则强制重连
+  private startConnectionMonitor(): void {
+    const CHECK_INTERVAL_MS = 5 * 60 * 1000;  // 每 5 分钟检查一次
     let lastConnectedTime = Date.now();
+    let isReconnecting = false;
 
-    setInterval(() => {
+    this.connectionMonitor = setInterval(async () => {
       const client = this.dingStreamClient;
       if (client.connected) {
         lastConnectedTime = Date.now();
+        if (isReconnecting) {
+          console.log(`[${timestamp()}] 连接监控: 钉钉 WebSocket 已恢复连接`);
+          isReconnecting = false;
+          // 重连成功后，messageDedup 仍在 60s TTL 内，自动过滤重连回放消息
+          console.log(`[${timestamp()}] 连接监控: messageDedup 有效期内，重连回放消息将被自动过滤`);
+        }
         return;
       }
 
       const elapsed = Date.now() - lastConnectedTime;
-      if (elapsed >= DISCONNECT_THRESHOLD_MS) {
-        console.log(`[${timestamp()}] 连接监控: 已断开 ${elapsed / 1000}s，强制重新连接`);
+      if (isReconnecting) {
+        this.debugLog(`连接监控: 正在重连中，已断开 ${elapsed / 1000}s`);
+        return;
+      }
+
+      console.log(`[${timestamp()}] 连接监控: 钉钉 WebSocket 已断开 ${elapsed / 1000}s，尝试重连`);
+      isReconnecting = true;
+
+      // 通知 owner 连接中断
+      await sendOwnerMessage(this, '⚠️ 钉钉连接中断，尝试重连中...', 'markdown').catch(() => {});
+
+      try {
+        // 先断开旧连接再重新连接
+        try { client.disconnect(); } catch { /* ignore */ }
+        await client.connect();
+        console.log(`[${timestamp()}] 连接监控: 重连成功`);
         lastConnectedTime = Date.now();
-        // 强制清理并重新连接
-        try {
-          client.disconnect();
-        } catch { /* ignore */ }
-        client.connect().catch(err => {
-          console.error(`[${timestamp()}] 强制重连失败:`, err);
-        });
-      } else {
-        this.debugLog(`连接监控: 已断开 ${elapsed / 1000}s，等待自动重连...`);
+        isReconnecting = false;
+        // 通知 owner 重连成功
+        await sendOwnerMessage(this, '✅ 钉钉连接已恢复', 'markdown').catch(() => {});
+      } catch (err) {
+        console.error(`[${timestamp()}] 连接监控: 重连失败`, err);
+        // 重连失败，通知 owner
+        await sendOwnerMessage(this, '❌ 钉钉重连失败，请检查网络或重启服务', 'markdown').catch(() => {});
+        isReconnecting = false;
       }
     }, CHECK_INTERVAL_MS);
   }
+
+  /** 连接监控定时器 ID */
+  private connectionMonitor: NodeJS.Timeout | null = null;
 
   /**
    * 处理 /a2a 命令
@@ -3160,8 +3182,8 @@ export class DingClaude {
     // 启动 /menu 待选状态过期清理定时器
     startSelectionCleanupTimer();
 
-    // 启动连接健康监控
-    this.startConnectionWatchdog();
+    // 启动 WebSocket 连接健康监控
+    this.startConnectionMonitor();
 
     if (hasTaskEnabled) {
       console.log(`[${timestamp()}] 任务处理器数量: ${taskHandlerCount}`);
@@ -3185,9 +3207,10 @@ export class DingClaude {
       process.exit(1);
     });
 
-    // 进程退出时清理 Timer 引擎和消息推送队列
+    // 进程退出时清理定时器和资源
     const onShutdown = () => {
       if (this.hubHeartbeatTimer) clearInterval(this.hubHeartbeatTimer);
+      if (this.connectionMonitor) clearInterval(this.connectionMonitor);
       this.a2aHubClient?.disconnect();
       this.timerEngine.destroy();
       this.sendQueueProcessor.destroy();

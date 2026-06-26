@@ -91,13 +91,13 @@ program
 program
   .command('run')
   .description(`
-        - 功能: 钉钉机器人对接本地Claude, 支持会话模式和任务队列模式
-        - 会话数据路径: ~/.cc-ding/{clientId}/{MD5}/.sessions/{claudeSessionId}/session.{json|log}
+        - 功能: 钉钉机器人对接本地 Agent, 支持会话模式和任务队列模式
+        - 会话数据路径: ~/.cc-ding/{clientId}/{MD5}/.sessions/{sessionId}/session.{json|log}
         - 任务数据路径: ~/.cc-ding/{clientId}/{MD5}/.tasks/{时间戳}/task.{json|log}
         - 定时任务数据: ~/.cc-ding/{clientId}/cron.json
         - 启动方式: pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding run -ci {clientId}
         - 会话模式说明
-          - 会话ID: 由 Claude 分配的 claudeSessionId
+          - 会话ID: 由 Agent 分配的 sessionId
           - 结束会话: /end
           - 新会话: /new [初始消息] 强制结束当前会话并开启新会话
           - 恢复会话: /resume [会话ID] 恢复指定历史会话, 不指定则恢复最近一个
@@ -107,7 +107,7 @@ program
         - 图片消息支持
           - 支持接收钉钉图片消息(picture)和富文本消息(richText, 含内嵌图片)
           - 图片自动下载保存到 <会话目录>/.images/ 下
-          - useLocalOcr: 默认开启, 使用本地OCR识别图片文字, 同时传入原图路径供Claude自主查看
+          - useLocalOcr: 默认开启, 使用本地OCR识别图片文字, 同时传入原图路径供Agent自主查看
           - 配置方式: conversations[].useLocalOcr = false 可关闭OCR(适用于支持图片识别的模型)
         - 任务模式说明
           - 任务ID: 任务接收时间戳

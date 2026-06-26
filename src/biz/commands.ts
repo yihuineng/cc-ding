@@ -62,14 +62,14 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/goon',
-    description: '强制重启 Claude 进程并发送"继续"恢复执行',
+    description: '强制重启 Agent 进程并发送"继续"恢复执行',
     usage: '/goon',
     examples: [ '/goon' ],
     category: '会话',
   },
   {
     name: '/cc',
-    description: '直接透传消息给 Claude（不附加发送人信息）',
+    description: '直接透传消息给 Agent（不附加发送人信息）',
     usage: '/cc <消息>',
     examples: [ '/cc 继续', '/cc /compact' ],
     category: '会话',
@@ -90,7 +90,7 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/cron',
-    description: '创建和管理定时任务(Claude自动分析自然语言)',
+    description: '创建和管理定时任务(Agent自动分析自然语言)',
     usage: '/cron <自然语言描述> | /cron <cron表达式> <任务描述> | /cron list|pause|resume|delete <id>',
     examples: [ '/cron 每天早上9点查看dima任务', '/cron 0 9 * * * 查看dima任务', '/cron list', '/cron pause cron_123', '/cron delete cron_123' ],
     category: '任务',
@@ -217,14 +217,14 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/qa',
-    description: '问答模式：开启后 Claude 以只读 plan 模式运行，所有群成员均可使用',
+    description: '问答模式：开启后 Agent 以只读 plan 模式运行，所有群成员均可使用',
     usage: '/qa | /qa exit | /qa --gitRepos https://github.com/a/b | /qa --docs url1,url2 | /qa --autoPull true|false',
     examples: [ '/qa', '/qa exit', '/qa --gitRepos https://github.com/user/repo.git', '/qa --docs https://example.com/doc --autoPull true' ],
     category: '管理',
   },
   {
     name: '/model',
-    description: '查看或切换当前会话使用的 Claude 模型',
+    description: '查看或切换当前会话使用的 Agent 模型',
     usage: '/model | /model list | /model <model-name> | /model add <model-name> | /model rm <model-name>',
     examples: [ '/model', '/model list', '/model claude-sonnet-4-20250514', '/model add claude-3-7-sonnet-20250219', '/model rm claude-haiku-4-20251001' ],
     category: '管理',

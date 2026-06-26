@@ -121,7 +121,7 @@ class RetryableApiError extends Error {
   }
 }
 
-/** Claude 会话已失效（会话被清理或过期），需清除 claudeSessionId 重新发起 */
+/** Agent 会话已失效（会话被清理或过期），需清除 agentSessionId 重新发起 */
 class ConversationNotFoundError extends Error {
   constructor() {
     super('Claude conversation not found');
@@ -293,7 +293,7 @@ function runClaudeOnce(
     child.stdin?.write(`${stdinMessage}\n`);
     child.stdin?.end();
 
-    let sessionIdCaptured = !isRetry && !!session.claudeSessionId;
+    let sessionIdCaptured = !isRetry && !!session.agentSessionId;
     let responseBuffer: string[] = [];
     let stderrOutput = '';
     let stdoutOutput = ''; // 累积 stdout 原始输出，用于错误检测
@@ -344,10 +344,9 @@ function runClaudeOnce(
 
       if (parsed) {
         if (parsed.type === 'system' && parsed.sessionId && !sessionIdCaptured) {
-          self.updateSessionFile(session, { claudeSessionId: parsed.sessionId });
+          self.updateSessionFile(session, { agentSessionId: parsed.sessionId });
           sessionIdCaptured = true;
-          // updateSessionFile 可能重命名了 session 目录（从 startTimeStr 改为 claudeSessionId），
-          // 需要重新计算路径，否则后续 appendFileSync 会因旧路径不存在而抛出 ENOENT
+          // agentSessionId 已设置，无需重命名目录（目录已用预生成的 UUID 命名）
           sessionDir = self.getSessionDir(session);
           sessionLog = `${sessionDir}/session.log`;
         }
@@ -572,9 +571,9 @@ function runClaudeOnce(
         return;
       }
 
-      // Claude 会话已失效（被清理或过期），抛出特殊错误让外层清除 claudeSessionId 后重试
-      if (session.claudeSessionId && isConversationNotFoundError(combinedOutput)) {
-        console.log(`[${timestamp()}] Claude 会话已失效: ${session.claudeSessionId}，通知外层重新发起新会话`);
+      // Agent 会话已失效（被清理或过期），抛出特殊错误让外层清除 agentSessionId 后重试
+      if (session.agentSessionId && isConversationNotFoundError(combinedOutput)) {
+        console.log(`[${timestamp()}] Agent 会话已失效: ${session.agentSessionId}，通知外层重新发起新会话`);
         reject(new ConversationNotFoundError());
         return;
       }
@@ -1039,15 +1038,14 @@ export async function executeClaudeQuery(
 
     // 每次循环动态构建命令参数（settings 和 resume 可能在重试时变化）
     const cmdArgs = [ ...fixedCmdArgs ];
-    if (session.claudeSessionId) {
-      cmdArgs.push('--resume', session.claudeSessionId);
+    if (session.agentSessionId) {
+      cmdArgs.push('--resume', session.agentSessionId);
       if (!isRetry) {
-        console.log(`[${timestamp()}] 恢复 Claude 会话: ${session.claudeSessionId}`);
+        console.log(`[${timestamp()}] 恢复 Agent 会话: ${session.agentSessionId}`);
       }
     } else if (!isRetry) {
       // 首轮新会话：显式指定 session-id，确保 session 从开始就被持久化到磁盘，
-      // 这样后续 --resume 一定能找到该会话。不预先设置 claudeSessionId，
-      // 因为 Claude 可能在内部使用不同的 UUID；改为依赖 stream 中返回的真实 session_id。
+      // 这样后续 --resume 一定能找到该会话。
       const explicitSessionId = newSessionId || randomUUID();
       cmdArgs.push('--session-id', explicitSessionId);
       console.log(`[${timestamp()}] 创建 Claude 会话(显式 session-id): ${explicitSessionId}`);
@@ -1074,7 +1072,7 @@ export async function executeClaudeQuery(
       await runClaudeOnce(self, session, cmdArgs, entryCmd, dingGroupDir, stdinMessage, isRetry, streamingCard, mergedEnvs);
       return; // 成功，退出
     } catch (err) {
-      // runClaudeOnce 可能因获取 claudeSessionId 而重命名了目录，需要重新计算路径
+      // runClaudeOnce 可能因设置 agentSessionId 而更新了 session 目录路径，需要重新计算
       sessionDir = self.getSessionDir(session);
       sessionLog = `${sessionDir}/session.log`;
 
@@ -1138,11 +1136,11 @@ export async function executeClaudeQuery(
       if (err instanceof ConversationNotFoundError) {
         totalRetries++; retryStartTime = retryStartTime || Date.now();
         retryHistory.push(`[${timestamp()}] 会话失效，清除旧会话`);
-        // Claude 会话已失效，清除 claudeSessionId 后重新发起新会话
-        console.log(`[${timestamp()}] Claude 会话失效，清除 claudeSessionId 并重新发起`);
-        fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Claude 会话已失效，清除旧会话并重新发起\n`, 'utf-8');
-        if (session.claudeSessionId) {
-          session.claudeSessionId = undefined;
+        // Agent 会话已失效，清除 agentSessionId 后重新发起新会话
+        console.log(`[${timestamp()}] Agent 会话失效，清除 agentSessionId 并重新发起`);
+        fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Agent 会话已失效，清除旧会话并重新发起\n`, 'utf-8');
+        if (session.agentSessionId) {
+          session.agentSessionId = undefined;
           self.updateSessionFile(session, {});
         }
         consecutiveFastFail = 0;
@@ -1208,8 +1206,8 @@ export async function executeClaudeQuery(
           content: '📦 上下文超长，正在自动压缩上下文(/compact)后继续...',
         });
         const compactCmdArgs = [ ...fixedCmdArgs ];
-        if (session.claudeSessionId) {
-          compactCmdArgs.push('--resume', session.claudeSessionId);
+        if (session.agentSessionId) {
+          compactCmdArgs.push('--resume', session.agentSessionId);
         }
         const compactSettingsPath = resolveClaudeSettingsPath(self, dingGroupDir, opts?.settings);
         if (compactSettingsPath) {

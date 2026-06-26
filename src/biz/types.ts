@@ -134,8 +134,7 @@ export interface ISession {
   startTimeStr: string;
   startStaffId: string;
   startNickName: string;
-  claudeSessionId?: string;
-  agentSessionId?: string; // Agent 会话 ID（Claude 用 claudeSessionId，Codex 用 thread_id）
+  agentSessionId?: string; // Agent 会话 ID
 }
 
 // 任务信息
@@ -306,6 +305,8 @@ export interface ISendMsgOpts {
   conversationId: string;
   sessionWebhook: string;
   atUserId?: string;
+  /** @ 通知时使用的用户名，用于 Markdown 格式 @[userName](userId) */
+  atUserName?: string;
   content: string;
   msgType?: 'text' | 'markdown';
 }

@@ -451,12 +451,12 @@ export function getImagesDir(self: DingClaude, conversationId: string): string {
 }
 
 export function getSessionDir(self: DingClaude, session: ISession): string {
-  const dirName = session.claudeSessionId || session.startTimeStr;
+  const dirName = session.agentSessionId || session.startTimeStr;
   return path.join(getSessionsDir(self, session.conversationId), dirName);
 }
 
 export function getSessionId(session: ISession): string {
-  return session.claudeSessionId || session.startTimeStr;
+  return session.agentSessionId || session.startTimeStr;
 }
 
 // ==================== 会话信息与日志 ====================
@@ -557,17 +557,8 @@ export function findLatestSession(self: DingClaude, conversationId: string): ISe
 export function updateSessionFile(
   self: DingClaude,
   session: ISession,
-  opts: { claudeSessionId?: string; agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string },
+  opts: { agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string },
 ): void {
-  if (opts.claudeSessionId && !session.claudeSessionId) {
-    const oldDir = getSessionDir(self, session);
-    session.claudeSessionId = opts.claudeSessionId;
-    const newDir = getSessionDir(self, session);
-    if (oldDir !== newDir && fs.existsSync(oldDir)) {
-      fs.renameSync(oldDir, newDir);
-      console.log(`[${timestamp()}] 会话目录重命名: ${path.basename(oldDir)} -> ${path.basename(newDir)}`);
-    }
-  }
   if (opts.agentSessionId && !session.agentSessionId) {
     session.agentSessionId = opts.agentSessionId;
   }
@@ -578,7 +569,7 @@ export function updateSessionFile(
     if (opts.currentWebhook !== undefined) session.currentWebhook = opts.currentWebhook || undefined;
     if (opts.currentConversationId !== undefined) session.currentConversationId = opts.currentConversationId || undefined;
     fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2), 'utf-8');
-    const changedField = opts.claudeSessionId ? 'claudeSessionId' : opts.agentSessionId ? 'agentSessionId' : opts.currentWebhook !== undefined ? 'currentWebhook' : 'sessionWebhook';
+    const changedField = opts.agentSessionId ? 'agentSessionId' : opts.currentWebhook !== undefined ? 'currentWebhook' : 'sessionWebhook';
     console.log(`[${timestamp()}] 会话文件已保存: ${changedField}`);
     saveActiveSession(self, session.conversationId);
   } catch (err) {
@@ -751,14 +742,14 @@ export async function switchToSession(
   });
   saveActiveSession(self, conversationId);
 
-  const hasClaudeSession = !!targetSession.claudeSessionId;
+  const hasAgentSession = !!targetSession.agentSessionId;
   const displayId = getSessionId(targetSession);
   await sendDingMessage(self, {
     conversationId, sessionWebhook,
-    content: `✅ 已切换到历史会话 (🆔 ${displayId})\n${hasClaudeSession ? '🔄 已恢复对话上下文' : '⚠️ 该会话无历史上下文，将从头开始'}\n💡 回复 /end 可结束本轮对话`,
+    content: `✅ 已切换到历史会话 (🆔 ${displayId})\n${hasAgentSession ? '🔄 已恢复对话上下文' : '⚠️ 该会话无历史上下文，将从头开始'}\n💡 回复 /end 可结束本轮对话`,
   });
 
-  console.log(`已切换到历史会话: 群=${conversationId}, 会话ID=${displayId}, 有Claude上下文=${hasClaudeSession}`);
+  console.log(`已切换到历史会话: 群=${conversationId}, 会话ID=${displayId}, 有Claude上下文=${hasAgentSession}`);
   return true;
 }
 
@@ -1062,10 +1053,10 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         senderStaffId,
       });
     } catch (err) {
-      // 恢复会话失败（可能会话已失效），清除 claudeSessionId 重新发起一次
-      if (activeSession.session.claudeSessionId) {
-        console.log(`[会话恢复失败] 清除 claudeSessionId 并重新发起: ${activeSession.session.claudeSessionId}`);
-        activeSession.session.claudeSessionId = undefined;
+      // 恢复会话失败（可能会话已失效），清除 agentSessionId 重新发起一次
+      if (activeSession.session.agentSessionId) {
+        console.log(`[会话恢复失败] 清除 agentSessionId 并重新发起: ${activeSession.session.agentSessionId}`);
+        activeSession.session.agentSessionId = undefined;
         self.updateSessionFile(activeSession.session, {});
         try {
           ensureAgent(self, activeSession);
