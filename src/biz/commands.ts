@@ -125,9 +125,9 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/open',
-    description: '在文件管理器、终端或VS Code中打开工作目录',
-    usage: '/open [shell|code]',
-    examples: [ '/open', '/open shell', '/open code' ],
+    description: '在文件管理器、终端、VS Code中打开工作目录，或打开Web管理界面',
+    usage: '/open [shell|code|console]',
+    examples: [ '/open', '/open shell', '/open code', '/open console' ],
     category: '管理',
   },
   {
@@ -565,15 +565,18 @@ export function parseVersionCommand(text: string): boolean {
 
 /**
  * 解析 /open 命令
- * - /open      -> 'folder' (在文件管理器中打开)
+ * - /open       -> 'folder' (在文件管理器中打开)
  * - /open shell -> 'shell' (在终端中打开)
+ * - /open code  -> 'code' (在 VS Code 中打开)
+ * - /open console -> 'console' (打开 Web 管理界面)
  * - 其他 -> null
  */
-export function parseOpenCommand(text: string): 'folder' | 'shell' | 'code' | null {
+export function parseOpenCommand(text: string): 'folder' | 'shell' | 'code' | 'console' | null {
   const trimmed = text.trim().toLowerCase();
   if (trimmed === '/open') return 'folder';
   if (trimmed === '/open shell') return 'shell';
   if (trimmed === '/open code') return 'code';
+  if (trimmed === '/open console') return 'console';
   return null;
 }
 

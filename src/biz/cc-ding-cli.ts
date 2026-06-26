@@ -2088,6 +2088,41 @@ export class DingClaude {
               content: `💻 已在 VS Code 中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
               msgType: 'markdown',
             });
+          } else if (openTarget === 'console') {
+            const { getConsoleUrl, getConsolePort, getConsoleHost, isLocalHost } = await import('./console');
+            const host = getConsoleHost();
+            const port = getConsolePort();
+            // 检测 console.host 是否为本机，非本机不执行 open
+            if (!isLocalHost(host)) {
+              const url = getConsoleUrl(port, host);
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: `️ Console 管理界面:\n\`\`\`\n${url}?client=${this.clientId}&conv=${conversationId}&tab=config\n\`\`\`\n> 注意: Console 服务未运行在本机，请手动在浏览器中打开`,
+                msgType: 'markdown',
+              });
+              return;
+            }
+            const url = getConsoleUrl(port, host);
+            const openUrl = `${url}?client=${this.clientId}&conv=${conversationId}&tab=config`;
+            if (platform === 'darwin') {
+              await launchDetached('open', [ openUrl ]);
+            } else if (isWindowsPlatform(platform)) {
+              await launchDetached('cmd.exe', [ '/c', 'start', openUrl ]);
+            } else if (commandExists('xdg-open')) {
+              await launchDetached('xdg-open', [ openUrl ]);
+            } else {
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: `🖥️ Console 管理界面:\n\`\`\`\n${openUrl}\n\`\`\`\n> 注意: 未检测到浏览器打开命令，请手动访问`,
+                msgType: 'markdown',
+              });
+              return;
+            }
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: `🖥️ 已在浏览器中打开 Console:\n\`\`\`\n${openUrl}\n\`\`\``,
+              msgType: 'markdown',
+            });
           } else {
             if (platform === 'darwin') {
               await launchDetached('open', [ '-a', 'Terminal', conversationDir ]);
@@ -3081,6 +3116,22 @@ export class DingClaude {
     };
     process.on('SIGTERM', onShutdown);
     process.on('SIGINT', onShutdown);
+
+    // SIGUSR2: 热重载配置（用于 Console Web 管理界面触发）
+    process.on('SIGUSR2', () => {
+      try {
+        const { config } = reloadClientConfig(this);
+        const diff = buildConfigDiff(this.config, config);
+        this.config = config;
+        if (diff.length > 0) {
+          console.log(`\n[config-reload] 配置已重载，变更:\n  ${diff.join('\n  ')}`);
+        } else {
+          console.log('[config-reload] 配置已重载，无变更');
+        }
+      } catch (err: any) {
+        console.error('[config-reload] 重载失败:', err.message);
+      }
+    });
 
     await Promise.all([ receiverPromise, ...handlerPromises ]);
   }

@@ -254,4 +254,47 @@ program
     });
   });
 
+program
+  .command('console')
+  .description(`
+        - 功能: 启动 Console Web 管理界面
+        - 默认端口: 8080（可通过 ~/.cc-ding/config.json 的 console.port 修改）
+        - 默认地址: 0.0.0.0（可通过 ~/.cc-ding/config.json 的 console.host 修改）
+        - 默认账号: admin / admin（首次登录强制修改密码）
+        - 管理多个 Client 配置、API Key、文件等
+      `)
+  .option('-p, --port <value>', 'HTTP 端口')
+  .option('--host <value>', 'HTTP 监听地址')
+  .option('--no-browser', '禁止自动打开浏览器')
+  .option('--open', '仅打印 URL 并退出（不启动服务）')
+  .action(async (opts) => {
+    const { startConsoleServer, getConsoleUrl, getConsolePort, getConsoleHost } = await import('../src/biz/console');
+
+    if (opts.open) {
+      const port = opts.port ? parseInt(opts.port, 10) : getConsolePort();
+      const host = opts.host || getConsoleHost();
+      console.log(getConsoleUrl(port, host));
+      return;
+    }
+
+    const options: { port?: number; host?: string; autoOpen?: boolean; noBrowser?: boolean } = {};
+    if (opts.port) options.port = parseInt(opts.port, 10);
+    if (opts.host) options.host = opts.host;
+    if (opts.browser === false) options.noBrowser = true;
+    options.autoOpen = true;
+
+    const server = await startConsoleServer(options);
+    console.log(`[Console] 按 Ctrl+C 停止服务`);
+
+    // 优雅退出
+    process.on('SIGINT', async () => {
+      await server.stop();
+      process.exit(0);
+    });
+    process.on('SIGTERM', async () => {
+      await server.stop();
+      process.exit(0);
+    });
+  });
+
 program.parse(process.argv);
