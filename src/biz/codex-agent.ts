@@ -1,4 +1,5 @@
 import readline from 'readline';
+import { exec as childExec } from 'child_process';
 import fs from 'fs';
 import { IAgent, IAgentQueryOpts } from './agent';
 import type { DingClaude } from './cc-ding-cli';
@@ -10,6 +11,39 @@ import {
 } from './session';
 import { spawnCommand } from './platform';
 import { AgentWatchdog, defaultWatchdogOnTimeout, defaultWatchdogOnRecoveryFailed } from './watchdog';
+
+/**
+ * Codex 认证错误匹配模式
+ */
+const codexAuthErrorPatterns = [
+  /refresh token.*(revoked|invalidat|expir)/i,
+  /access token could not be refreshed/i,
+  /invalidated oauth token/i,
+  /token_revoked/i,
+  /refresh_token_invalid/i,
+  /401 Unauthorized/i,
+  /invalid_request_error.*token/i,
+  /session has ended.*log in/i,
+];
+
+/**
+ * 判断文本是否包含 Codex 认证错误
+ */
+function isCodexAuthError(text: string): boolean {
+  return codexAuthErrorPatterns.some(p => p.test(text));
+}
+
+/**
+ * 从 device-auth 输出中提取 URL 和一次性代码
+ */
+function parseDeviceAuthOutput(output: string): { url: string; code: string } | null {
+  const urlMatch = output.match(/https?:\/\/[^\s]+\/codex\/device/);
+  const codeMatch = output.match(/([A-Z0-9]{4}-[A-Z0-9]{5})/);
+  if (urlMatch && codeMatch) {
+    return { url: urlMatch[0], code: codeMatch[1] };
+  }
+  return null;
+}
 
 /**
  * 解析 Codex CLI 的 JSON 流式事件
@@ -98,16 +132,16 @@ export class CodexAgent implements IAgent {
     if (session.agentSessionId) {
       // 恢复已有会话（使用 thread_id）
       cmdArgs.push('resume', '--skip-git-repo-check');
-      cmdArgs.push('-c', 'sandbox_mode=full-auto');
-      cmdArgs.push('-c', 'approval_policy=never');
+      cmdArgs.push('-c', 'sandbox.mode="danger-full-access"');
+      cmdArgs.push('-c', 'approval.mode=never');
       if (model) cmdArgs.push('--model', model);
       cmdArgs.push(session.agentSessionId);
       cmdArgs.push('--json', '-');
     } else {
       // 新会话
       cmdArgs.push('--skip-git-repo-check');
-      cmdArgs.push('--sandbox', 'full-auto');
-      cmdArgs.push('-c', 'approval_policy=never');
+      cmdArgs.push('--sandbox', 'danger-full-access');
+      cmdArgs.push('-c', 'approval.mode=never');
       if (model) cmdArgs.push('--model', model);
       cmdArgs.push('--json', '--cd', dingGroupDir, '-');
     }
@@ -155,6 +189,7 @@ export class CodexAgent implements IAgent {
     child.stdin?.end();
 
     const responseBuffer: string[] = [];
+    const stderrBuffer: string[] = [];
     let hasSentResponse = false;
 
     const updateActivity = () => {
@@ -232,13 +267,14 @@ export class CodexAgent implements IAgent {
         const str = data.toString();
         updateActivity();
         console.error(`[Codex stderr]: ${str}`);
+        stderrBuffer.push(str);
         try {
           const sessionDir = dc.getSessionDir(session);
           fs.appendFileSync(`${sessionDir}/session.log`, `[${timestamp()}] [ERROR]: ${str}`, 'utf-8');
         } catch { /* ignore */ }
       });
 
-      child.on('close', (code) => {
+      child.on('close', async (code) => {
         watchdog.markSettled();
         watchdog.stop();
         console.log(`[${timestamp()}] Codex 进程退出，代码: ${code}`);
@@ -278,7 +314,7 @@ export class CodexAgent implements IAgent {
         }
 
         // 正常退出但无回复
-        if (code === 0 && !activeSessionRef?.interrupted) {
+        if (code === 0) {
           console.warn(`[${timestamp()}] Codex 进程正常退出但未产生任何回复内容`);
           const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
           sendDingMessage(dc, {
@@ -287,9 +323,15 @@ export class CodexAgent implements IAgent {
             atUserId,
             content: '⚠️ Codex 处理完成但未返回任何内容',
           }).catch(() => {});
+          resolve();
+          return;
         }
 
-        if (code === 0) {
+        // 非零退出：检查是否为认证错误
+        const stderrText = stderrBuffer.join('');
+        if (code !== 0 && isCodexAuthError(stderrText)) {
+          console.log(`[${timestamp()}] 检测到 Codex 认证失效，尝试 device-auth 恢复`);
+          await this.handleAuthRecovery(dc, session);
           resolve();
           return;
         }
@@ -308,5 +350,57 @@ export class CodexAgent implements IAgent {
         reject(err);
       });
     });
+  }
+
+  /**
+   * 处理 Codex 认证失效：执行 device-auth 流程，将登录链接和代码发送给用户
+   */
+  private async handleAuthRecovery(dc: DingClaude, session: ISession): Promise<void> {
+    const atUserId = dc.activeSessions.get(session.conversationId)?.lastSenderStaffId || session.startStaffId;
+    try {
+      const output = await new Promise<string>((resolve, reject) => {
+        childExec('codex login --device-auth', { timeout: 30_000 }, (err, stdout, stderr) => {
+          if (err && !stdout) return reject(err);
+          resolve(stdout + stderr);
+        });
+      });
+
+      const deviceAuth = parseDeviceAuthOutput(output);
+      if (deviceAuth) {
+        console.log(`[${timestamp()}] Codex device-auth 成功: code=${deviceAuth.code}`);
+        await sendDingMessage(dc, {
+          conversationId: session.currentConversationId || session.conversationId,
+          sessionWebhook: session.currentWebhook || session.sessionWebhook,
+          atUserId,
+          content: `🔐 Codex 认证已失效，请在浏览器中打开以下链接并完成授权：
+
+${deviceAuth.url}
+
+输入一次性代码（15分钟内有效）：
+
+\`${deviceAuth.code}\`
+
+授权完成后重新提问即可。`,
+          msgType: 'markdown',
+        }).catch(() => {});
+      } else {
+        // device-auth 启动失败
+        console.error(`[${timestamp()}] Codex device-auth 输出解析失败: ${output.substring(0, 200)}`);
+        await sendDingMessage(dc, {
+          conversationId: session.currentConversationId || session.conversationId,
+          sessionWebhook: session.currentWebhook || session.sessionWebhook,
+          atUserId,
+          content: '⚠️ Codex 认证已失效。请在服务器终端执行 `codex login` 完成重新登录。',
+        }).catch(() => {});
+      }
+    } catch (err: any) {
+      console.error(`[${timestamp()}] Codex device-auth 执行失败:`, err?.message || err);
+      await sendDingMessage(dc, {
+        conversationId: session.currentConversationId || session.conversationId,
+        sessionWebhook: session.currentWebhook || session.sessionWebhook,
+        atUserId,
+        content: '⚠️ Codex 认证已失效，自动恢复失败。请在终端执行 `codex login` 重新登录。',
+      }).catch(() => {});
+    }
   }
 }

@@ -1206,7 +1206,7 @@ export class DingClaude {
         const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
         cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
-        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model || cfgOpts.enableMsgToUser !== undefined || cfgOpts.ensureAt !== undefined);
+        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model || cfgOpts.agent || cfgOpts.enableMsgToUser !== undefined || cfgOpts.ensureAt !== undefined);
 
         if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
