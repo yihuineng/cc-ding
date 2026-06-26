@@ -49,6 +49,8 @@ export interface IConfig {
   cardTemplateId?: string;
   /** AI Card 模板变量名，默认 "content" */
   cardTemplateKey?: string;
+  /** 自定义环境变量，会注入到 Agent 进程中 */
+  envs?: Record<string, string>;
   /** A2A (Agent-to-Agent) 协议配置（中心化 Hub 模式） */
   a2aCfg?: {
     /** 中心化 Hub URL（配置后自动向 Hub 注册 + 心跳） */
@@ -108,6 +110,8 @@ export interface IConversation {
   streaming?: boolean;
   /** markdown 回复后是否追加 text 消息确保 @ 通知生效，默认 false */
   ensureAt?: boolean;
+  /** 自定义环境变量（群维度，同名 key 覆盖 client 维度） */
+  envs?: Record<string, string>;
 }
 
 /** 问答模式配置 */

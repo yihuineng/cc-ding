@@ -1217,6 +1217,46 @@ export class DingClaude {
           return;
         }
 
+        // ---- /cfg --envs list: 查看环境变量 ----
+        if (cfgOpts.envsList) {
+          const targetEnvConvId = cfgOpts.conversationId || conversationId;
+          const targetEnvConv = targetEnvConvId === conversationId
+            ? conversationConfig
+            : this.config.conversations.find(c => c.conversationId === targetEnvConvId);
+          const lines: string[] = [];
+          lines.push('### 🌍 环境变量');
+          lines.push('');
+          // client 维度
+          const clientEnvs = this.config.envs;
+          if (clientEnvs && Object.keys(clientEnvs).length > 0) {
+            lines.push('**全局 (client)**');
+            for (const [ k, v ] of Object.entries(clientEnvs)) {
+              lines.push(`- \`${k}=${v}\``);
+            }
+            lines.push('');
+          } else {
+            lines.push('全局 (client): 无');
+            lines.push('');
+          }
+          // 群维度
+          if (targetEnvConv?.envs && Object.keys(targetEnvConv.envs).length > 0) {
+            lines.push(`**群 ${targetEnvConv.conversationTitle || targetEnvConvId}**`);
+            for (const [ k, v ] of Object.entries(targetEnvConv.envs)) {
+              lines.push(`- \`${k}=${v}\``);
+            }
+          } else {
+            lines.push(`群 ${targetEnvConv?.conversationTitle || targetEnvConvId}: 无`);
+          }
+          lines.push('');
+          lines.push('💡 `/cfg --envs KEY=VALUE` 设置全局 | `/cfg --envs KEY=VALUE --conv <id>` 设置群维度');
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: lines.join('\n'),
+            msgType: 'markdown',
+          });
+          return;
+        }
+
         // 确定目标 conversationId
         const targetConvId = cfgOpts.conversationId || conversationId;
         const isTargetOther = targetConvId !== conversationId;
@@ -1230,7 +1270,8 @@ export class DingClaude {
         const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
         cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
-        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model || cfgOpts.agent || cfgOpts.enableMsgToUser !== undefined || cfgOpts.ensureAt !== undefined || cfgOpts.receiveReplyMode !== undefined || cfgOpts.ackReaction !== undefined);
+        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model || cfgOpts.agent || cfgOpts.enableMsgToUser !== undefined || cfgOpts.ensureAt !== undefined || cfgOpts.receiveReplyMode !== undefined || cfgOpts.ackReaction !== undefined ||
+        cfgOpts.envs || cfgOpts.convEnvs);
 
         if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
@@ -1259,6 +1300,15 @@ export class DingClaude {
                 await resolveUserId(this, item);
               }
             }
+          }
+          // 自定义环境变量
+          if (cfgOpts.envs) {
+            if (!this.config.envs) this.config.envs = {};
+            Object.assign(this.config.envs, cfgOpts.envs);
+          }
+          if (cfgOpts.convEnvs) {
+            if (!existingConv.envs) existingConv.envs = {};
+            Object.assign(existingConv.envs, cfgOpts.convEnvs);
           }
           saveClientConfig(this);
           console.log(`[${timestamp()}] 刷新群配置: ${existingConv.conversationTitle || targetConvId}(${targetConvId})`);
@@ -1292,6 +1342,14 @@ export class DingClaude {
                 await resolveUserId(this, item);
               }
             }
+          }
+          // 自定义环境变量
+          if (cfgOpts.envs) {
+            if (!this.config.envs) this.config.envs = {};
+            Object.assign(this.config.envs, cfgOpts.envs);
+          }
+          if (cfgOpts.convEnvs) {
+            newConv.envs = cfgOpts.convEnvs;
           }
           this.config.conversations.push(newConv);
           saveClientConfig(this);

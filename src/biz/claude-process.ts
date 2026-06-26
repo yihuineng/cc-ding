@@ -24,6 +24,7 @@ import {
 import { resolveSecret } from './secrets';
 import { commandExists, formatClaudeCommandMissingMessage, isWindows, spawnCommand } from './platform';
 import { AgentWatchdog } from './watchdog';
+import { getMergedEnvs } from './env-utils';
 
 const MAX_FAST_FAIL = 20;
 const API_RETRY_DELAY_MS = 10_000;
@@ -261,6 +262,7 @@ function runClaudeOnce(
   stdinMessage: string,
   isRetry: boolean,
   streamingCard?: StreamingCard | null,
+  mergedEnvs?: Record<string, string>,
 ): Promise<number> {
   let sessionDir = self.getSessionDir(session);
   let sessionLog = `${sessionDir}/session.log`;
@@ -276,6 +278,7 @@ function runClaudeOnce(
     const child = spawnCommand(entryCmd, cmdArgs, {
       cwd: dingGroupDir,
       stdio: [ 'pipe', 'pipe', 'pipe' ],
+      env: mergedEnvs,
     });
 
     const activeSession = self.activeSessions.get(session.conversationId);
@@ -857,6 +860,9 @@ export async function executeClaudeQuery(
   let sessionLog = `${sessionDir}/session.log`;
   const dingGroupDir = self.getConversationDir(session.conversationId);
 
+  // 合并环境变量：process.env → config.envs → conversation.envs
+  const mergedEnvs = getMergedEnvs(self, session.conversationId);
+
   // 会话开始时，检查配置是否变更并注入 Claude 上下文（仅在变更时写入）
   injectSessionContextIfChanged(self, session);
 
@@ -1065,7 +1071,7 @@ export async function executeClaudeQuery(
     self.debugLog(`发送消息: ${stdinMessage.substring(0, 100)}...`);
 
     try {
-      await runClaudeOnce(self, session, cmdArgs, entryCmd, dingGroupDir, stdinMessage, isRetry, streamingCard);
+      await runClaudeOnce(self, session, cmdArgs, entryCmd, dingGroupDir, stdinMessage, isRetry, streamingCard, mergedEnvs);
       return; // 成功，退出
     } catch (err) {
       // runClaudeOnce 可能因获取 claudeSessionId 而重命名了目录，需要重新计算路径
@@ -1210,7 +1216,7 @@ export async function executeClaudeQuery(
           compactCmdArgs.push('--settings', compactSettingsPath);
         }
         try {
-          await runClaudeOnce(self, session, compactCmdArgs, entryCmd, dingGroupDir, '/compact', false);
+          await runClaudeOnce(self, session, compactCmdArgs, entryCmd, dingGroupDir, '/compact', false, null, mergedEnvs);
           console.log(`[${timestamp()}] /compact 执行成功，发送"继续"恢复执行`);
           fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: /compact 执行成功，发送"继续"恢复执行\n`, 'utf-8');
         } catch (compactErr) {

@@ -18,6 +18,7 @@ import {
   settingLabel,
 } from './api-key-manager';
 import { commandExists, formatClaudeCommandMissingMessage, spawnCommand } from './platform';
+import { getMergedEnvs } from './env-utils';
 
 const MAX_RETRY_COUNT = 3;
 /** 任务重置为待办后，延迟多久唤醒 handler 重试 */
@@ -420,6 +421,8 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
   const convCfg = getConversationConfig(self, task.conversationId);
   const conversationDir = getConversationDir(self, task.conversationId);
   const taskDir = `${getTasksDir(self, task.conversationId)}/${task.startTimeStr}`;
+  // 合并环境变量
+  const mergedEnvs = getMergedEnvs(self, task.conversationId);
   if (!fs.existsSync(taskDir)) {
     console.error(`任务目录不存在: ${taskDir}`);
     return true;
@@ -524,6 +527,7 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
       const child = spawnCommand(entryCmd, args, {
         cwd: conversationDir,
         stdio: [ 'ignore', 'pipe', 'pipe' ],
+        env: mergedEnvs,
       });
 
       // Watchdog: 定期检查是否长时间无活动，超时后 kill 进程

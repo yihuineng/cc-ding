@@ -11,6 +11,7 @@ import {
 } from './session';
 import { spawnCommand } from './platform';
 import { AgentWatchdog, defaultWatchdogOnTimeout, defaultWatchdogOnRecoveryFailed } from './watchdog';
+import { getMergedEnvs } from './env-utils';
 
 /**
  * Codex 认证错误匹配模式
@@ -147,7 +148,8 @@ export class CodexAgent implements IAgent {
     }
 
     console.log(`[${timestamp()}] 执行 Codex 查询: codex ${cmdArgs.join(' ')}`);
-    await this.runCodexOnce(dc, session, cmdArgs, dingGroupDir, stdinMessage);
+    const mergedEnvs = getMergedEnvs(dc, session.conversationId);
+    await this.runCodexOnce(dc, session, cmdArgs, dingGroupDir, stdinMessage, mergedEnvs);
   }
 
   interrupt(activeSession: IActiveSession, reason: string): boolean {
@@ -168,15 +170,16 @@ export class CodexAgent implements IAgent {
     cmdArgs: string[],
     cwd: string,
     stdinMessage: string,
+    mergedEnvs: Record<string, string>,
   ): Promise<void> {
     const activeSession = dc.activeSessions.get(session.conversationId);
     const startTime = Date.now();
 
-    // 使用 spawnCommand（兼容 Windows）
+    // 使用 spawnCommand（兼容 Windows），注入合并后的环境变量
     const child = spawnCommand('codex', cmdArgs, {
       cwd,
       stdio: [ 'pipe', 'pipe', 'pipe' ],
-      env: { ...process.env },
+      env: mergedEnvs,
     });
 
     if (activeSession) {

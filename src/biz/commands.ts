@@ -640,6 +640,14 @@ export interface ICfgOptions {
   enableMsgToUser?: boolean;
   /** markdown 回复后是否追加 text 消息确保 @ 通知生效，默认 false */
   ensureAt?: boolean;
+  /** 自定义环境变量（client 维度），格式 KEY=VALUE */
+  envs?: Record<string, string>;
+  /** 自定义环境变量（群维度），格式 KEY=VALUE */
+  convEnvs?: Record<string, string>;
+  /** 查看环境变量模式：仅列出，不做修改 */
+  envsList?: boolean;
+  /** 原始 envs 键值对（用于区分 client/群维度） */
+  rawEnvs?: Array<{ key: string; value: string }>;
 }
 
 export function parseCfgCommand(text: string): ICfgOptions | null {
@@ -718,7 +726,39 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
       result.ackReaction = tokens[++i];
     } else if (token === '--reload') {
       result.reload = true;
+    } else if (token === '--envs') {
+      // /cfg --envs          → 查看
+      // /cfg --envs list     → 查看
+      // /cfg --envs KEY=VALUE              → client 维度
+      // /cfg --envs KEY=VALUE --conv <id>  → 群维度
+      if (!tokens[i + 1] || tokens[i + 1] === 'list' || tokens[i + 1] === 'ls') {
+        result.envsList = true;
+      } else {
+        const val = tokens[++i];
+        const [ key, ...valueParts ] = val.split('=');
+        if (key && valueParts.length > 0) {
+          if (!result.rawEnvs) result.rawEnvs = [];
+          result.rawEnvs.push({ key, value: valueParts.join('=') });
+        }
+      }
+    } else if (token === '--conv' && tokens[i + 1]) {
+      // --conv <convId> 指定群维度操作
+      result.conversationId = tokens[++i];
     }
+  }
+
+  // 后置处理：根据 --conv 判断 envs 维度
+  if (result.rawEnvs && result.rawEnvs.length > 0) {
+    if (result.conversationId) {
+      // 有 --conv → 群维度
+      result.convEnvs = {};
+      for (const kv of result.rawEnvs) result.convEnvs[kv.key] = kv.value;
+    } else {
+      // 无 --conv → client 维度
+      result.envs = {};
+      for (const kv of result.rawEnvs) result.envs[kv.key] = kv.value;
+    }
+    delete result.rawEnvs;
   }
 
   return result;
