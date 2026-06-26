@@ -62,6 +62,7 @@ import { TimerEngine, formatTimerList, formatTimerInfo } from './timer';
 import { SendQueueProcessor } from './send-queue';
 import { initModelOptions, loadModelOptions, addModelOptions, removeModelOptions, resolveCurrentModel, setConversationModel } from './model';
 import { commandExists, isWindows, isWindowsPlatform, spawnCommand } from './platform';
+import { isOldMessage, messageDedup, bounceDedup, PROCESS_START_TIME } from './dedup';
 
 /** 工具版本号 */
 const TOOL_VERSION = projUtil().getPkgVersion();
@@ -285,10 +286,12 @@ export class DingClaude {
   startNewSession = (opts: {
     conversationId: string; sessionWebhook: string; senderStaffId: string;
     senderNick: string; message: string; conversationConfig: IConfig['conversations'][0];
+    msgCreateAt?: number;
   }) => startNewSession(this, opts);
   handleSessionMessage = (opts: {
     conversationId: string; sessionWebhook: string; senderStaffId: string;
     senderNick: string; message: string; conversationConfig: IConfig['conversations'][0];
+    msgCreateAt?: number;
   }) => handleSessionMessage(this, opts);
   cleanCache = (conversationId: string | null, keepActiveSession = true) => cleanCache(this, conversationId, keepActiveSession);
 
@@ -947,6 +950,26 @@ export class DingClaude {
     }
 
     const conversationConfig = this.getConversationConfig(conversationId);
+
+    // ==================== 四层消息去重 ====================
+    // 第一层：丢弃进程重启前的旧消息
+    const msgCreateAt = (rawData as any).createAt || 0;
+    if (isOldMessage(msgCreateAt)) {
+      this.debugLog(`去重[旧消息]: createAt=${msgCreateAt}, PROCESS_START_TIME=${PROCESS_START_TIME}`);
+      return;
+    }
+
+    // 第二层：基于 msgId 的精确去重，过滤 WebSocket 重连重复
+    if (messageDedup.isDuplicate(res.headers.messageId)) {
+      this.debugLog(`去重[重复msgId]: ${res.headers.messageId}`);
+      return;
+    }
+
+    // 第三层：钉钉抖动去重，过滤同一用户短时间重复发送
+    if (bounceDedup.isBounce(senderStaffId, conversationId, textContent)) {
+      this.debugLog(`去重[抖动]: sender=${senderStaffId}, conv=${conversationId}, content=${textContent.substring(0, 20)}`);
+      return;
+    }
 
     // ==================== Recorder 模式处理 ====================
     const recorderCmd = parseRecorderCommandEnhanced(textContent);
@@ -2728,6 +2751,7 @@ export class DingClaude {
       senderNick,
       message: finalPrompt,
       conversationConfig,
+      msgCreateAt,
     });
   }
 

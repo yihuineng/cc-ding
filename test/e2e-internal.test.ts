@@ -15,6 +15,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { EventEmitter } from 'events';
+import { resetAllDedup } from '../src/biz/dedup';
 
 // ============================================================
 // 测试隔离：专用 clientId
@@ -150,6 +151,11 @@ async function createTestDingClaude(): Promise<any> {
 
 describe('E2E: 内部消息链路测试', () => {
   let configBackup: string | null = null;
+
+  beforeEach(() => {
+    // 重置去重器状态，避免跨测试污染
+    resetAllDedup();
+  });
 
   before(() => {
     // 创建测试目录

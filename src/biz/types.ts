@@ -155,6 +155,7 @@ export interface IMessageQueueItem {
   sessionWebhook: string;     // 入队时的 webhook 地址（消费时使用，webhook 可能过期）
   conversationId: string;     // 入队时的会话ID（消费时确认来源，避免跨会话混用）
   enqueueTime: number;        // 入队时间戳（用于超时清理或优先级排序）
+  createAt?: number;           // 消息原始创建时间（用于水印时序检查）
 }
 
 export interface IActiveSession {

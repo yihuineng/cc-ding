@@ -10,6 +10,7 @@ import { parseEndCommand } from './commands';
 import { sendDingMessage, queryUserIdByMobile, queryUserIdByJobNumber, queryDingUser } from './messaging';
 import { createAgent } from './agent-registry';
 import { isWindows } from './platform';
+import { userMessageWatermark } from './dedup';
 
 /**
  * 获取当前时间戳字符串 (YYYY-MM-DD HH:mm:ss)
@@ -728,8 +729,9 @@ export async function startNewSession(self: DingClaude, opts: {
   senderNick: string;
   message: string;
   conversationConfig: IConfig['conversations'][0];
+  msgCreateAt?: number; // 消息创建时间戳（用于水印）
 }): Promise<void> {
-  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig } = opts;
+  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig, msgCreateAt } = opts;
 
   const maxConcurrency = self.config.sessionMaxConcurrency ?? self.DEFAULT_SESSION_MAX_CONCURRENCY;
   if (self.activeSessions.size >= maxConcurrency) {
@@ -769,6 +771,9 @@ export async function startNewSession(self: DingClaude, opts: {
   });
   saveActiveSession(self, conversationId);
 
+  // 水印：新会话标记进入处理中
+  if (msgCreateAt) userMessageWatermark.markInFlight(conversationId, msgCreateAt);
+
   if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
     await sendDingMessage(self, {
       conversationId, sessionWebhook,
@@ -795,6 +800,8 @@ export async function startNewSession(self: DingClaude, opts: {
     if (activeSession) {
       activeSession.isProcessing = false;
     }
+    // 水印：新会话处理完成
+    if (msgCreateAt) userMessageWatermark.markCompleted(conversationId, msgCreateAt);
   }
   // 检查并处理排队消息（含 /new 后的 drain）
   const finalSession = self.activeSessions.get(conversationId);
@@ -811,7 +818,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   if (!activeSession || !activeSession.messageQueue || activeSession.messageQueue.length === 0) return;
 
   const entry = activeSession.messageQueue.shift()!;
-  const { message, senderStaffId, senderNick, sessionWebhook, conversationId: entryConvId, enqueueTime } = entry;
+  const { message, senderStaffId, senderNick, sessionWebhook, conversationId: entryConvId, enqueueTime, createAt: entryCreateAt } = entry;
 
   // 检查消息是否过期（超过 10 分钟跳过）
   const MAX_QUEUE_AGE_MS = 10 * 60 * 1000;
@@ -824,11 +831,24 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
     return;
   }
 
+  // 第四层：出队排水阶段时序检查
+  if (entryCreateAt && userMessageWatermark.isExpired(conversationId, entryCreateAt, 'drain')) {
+    console.log(`水印[跳过旧消息-排水]: 群=${entryConvId}, createAt=${entryCreateAt}`);
+    // 继续处理下一条
+    if (activeSession.messageQueue.length > 0) {
+      await processMessageQueue(self, conversationId);
+    }
+    return;
+  }
+
   console.log(`处理队列消息: 群=${entryConvId}, 剩余 ${activeSession.messageQueue.length} 条`);
 
   activeSession.isProcessing = true;
   activeSession.lastSenderStaffId = senderStaffId;
   saveActiveSession(self, conversationId);
+
+  // 水印：出队标记进入处理中
+  if (entryCreateAt) userMessageWatermark.markInFlight(conversationId, entryCreateAt);
 
   if (activeSession.conversationConfig.receiveReply !== false) {
     const preview = message.length > 50 ? message.substring(0, 50) + '…' : message;
@@ -855,6 +875,8 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
     });
   } finally {
     activeSession.isProcessing = false;
+    // 水印：队列消息处理完成
+    if (entryCreateAt) userMessageWatermark.markCompleted(conversationId, entryCreateAt);
   }
 
   // goonPending: /goon 命令触发的强制重启，发送"继续"恢复执行
@@ -890,8 +912,9 @@ export async function handleSessionMessage(self: DingClaude, opts: {
   senderNick: string;
   message: string;
   conversationConfig: IConfig['conversations'][0];
+  msgCreateAt?: number; // 消息创建时间戳（用于水印时序检查）
 }): Promise<void> {
-  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig } = opts;
+  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig, msgCreateAt } = opts;
 
   // 剥离可能存在的 [提及用户: ...] 前缀，确保命令精确匹配
   const rawMessage = message.replace(/^\[提及用户: .+\]\n/, '');
@@ -914,14 +937,23 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     }
 
     if (activeSession.isProcessing) {
+      // 第四层：队列阶段时序检查
+      if (msgCreateAt && userMessageWatermark.isExpired(conversationId, msgCreateAt, 'queue')) {
+        console.log(`水印[跳过旧消息]: 群=${conversationId}, createAt=${msgCreateAt}`);
+        return;
+      }
+
       // 正在处理中，将消息加入队列
       const queueEntry: IMessageQueueItem = {
         message, senderStaffId, senderNick,
         sessionWebhook, conversationId,
         enqueueTime: Date.now(),
+        createAt: msgCreateAt || 0,
       };
       if (!activeSession.messageQueue) activeSession.messageQueue = [];
       activeSession.messageQueue.push(queueEntry);
+      // 更新排队水印
+      if (msgCreateAt) userMessageWatermark.markQueued(conversationId, msgCreateAt);
       const queuePos = activeSession.messageQueue.length;
       console.log(`会话 ${conversationId} 消息已入队，排队第 ${queuePos} 条`);
       await sendDingMessage(self, {
@@ -936,6 +968,16 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     activeSession.lastSenderStaffId = senderStaffId;
     activeSession.isProcessing = true;
     saveActiveSession(self, found!.key);
+
+    // 第四层：直接处理阶段时序检查
+    if (msgCreateAt && userMessageWatermark.isExpired(conversationId, msgCreateAt, 'process')) {
+      console.log(`水印[跳过旧消息-直接处理]: 群=${conversationId}, createAt=${msgCreateAt}`);
+      activeSession.isProcessing = false;
+      await processMessageQueue(self, conversationId);
+      return;
+    }
+    // 标记进入处理中状态
+    if (msgCreateAt) userMessageWatermark.markInFlight(conversationId, msgCreateAt);
 
     // 同群消息刷新sessionWebhook，关联群消息只更新currentWebhook/currentConversationId
     if (isFromSessionOwner && sessionWebhook !== activeSession.session.sessionWebhook) {
@@ -993,10 +1035,12 @@ export async function handleSessionMessage(self: DingClaude, opts: {
       console.error('执行 Agent 查询失败:', err);
       await sendDingMessage(self, {
         conversationId, sessionWebhook, atUserId: senderStaffId,
-        content: `❌ 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
+        content: ` 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
       });
     } finally {
       activeSession.isProcessing = false;
+      // 水印：标记处理完成
+      if (msgCreateAt) userMessageWatermark.markCompleted(conversationId, msgCreateAt);
     }
     // 检查并处理排队消息
     await processMessageQueue(self, conversationId);
