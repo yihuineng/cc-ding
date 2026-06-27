@@ -35,6 +35,7 @@
 
 - [快速开始](#快速开始)
 - [命令参考](#命令参考)
+- [Web Console](#web-console)
 - [配置说明](#配置说明)
 - [数据存储](#数据存储)
 - [开发](#开发)
@@ -128,6 +129,53 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `/freedom` | 自由模式：开启后所有群成员均可使用机器人（跳过白名单限制，60s 内回复"确认"即可开启） |
 | `/recorder [on\|exit]` | Recorder 模式：记录所有消息到本地（仅 owner 单聊） |
 | `/reboot [--update]` | 重启 cc-ding 应用 |
+
+### Web Console
+
+cc-ding 提供了一个 Web 管理界面，用于可视化管理客户端配置、API Key、辅助文件等。
+
+#### 启动 Console
+
+```bash
+cc-ding console [--port 8080] [--host 0.0.0.0] [--open]
+```
+
+| 参数 | 说明 |
+|------|------|
+| `--port` | HTTP 监听端口（默认 8080） |
+| `--host` | HTTP 监听地址（默认 0.0.0.0） |
+| `--open` / `--browser` | 启动后自动打开浏览器 |
+| `--no-browser` | 禁止自动打开浏览器 |
+
+也可以通过聊天命令 `/open console` 在本地自动打开 Console 页面。
+
+#### 登录
+
+- 默认账号：`admin` / `admin`
+- 首次登录时会强制要求修改密码
+- Bearer Token 认证，24 小时过期
+
+#### 功能
+
+- **客户端管理** — 查看所有客户端的在线状态、会话数、API Key 数量
+- **配置编辑** — 查看脱敏后的配置、通过 dot-path 语法修改嵌套值、原始 JSON 编辑（写前自动备份）
+- **API Key 管理** — 列表 / 添加 / 编辑 / 删除 / 重置，支持切换有效状态
+- **文件管理** — 读写辅助 JSON 文件（`menu.json`、`model.json`、`cron.json`、`todo.json`、`user-map.json`、`active.json`）
+- **环境变量查看** — 扫描配置中的 `$ENV:` 引用，显示当前进程环境变量值
+- **全局配置** — 修改 Console 端口 / 监听地址、编辑 `settings-tpl.json` 模板
+- **系统状态** — 版本、平台、运行时间、在线客户端数
+- **热重载** — 向客户端进程发送 SIGUSR2 信号触发配置重载
+
+#### URL 深度链接
+
+`/open console` 命令会自动构建深度链接，例如：
+
+```
+http://localhost:8080?client=dingiexxdy25itrcuwtb&tab=config
+```
+
+- `client` — 自动跳转到指定客户端详情页
+- `tab` — 自动切换到指定标签页（`config` / `keys` / `files` / `env` / `raw`）
 
 ### 配置说明
 
@@ -239,6 +287,7 @@ Scan the QR code to join our DingTalk or WeChat group:
 
 - [Quick Start](#quick-start)
 - [Commands](#commands)
+- [Web Console](#web-console-1)
 - [Configuration](#configuration)
 - [Data Storage](#data-storage)
 - [Development](#development)
@@ -332,6 +381,53 @@ pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding cc-ding run -ci {clientI
 | `/freedom` | Freedom mode: all group members can use the bot (skip whitelist, reply "confirm" within 60s to activate) |
 | `/recorder [on\|exit]` | Recorder mode: log all messages locally (owner single-chat only) |
 | `/reboot [--update]` | Restart cc-ding application |
+
+### Web Console
+
+cc-ding provides a web administration interface for visual management of client configs, API keys, auxiliary files, and more.
+
+#### Start Console
+
+```bash
+cc-ding console [--port 8080] [--host 0.0.0.0] [--open]
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `--port` | HTTP listen port (default 8080) |
+| `--host` | HTTP listen address (default 0.0.0.0) |
+| `--open` / `--browser` | Auto-open browser on start |
+| `--no-browser` | Disable auto-opening browser |
+
+You can also use the chat command `/open console` to open the Console page locally.
+
+#### Login
+
+- Default credentials: `admin` / `admin`
+- Password change is required on first login
+- Bearer Token authentication, 24-hour expiry
+
+#### Features
+
+- **Client Management** — View online status, conversation counts, API Key counts for all clients
+- **Config Editing** — View masked configs, patch nested values via dot-path syntax, raw JSON editing (auto-backup before write)
+- **API Key Management** — List / add / edit / delete / reset, toggle validity
+- **File Management** — Read/write auxiliary JSON files (`menu.json`, `model.json`, `cron.json`, `todo.json`, `user-map.json`, `active.json`)
+- **Environment Variables** — Scan config for `$ENV:` references and display current process.env values
+- **Global Config** — Change Console port / host, edit `settings-tpl.json` template
+- **System Status** — Version, platform, uptime, online client count
+- **Hot Reload** — Send SIGUSR2 signal to client processes to trigger config reload
+
+#### URL Deep Links
+
+The `/open console` command auto-builds deep links like:
+
+```
+http://localhost:8080?client=dingiexxdy25itrcuwtb&tab=config
+```
+
+- `client` — Auto-navigate to the specified client detail page
+- `tab` — Auto-switch to the specified tab (`config` / `keys` / `files` / `env` / `raw`)
 
 ### Configuration
 

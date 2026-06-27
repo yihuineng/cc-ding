@@ -96,6 +96,13 @@ function backupFile(filePath: string): string | null {
   }
 }
 
+/** 解析逗号分隔字符串或直接返回数组 */
+function parseStringList(val: unknown): string[] {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') return val.split(',').map(s => s.trim()).filter(Boolean);
+  return [];
+}
+
 /** 设置 dot-path 嵌套值 */
 function dotPathSet(obj: any, pathStr: string, value: any): void {
   const keys = pathStr.split('.');
@@ -375,6 +382,50 @@ async function handleChangePassword(req: http.IncomingMessage, res: http.ServerR
   }
 }
 
+/** POST /api/clients — 创建新客户端 */
+async function handleCreateClient(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  try {
+    const body = await readBody(req);
+    const data = JSON.parse(body || '{}');
+
+    const { clientId, clientName, owner, clientSecret, defaultDingToken } = data;
+    if (!clientId || !owner || !clientSecret || !defaultDingToken) {
+      jsonError(res, 400, '缺少必填字段: clientId, owner, clientSecret, defaultDingToken');
+      return;
+    }
+
+    if (!/^[a-zA-Z0-9_-]+$/.test(clientId)) {
+      jsonError(res, 400, 'clientId 只能包含字母、数字、连字符和下划线');
+      return;
+    }
+
+    const clientDir = path.join(getHomeDir(), '.cc-ding', clientId);
+    const configPath = path.join(clientDir, 'config.json');
+    if (fs.existsSync(configPath)) {
+      jsonError(res, 409, 'clientId 已存在');
+      return;
+    }
+
+    const whiteUserList = parseStringList(data.whiteUserList);
+    const config: IConfig = {
+      clientName: clientName || 'cc助手',
+      owner,
+      whiteUserList,
+      clientSecret,
+      defaultDingToken,
+      conversations: [],
+    };
+
+    fs.mkdirSync(clientDir, { recursive: true });
+    atomicWrite(configPath, JSON.stringify(config, null, 2));
+    jsonResponse(res, 201, { message: '客户端已创建', clientId, configPath });
+  } catch (err) {
+    jsonError(res, 400, '请求格式错误');
+  }
+}
+
 /** GET /api/clients */
 async function handleGetClients(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   if (!requireAuth(req, res)) return;
@@ -468,6 +519,144 @@ async function handlePatchClientConfig(req: http.IncomingMessage, res: http.Serv
     jsonResponse(res, 200, { message: '配置已更新', path: configPath });
   } catch (err) {
     jsonError(res, 400, '请求格式错误');
+  }
+}
+
+/** POST /api/clients/:id/conversations — 添加会话 */
+async function handleAddConversation(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
+  if (!fs.existsSync(configPath)) {
+    jsonError(res, 404, '客户端配置不存在');
+    return;
+  }
+
+  try {
+    const body = await readBody(req);
+    const data = JSON.parse(body || '{}');
+
+    if (!data.conversationId || !data.conversationType) {
+      jsonError(res, 400, '缺少必填字段: conversationId, conversationType');
+      return;
+    }
+
+    const config = fileUtil.getJSON(configPath) as IConfig;
+    if (config.conversations?.some(c => c.conversationId === data.conversationId)) {
+      jsonError(res, 409, 'conversationId 已存在');
+      return;
+    }
+
+    const newConv: any = {
+      conversationId: data.conversationId,
+      conversationType: data.conversationType,
+    };
+    if (data.conversationTitle) newConv.conversationTitle = data.conversationTitle;
+    if (data.dingToken) newConv.dingToken = data.dingToken;
+    if (data.mobile) newConv.mobile = data.mobile;
+    const wul = parseStringList(data.whiteUserList);
+    if (wul.length) newConv.whiteUserList = wul;
+    if (data.agent) newConv.agent = data.agent;
+    if (data.model) newConv.model = data.model;
+    if (data.useLocalOcr !== undefined) newConv.useLocalOcr = !!data.useLocalOcr;
+    if (data.atSender !== undefined) newConv.atSender = !!data.atSender;
+    if (data.receiveReply !== undefined) newConv.receiveReply = !!data.receiveReply;
+    if (data.receiveReplyMode) newConv.receiveReplyMode = data.receiveReplyMode;
+    if (data.ackReaction) newConv.ackReaction = data.ackReaction;
+    if (data.qaMode) newConv.qaMode = true;
+    if (data.freedomMode) newConv.freedomMode = true;
+    if (data.streaming) newConv.streaming = true;
+    if (data.permissionMode) newConv.permissionMode = data.permissionMode;
+    if (data.preBash) newConv.preBash = data.preBash;
+    if (data.linkConversationId) newConv.linkConversationId = data.linkConversationId;
+    if (data.ensureAt) newConv.ensureAt = true;
+    if (data.maxTurnTimeMins) newConv.maxTurnTimeMins = data.maxTurnTimeMins;
+    if (data.taskCfg?.skill) newConv.taskCfg = { skill: data.taskCfg.skill };
+    if (data.qaCfg) newConv.qaCfg = data.qaCfg;
+    if (data.envs) newConv.envs = data.envs;
+
+    if (!config.conversations) config.conversations = [];
+    config.conversations.push(newConv);
+
+    backupFile(configPath);
+    atomicWrite(configPath, JSON.stringify(config, null, 2));
+    jsonResponse(res, 201, { message: '会话已创建' });
+  } catch (err) {
+    jsonError(res, 400, '请求格式错误');
+  }
+}
+
+/** PUT /api/clients/:id/conversations/:convId — 更新会话 */
+async function handleUpdateConversation(req: http.IncomingMessage, res: http.ServerResponse, clientId: string, convId: string): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
+  if (!fs.existsSync(configPath)) {
+    jsonError(res, 404, '客户端配置不存在');
+    return;
+  }
+
+  try {
+    const body = await readBody(req);
+    const data = JSON.parse(body || '{}');
+    const config = fileUtil.getJSON(configPath) as IConfig;
+
+    const idx = config.conversations?.findIndex(c => c.conversationId === convId) ?? -1;
+    if (idx < 0) {
+      jsonError(res, 404, '会话不存在');
+      return;
+    }
+
+    const conv = config.conversations![idx];
+    const updatable: (keyof typeof data)[] = [
+      'conversationType', 'conversationTitle', 'dingToken', 'mobile',
+      'whiteUserList', 'agent', 'model', 'useLocalOcr', 'atSender',
+      'receiveReply', 'receiveReplyMode', 'ackReaction', 'qaMode',
+      'freedomMode', 'streaming', 'permissionMode', 'preBash',
+      'linkConversationId', 'ensureAt', 'maxTurnTimeMins', 'taskCfg', 'qaCfg', 'envs',
+    ];
+    for (const field of updatable) {
+      if (data[field] !== undefined) {
+        if (field === 'whiteUserList') {
+          (conv as any)[field] = parseStringList(data[field]);
+        } else {
+          (conv as any)[field] = data[field];
+        }
+      }
+    }
+
+    backupFile(configPath);
+    atomicWrite(configPath, JSON.stringify(config, null, 2));
+    jsonResponse(res, 200, { message: '会话已更新' });
+  } catch (err) {
+    jsonError(res, 400, '请求格式错误');
+  }
+}
+
+/** DELETE /api/clients/:id/conversations/:convId — 删除会话 */
+async function handleDeleteConversation(req: http.IncomingMessage, res: http.ServerResponse, clientId: string, convId: string): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
+  if (!fs.existsSync(configPath)) {
+    jsonError(res, 404, '客户端配置不存在');
+    return;
+  }
+
+  try {
+    const config = fileUtil.getJSON(configPath) as IConfig;
+    const idx = config.conversations?.findIndex(c => c.conversationId === convId) ?? -1;
+    if (idx < 0) {
+      jsonError(res, 404, '会话不存在');
+      return;
+    }
+
+    config.conversations!.splice(idx, 1);
+    backupFile(configPath);
+    atomicWrite(configPath, JSON.stringify(config, null, 2));
+    jsonResponse(res, 200, { message: '会话已删除' });
+  } catch (err) {
+    jsonError(res, 500, '删除失败');
   }
 }
 
@@ -823,6 +1012,8 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   const clientApiKeyResetMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys\/reset$/);
   const clientFilesMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/files$/);
   const clientIdMatch = pathname.match(/^\/api\/clients\/([^\/]+)$/);
+  const clientConvMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations$/);
+  const clientConvIdMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/(.+)$/);
 
   // POST /api/login
   if (pathname === '/api/login' && req.method === 'POST') {
@@ -869,6 +1060,12 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // GET /api/clients
   if (pathname === '/api/clients' && req.method === 'GET') {
     await handleGetClients(req, res);
+    return;
+  }
+
+  // POST /api/clients
+  if (pathname === '/api/clients' && req.method === 'POST') {
+    await handleCreateClient(req, res);
     return;
   }
 
@@ -963,6 +1160,24 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   if (clientFilesMatch && req.method === 'PUT') {
     const name = query.get('name') || '';
     await handlePutClientFile(req, res, clientFilesMatch[1], name);
+    return;
+  }
+
+  // POST /api/clients/:id/conversations
+  if (clientConvMatch && req.method === 'POST') {
+    await handleAddConversation(req, res, clientConvMatch[1]);
+    return;
+  }
+
+  // PUT /api/clients/:id/conversations/:convId
+  if (clientConvIdMatch && req.method === 'PUT') {
+    await handleUpdateConversation(req, res, clientConvIdMatch[1], decodeURIComponent(clientConvIdMatch[2]));
+    return;
+  }
+
+  // DELETE /api/clients/:id/conversations/:convId
+  if (clientConvIdMatch && req.method === 'DELETE') {
+    await handleDeleteConversation(req, res, clientConvIdMatch[1], decodeURIComponent(clientConvIdMatch[2]));
     return;
   }
 
@@ -1532,11 +1747,11 @@ function renderClientList() {
   if (!section) return;
 
   if (state.clients.length === 0) {
-    section.innerHTML = '<div class="empty-state"><div class="icon">📭</div><p>暂无客户端配置</p><p class="text-muted">请先运行 cc-ding init 初始化</p></div>';
+    section.innerHTML = '<div class="card"><div class="flex-between"><div class="card-title" style="margin-bottom:0">客户端列表</div><button class="btn btn-primary" onclick="showCreateClientModal()">➕ 新建 Client</button></div></div><div class="empty-state"><div class="icon">📭</div><p>暂无客户端配置</p><p class="text-muted">请创建新 Client 或运行 cc-ding init 初始化</p></div>';
     return;
   }
 
-  let html = '<div class="card-grid">';
+  let html = '<div class="card"><div class="flex-between"><div class="card-title" style="margin-bottom:0">客户端列表 (' + state.clients.length + ')</div><button class="btn btn-primary" onclick="showCreateClientModal()">➕ 新建 Client</button></div></div><div class="card-grid">';
   for (const c of state.clients) {
     html += \`
       <div class="card client-card" onclick="selectClient('\${c.clientId}')">
@@ -1559,6 +1774,52 @@ function renderClientList() {
   section.innerHTML = html;
 }
 
+// ===== Create Client Modal =====
+function showCreateClientModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'create-client-modal';
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = '<div class="modal">' +
+    '<div class="modal-title">新建 Client</div>' +
+    '<div class="form-group"><label>ClientId *</label><input type="text" id="cc-clientId" placeholder="唯一标识，如 my-project" pattern="[a-zA-Z0-9_-]+"></div>' +
+    '<div class="form-group"><label>Client 名称</label><input type="text" id="cc-clientName" value="cc助手"></div>' +
+    '<div class="form-group"><label>Owner * (手机号或工号)</label><input type="text" id="cc-owner" placeholder="owner手机号"></div>' +
+    '<div class="form-group"><label>Client Secret *</label><input type="text" id="cc-clientSecret" placeholder="钉钉Stream Client密钥"></div>' +
+    '<div class="form-group"><label>默认 Ding Token *</label><input type="text" id="cc-defaultDingToken" placeholder="兜底钉钉机器人Token"></div>' +
+    '<div class="form-group"><label>白名单 (逗号分隔)</label><input type="text" id="cc-whiteUserList" placeholder="手机号1,手机号2"></div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="document.getElementById(' + SQ + 'create-client-modal' + SQ + ').remove()">取消</button>' +
+    '<button class="btn btn-primary" onclick="doCreateClient()">创建</button>' +
+    '</div></div>';
+  document.body.appendChild(overlay);
+  setTimeout(() => { const el = document.getElementById('cc-clientId'); if (el) el.focus(); }, 100);
+}
+
+async function doCreateClient() {
+  var clientId = document.getElementById('cc-clientId').value.trim();
+  var clientName = document.getElementById('cc-clientName').value.trim();
+  var owner = document.getElementById('cc-owner').value.trim();
+  var clientSecret = document.getElementById('cc-clientSecret').value.trim();
+  var defaultDingToken = document.getElementById('cc-defaultDingToken').value.trim();
+  var whiteUserList = document.getElementById('cc-whiteUserList').value.trim();
+
+  if (!clientId || !owner || !clientSecret || !defaultDingToken) {
+    toast('请填写所有必填字段', 'error'); return;
+  }
+
+  try {
+    await api('/api/clients', {
+      method: 'POST',
+      body: JSON.stringify({ clientId: clientId, clientName: clientName, owner: owner, clientSecret: clientSecret, defaultDingToken: defaultDingToken, whiteUserList: whiteUserList }),
+    });
+    var modal = document.getElementById('create-client-modal');
+    if (modal) modal.remove();
+    toast('客户端已创建', 'success');
+    await loadClients();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
 // ===== Select Client =====
 async function selectClient(clientId) {
   state.selectedClient = clientId;
@@ -1572,7 +1833,6 @@ async function selectClient(clientId) {
     loadClientConfig(clientId),
     loadClientApiKeys(clientId),
     loadRawConfig(clientId),
-    loadStatus(),
   ]);
 
   renderClientDetail(clientId);
@@ -1611,9 +1871,9 @@ function renderClientDetail(clientId) {
   const detail = document.getElementById('client-detail-section');
   if (!detail) return;
 
-  const tabs = ['config', 'keys', 'files', 'env', 'raw'];
+  const tabs = ['config', 'conversations', 'keys', 'files', 'env', 'raw'];
   let tabHtml = '<div class="tabs">';
-  const tabLabels = { config: '️ 配置', keys: ' API Key', files: ' 文件', env: '🌍 环境变量', raw: '📝 原始JSON' };
+  const tabLabels = { config: '️ 配置', conversations: ' 会话管理', keys: ' API Key', files: ' 文件', env: '🌍 环境变量', raw: '📝 原始JSON' };
   for (const t of tabs) {
     tabHtml += '<button class="tab' + (state.activeTab === t ? ' active' : '') + '" onclick="switchTab(' + SQ + t + SQ + ')">' + tabLabels[t] + '</button>';
   }
@@ -1621,6 +1881,7 @@ function renderClientDetail(clientId) {
 
   let contentHtml = '';
   if (state.activeTab === 'config') contentHtml = renderConfigTab(clientId);
+  else if (state.activeTab === 'conversations') contentHtml = renderConvTab(clientId);
   else if (state.activeTab === 'keys') contentHtml = renderKeysTab(clientId);
   else if (state.activeTab === 'files') contentHtml = renderFilesTab(clientId);
   else if (state.activeTab === 'env') contentHtml = renderEnvTab(clientId);
@@ -1670,36 +1931,118 @@ function renderConfigTab(clientId) {
   if (!cfg) return '<div class="empty-state">配置加载中...</div>';
 
   const convs = cfg.conversations || [];
-  let convHtml = '';
-  if (convs.length > 0) {
-    convHtml = '<table><thead><tr><th>会话</th><th>类型</th><th>QA</th><th>Streaming</th><th>Freedom</th><th>Model</th></tr></thead><tbody>';
-    for (const conv of convs) {
-      convHtml += '<tr><td>' + escHtml(conv.conversationTitle || conv.conversationId) + '<br><span class="text-mono text-muted">' + escHtml(conv.conversationId) + '</span></td><td>' + (conv.conversationType === '2' ? '群聊' : '单聊') + '</td><td>' + (conv.qaMode ? '<span class="text-success">开</span>' : '<span class="text-muted">关</span>') + '</td><td>' + (conv.streaming ? '<span class="text-success">开</span>' : '<span class="text-muted">关</span>') + '</td><td>' + (conv.freedomMode ? '<span class="text-success">开</span>' : '<span class="text-muted">关</span>') + '</td><td>' + escHtml(conv.model || cfg.model || '-') + '</td></tr>';
-    }
-    convHtml += '</tbody></table>';
-  } else {
-    convHtml = '<p class="text-muted">暂无会话配置</p>';
+
+  // === 可编辑的基本信息卡片 ===
+  let html = '<div class="card">' +
+    '<div class="flex-between"><div class="card-title" style="margin-bottom:0">基本信息</div>' +
+    '<button class="btn btn-primary btn-sm" onclick="saveClientConfig(' + SQ + clientId + SQ + ')">💾 保存配置</button></div>' +
+    '<div class="divider"></div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13px;">' +
+    '<div class="form-group"><label>Client 名称</label><input type="text" id="cfg-clientName" value="' + escHtml(cfg.clientName || '') + '"></div>' +
+    '<div class="form-group"><label>Owner</label><input type="text" id="cfg-owner" value="' + escHtml(cfg.owner || '') + '"></div>' +
+    '<div class="form-group"><label>默认模型</label><input type="text" id="cfg-model" value="' + escHtml(cfg.model || '') + '"></div>' +
+    '<div class="form-group"><label>白名单 (逗号分隔)</label><input type="text" id="cfg-whiteUserList" value="' + escHtml((cfg.whiteUserList || []).join(',')) + '"></div>' +
+    '<div class="form-group"><label>管理员列表 (逗号分隔)</label><input type="text" id="cfg-adminUserList" value="' + escHtml((cfg.adminUserList || []).join(',')) + '"></div>' +
+    '<div class="form-group"><label>Owner 单聊会话ID</label><input type="text" id="cfg-ownerConvId" value="' + escHtml(cfg.ownerConversationId || '') + '"></div>' +
+    '<div class="form-group"><label>前置命令 (preBash)</label><input type="text" id="cfg-preBash" value="' + escHtml(cfg.preBash || '') + '"></div>' +
+    '<div class="form-group"><label>钉钉签名密钥</label><input type="text" id="cfg-dingSecret" value="" placeholder="留空不变"></div>' +
+    '</div>' +
+    '<div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap;font-size:13px;">' +
+    '<label><input type="checkbox" id="cfg-debug" ' + (cfg.debug ? 'checked' : '') + '> DEBUG</label>' +
+    '<label><input type="checkbox" id="cfg-resultOnly" ' + (cfg.resultOnly !== false ? 'checked' : '') + '> 结果模式</label>' +
+    '<label><input type="checkbox" id="cfg-includeThinking" ' + (cfg.includeThinking ? 'checked' : '') + '> 思考过程</label>' +
+    '<label><input type="checkbox" id="cfg-enableMsgToUser" ' + (cfg.enableMsgToUser ? 'checked' : '') + '> 单聊消息</label>' +
+    '</div>' +
+    '<div class="form-row" style="margin-top:12px;">' +
+    '<div class="form-group"><label>任务队列大小</label><input type="number" id="cfg-taskQueueSize" value="' + (cfg.taskQueueSize ?? 50) + '"></div>' +
+    '<div class="form-group"><label>最大并发</label><input type="number" id="cfg-sessionMaxConcurrency" value="' + (cfg.sessionMaxConcurrency ?? 5) + '"></div>' +
+    '<div class="form-group"><label>Watchdog 超时(分钟)</label><input type="number" id="cfg-maxTurnTimeMins" value="' + (cfg.maxTurnTimeMins ?? '') + '"></div>' +
+    '<div class="form-group"><label>自动恢复次数</label><input type="number" id="cfg-maxAutoRecovery" value="' + (cfg.maxAutoRecovery ?? '') + '"></div>' +
+    '</div>' +
+    '<div class="form-row" style="margin-top:8px;">' +
+    '<div class="form-group"><label>AI Card 模板 ID</label><input type="text" id="cfg-cardTemplateId" value="' + escHtml(cfg.cardTemplateId || '') + '"></div>' +
+    '<div class="form-group"><label>AI Card 模板变量名</label><input type="text" id="cfg-cardTemplateKey" value="' + escHtml(cfg.cardTemplateKey || 'content') + '"></div>' +
+    '</div></div>';
+
+  // === 环境变量编辑器 ===
+  const envs = cfg.envs || {};
+  html += '<div class="card"><div class="card-title">全局环境变量 (envs)</div><div id="envs-editor">';
+  for (const ek of Object.keys(envs)) {
+    html += '<div class="form-row" style="margin-bottom:4px;">' +
+      '<input type="text" class="env-key-input" value="' + escHtml(ek) + '" style="flex:1;">' +
+      '<input type="text" class="env-val-input" value="' + escHtml(envs[ek]) + '" style="flex:2;">' +
+      '<button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">×</button></div>';
+  }
+  html += '</div><button class="btn btn-sm mt-8" onclick="addEnvRow()">+ 添加环境变量</button></div>';
+
+  // === A2A 配置 ===
+  const a2a = cfg.a2aCfg || {};
+  html += '<div class="card"><div class="card-title">A2A 配置</div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label>Hub URL</label><input type="text" id="a2a-hubUrl" value="' + escHtml(a2a.hubUrl || '') + '"></div>' +
+    '<div class="form-group"><label>API Key</label><input type="text" id="a2a-apiKey" value="" placeholder="留空不变"></div>' +
+    '</div>' +
+    '<div class="form-group"><label>远端 Agents (JSON 数组)</label>' +
+    '<textarea id="a2a-remoteAgents" rows="4" style="width:100%;">' + escHtml(JSON.stringify(a2a.remoteAgents || [], null, 2)) + '</textarea></div></div>';
+
+  // === 提示：会话配置已移至独立 tab ===
+  html += '<div class="card"><div class="card-title">💡 提示</div>' +
+    '<p class="text-muted" style="font-size:13px;">会话配置已移至「会话管理」Tab，请点击上方标签页进行管理。</p></div>';
+
+  return html;
+}
+
+// ===== Render: Conversations Tab =====
+function renderConvTab(clientId) {
+  const cfg = state.clientConfig;
+  if (!cfg) return '<div class="empty-state">配置加载中...</div>';
+
+  const convs = cfg.conversations || [];
+  let html = '<div class="flex-between mb-8">' +
+    '<div class="card-title" style="margin-bottom:0">会话管理 (' + convs.length + ')</div>' +
+    '<button class="btn btn-primary btn-sm" onclick="showAddConvModal(' + SQ + clientId + SQ + ')">➕ 注册会话</button></div>';
+
+  if (convs.length === 0) {
+    html += '<div class="card"><div class="empty-state"><div class="icon">💬</div><p>暂无会话配置</p>' +
+      '<p class="text-muted">点击「➕ 注册会话」添加新会话</p></div></div>';
+    return html;
   }
 
-  return \`
-    <div class="card">
-      <div class="card-title">基本信息</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px;">
-        <div><span class="text-muted">Client:</span> \${escHtml(cfg.clientName || '-')}</div>
-        <div><span class="text-muted">Owner:</span> \${escHtml(cfg.owner || '-')}</div>
-        <div><span class="text-muted">白名单:</span> \${(cfg.whiteUserList || []).join(', ') || '-'}</div>
-        <div><span class="text-muted">任务队列:</span> \${cfg.taskQueueSize ?? 50}</div>
-        <div><span class="text-muted">并发:</span> \${cfg.sessionMaxConcurrency ?? 5}</div>
-        <div><span class="text-muted">DEBUG:</span> \${cfg.debug ? '<span class="text-success">开</span>' : '<span class="text-muted">关</span>'}</div>
-        <div><span class="text-muted">结果模式:</span> \${cfg.resultOnly ? '<span class="text-success">仅结果</span>' : '<span class="text-muted">详细</span>'}</div>
-        <div><span class="text-muted">思考过程:</span> \${cfg.includeThinking ? '<span class="text-success">显示</span>' : '<span class="text-muted">隐藏</span>'}</div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-title">会话配置 (\${convs.length})</div>
-      \${convHtml}
-    </div>
-  \`;
+  html += '<div class="card"><div class="table-wrap"><table>' +
+    '<thead><tr><th>会话</th><th>类型</th><th>QA</th><th>Streaming</th><th>Freedom</th><th>Model</th><th>Agent</th><th>权限</th><th>操作</th></tr></thead><tbody>';
+
+  for (let i = 0; i < convs.length; i++) {
+    const conv = convs[i];
+    html += '<tr>' +
+      '<td>' + escHtml(conv.conversationTitle || conv.conversationId) + '<br><span class="text-mono text-muted">' + escHtml(conv.conversationId) + '</span></td>' +
+      '<td>' + (conv.conversationType === '2' ? '群聊' : '单聊') + '</td>' +
+      '<td>' + (conv.qaMode ? '<span class="text-success">开</span>' : '<span class="text-muted">关</span>') + '</td>' +
+      '<td>' + (conv.streaming ? '<span class="text-success">开</span>' : '<span class="text-muted">关</span>') + '</td>' +
+      '<td>' + (conv.freedomMode ? '<span class="text-success">开</span>' : '<span class="text-muted">关</span>') + '</td>' +
+      '<td class="text-mono">' + escHtml(conv.model || cfg.model || '-') + '</td>' +
+      '<td class="text-mono">' + escHtml(conv.agent || 'claude') + '</td>' +
+      '<td>' + (conv.permissionMode ? '<span class="text-mono">' + escHtml(conv.permissionMode) + '</span>' : '<span class="text-muted">默认</span>') + '</td>' +
+      '<td style="white-space:nowrap;">' +
+      '<button class="btn btn-sm" onclick="showEditConvModal(' + SQ + clientId + SQ + ',' + i + ')">编辑</button> ' +
+      '<button class="btn btn-sm btn-danger" onclick="deleteConv(' + SQ + clientId + SQ + ',' + i + ')">删除</button></td></tr>';
+  }
+
+  html += '</tbody></table></div></div>';
+
+  // === 白名单快速查看 ===
+  const convsWithWhitelist = convs.filter(function(c) { return c.whiteUserList && c.whiteUserList.length > 0; });
+  if (convsWithWhitelist.length > 0) {
+    html += '<div class="card"><div class="card-title">会话白名单</div>';
+    for (let i = 0; i < convsWithWhitelist.length; i++) {
+      const c = convsWithWhitelist[i];
+      html += '<div style="margin-bottom:8px;font-size:13px;">' +
+        '<strong>' + escHtml(c.conversationTitle || c.conversationId) + '</strong>: ' +
+        '<span class="text-mono">' + escHtml(c.whiteUserList.join(', ')) + '</span></div>';
+    }
+    html += '</div>';
+  }
+
+  return html;
 }
 
 // ===== Render: Keys Tab =====
@@ -1765,14 +2108,22 @@ async function addKey(clientId, data) {
 async function editKey(clientId, index) {
   const key = state.apiKeys[index];
   if (!key) return;
+  // 显示掩码后的 key，允许用户选择是否修改
+  const newApiKey = prompt('API Key (留空保持不变):', key.apiKey);
+  if (newApiKey === null) return;
   const baseUrl = prompt('Base URL:', key.baseUrl);
   if (baseUrl === null) return;
   const model = prompt('Model:', key.model);
   if (model === null) return;
   const memo = prompt('备注:', key.memo || '');
   if (memo === null) return;
+  const payload = { baseUrl, model, memo };
+  // 仅当用户输入了新 key 值时才更新
+  if (newApiKey !== key.apiKey && newApiKey.trim() !== '') {
+    payload.apiKey = newApiKey.trim();
+  }
   try {
-    await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index, { method: 'PUT', body: JSON.stringify({ baseUrl, model, memo }) });
+    await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index, { method: 'PUT', body: JSON.stringify(payload) });
     toast('已更新', 'success');
     loadClientApiKeys(clientId).then(() => { const c = state.selectedClient; if (c) renderClientDetail(c); });
   } catch (e) { toast(e.message, 'error'); }
@@ -1784,6 +2135,223 @@ async function deleteKey(clientId, index) {
     await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index, { method: 'DELETE' });
     toast('已删除', 'success');
     loadClientApiKeys(clientId).then(() => { const c = state.selectedClient; if (c) renderClientDetail(c); });
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ===== Save Client Config (top-level fields) =====
+async function saveClientConfig(clientId) {
+  var patches = {};
+  var v;
+
+  v = document.getElementById('cfg-clientName').value.trim();
+  if (v) patches['clientName'] = v;
+  v = document.getElementById('cfg-owner').value.trim();
+  if (v) patches['owner'] = v;
+  v = document.getElementById('cfg-model').value.trim();
+  patches['model'] = v || undefined;
+  v = document.getElementById('cfg-preBash').value.trim();
+  patches['preBash'] = v || undefined;
+  v = document.getElementById('cfg-ownerConvId').value.trim();
+  patches['ownerConversationId'] = v || undefined;
+  v = document.getElementById('cfg-cardTemplateId').value.trim();
+  patches['cardTemplateId'] = v || undefined;
+  v = document.getElementById('cfg-cardTemplateKey').value.trim();
+  patches['cardTemplateKey'] = v || 'content';
+
+  // Array fields
+  patches['whiteUserList'] = document.getElementById('cfg-whiteUserList').value.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+  patches['adminUserList'] = document.getElementById('cfg-adminUserList').value.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+
+  // Number fields
+  patches['taskQueueSize'] = parseInt(document.getElementById('cfg-taskQueueSize').value) || 50;
+  patches['sessionMaxConcurrency'] = parseInt(document.getElementById('cfg-sessionMaxConcurrency').value) || 5;
+  v = document.getElementById('cfg-maxTurnTimeMins').value;
+  if (v) patches['maxTurnTimeMins'] = parseInt(v) || undefined;
+  v = document.getElementById('cfg-maxAutoRecovery').value;
+  if (v) patches['maxAutoRecovery'] = parseInt(v) || undefined;
+
+  // Booleans
+  patches['debug'] = document.getElementById('cfg-debug').checked;
+  patches['resultOnly'] = document.getElementById('cfg-resultOnly').checked;
+  patches['includeThinking'] = document.getElementById('cfg-includeThinking').checked;
+  patches['enableMsgToUser'] = document.getElementById('cfg-enableMsgToUser').checked;
+
+  // dingSecret (only if user entered a new value)
+  v = document.getElementById('cfg-dingSecret').value.trim();
+  if (v && v.indexOf('****') !== 0) patches['dingSecret'] = v;
+
+  // Envs
+  var envs = {};
+  var envRows = document.querySelectorAll('#envs-editor .form-row');
+  for (var i = 0; i < envRows.length; i++) {
+    var ek = envRows[i].querySelector('.env-key-input').value.trim();
+    var ev = envRows[i].querySelector('.env-val-input').value;
+    if (ek) envs[ek] = ev;
+  }
+  patches['envs'] = envs;
+
+  // a2aCfg
+  var a2aCfg = {};
+  var hubUrl = document.getElementById('a2a-hubUrl').value.trim();
+  if (hubUrl) a2aCfg.hubUrl = hubUrl;
+  var a2aKey = document.getElementById('a2a-apiKey').value.trim();
+  if (a2aKey) a2aCfg.apiKey = a2aKey;
+  try {
+    var ra = JSON.parse(document.getElementById('a2a-remoteAgents').value || '[]');
+    if (Array.isArray(ra)) a2aCfg.remoteAgents = ra;
+  } catch(e) { /* ignore */ }
+  if (Object.keys(a2aCfg).length > 0) patches['a2aCfg'] = a2aCfg;
+
+  try {
+    await api('/api/clients/' + encodeURIComponent(clientId) + '/config', {
+      method: 'PATCH',
+      body: JSON.stringify(patches),
+    });
+    toast('配置已保存', 'success');
+    await loadClientConfig(clientId);
+    renderClientDetail(clientId);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function addEnvRow() {
+  var editor = document.getElementById('envs-editor');
+  var row = document.createElement('div');
+  row.className = 'form-row';
+  row.style.marginBottom = '4px';
+  row.innerHTML = '<input type="text" class="env-key-input" placeholder="KEY" style="flex:1;">' +
+    '<input type="text" class="env-val-input" placeholder="value" style="flex:2;">' +
+    '<button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">×</button>';
+  editor.appendChild(row);
+}
+
+// ===== Conversation Modal =====
+function showAddConvModal(clientId) {
+  showConversationModal(null, clientId, '注册会话');
+}
+
+function showEditConvModal(clientId, index) {
+  var conv = state.clientConfig.conversations[index];
+  showConversationModal(conv, clientId, '编辑会话');
+}
+
+function showConversationModal(conv, clientId, title) {
+  var c = conv || {};
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'conv-modal';
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+
+  var isEdit = conv !== null;
+  var readonlyAttr = isEdit ? 'readonly' : '';
+  var titleAttr = isEdit ? '保存' : '创建';
+
+  overlay.innerHTML = '<div class="modal" style="max-width:700px;">' +
+    '<div class="modal-title">' + title + '</div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label>会话ID *</label><input type="text" id="cm-convId" value="' + escHtml(c.conversationId || '') + '" ' + readonlyAttr + '></div>' +
+    '<div class="form-group"><label>类型 *</label><select id="cm-convType"><option value="1"' + (c.conversationType === '1' ? ' selected' : '') + '>单聊</option><option value="2"' + (c.conversationType === '2' ? ' selected' : '') + '>群聊</option></select></div>' +
+    '</div>' +
+    '<div class="form-group"><label>会话标题</label><input type="text" id="cm-title" value="' + escHtml(c.conversationTitle || '') + '"></div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label>Ding Token</label><input type="text" id="cm-dingToken" value="' + escHtml(c.dingToken || '') + '"></div>' +
+    '<div class="form-group"><label>模型</label><input type="text" id="cm-model" value="' + escHtml(c.model || state.clientConfig.model || '') + '"></div>' +
+    '</div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label>白名单 (逗号分隔)</label><input type="text" id="cm-whiteList" value="' + escHtml((c.whiteUserList || []).join(',')) + '"></div>' +
+    '<div class="form-group"><label>关联会话ID</label><input type="text" id="cm-linkConv" value="' + escHtml(c.linkConversationId || '') + '"></div>' +
+    '</div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label>Agent</label><input type="text" id="cm-agent" value="' + escHtml(c.agent || '') + '"></div>' +
+    '<div class="form-group"><label>前置命令 (preBash)</label><input type="text" id="cm-preBash" value="' + escHtml(c.preBash || '') + '"></div>' +
+    '</div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label>权限模式</label><select id="cm-permMode"><option value="">默认</option><option value="acceptEdits"' + (c.permissionMode === 'acceptEdits' ? ' selected' : '') + '>acceptEdits</option><option value="bypassPermissions"' + (c.permissionMode === 'bypassPermissions' ? ' selected' : '') + '>bypassPermissions</option><option value="plan"' + (c.permissionMode === 'plan' ? ' selected' : '') + '>plan</option><option value="auto"' + (c.permissionMode === 'auto' ? ' selected' : '') + '>auto</option><option value="dontAsk"' + (c.permissionMode === 'dontAsk' ? ' selected' : '') + '>dontAsk</option></select></div>' +
+    '<div class="form-group"><label>确认模式</label><select id="cm-ackMode"><option value="reaction"' + (c.receiveReplyMode === 'text' ? '' : ' selected') + '>表情</option><option value="text"' + (c.receiveReplyMode === 'text' ? ' selected' : '') + '>文本</option></select></div>' +
+    '</div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label>确认表情</label><input type="text" id="cm-ackEmoji" value="' + escHtml(c.ackReaction || '👀') + '" style="width:80px;"></div>' +
+    '<div class="form-group"><label>最大轮次时间(分钟)</label><input type="number" id="cm-maxTurn" value="' + (c.maxTurnTimeMins || '') + '"></div>' +
+    '</div>' +
+    '<div class="form-group"><label>任务技能 (taskCfg.skill)</label><input type="text" id="cm-taskSkill" value="' + escHtml((c.taskCfg && c.taskCfg.skill) || '') + '"></div>' +
+    '<div style="display:flex;gap:16px;margin-top:8px;flex-wrap:wrap;font-size:13px;">' +
+    '<label><input type="checkbox" id="cm-qaMode"' + (c.qaMode ? ' checked' : '') + '> 问答模式</label>' +
+    '<label><input type="checkbox" id="cm-freedomMode"' + (c.freedomMode ? ' checked' : '') + '> 自由模式</label>' +
+    '<label><input type="checkbox" id="cm-streaming"' + (c.streaming ? ' checked' : '') + '> 流式输出</label>' +
+    '<label><input type="checkbox" id="cm-atSender"' + (c.atSender !== false ? ' checked' : '') + '> 回复@发送人</label>' +
+    '<label><input type="checkbox" id="cm-receiveReply"' + (c.receiveReply !== false ? ' checked' : '') + '> 回复确认</label>' +
+    '<label><input type="checkbox" id="cm-ensureAt"' + (c.ensureAt ? ' checked' : '') + '> 追加@通知</label>' +
+    '<label><input type="checkbox" id="cm-localOcr"' + (c.useLocalOcr !== false ? ' checked' : '') + '> 本地OCR</label>' +
+    '</div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="document.getElementById(' + SQ + 'conv-modal' + SQ + ').remove()">取消</button>' +
+    '<button class="btn btn-primary" onclick="doSaveConversation(' + SQ + clientId + SQ + ',' + (isEdit ? 'true' : 'false') + ')">' + titleAttr + '</button>' +
+    '</div></div>';
+  document.body.appendChild(overlay);
+}
+
+async function doSaveConversation(clientId, isEdit) {
+  var convId = document.getElementById('cm-convId').value.trim();
+  if (!convId) { toast('请填写会话ID', 'error'); return; }
+
+  var payload = {
+    conversationId: convId,
+    conversationType: document.getElementById('cm-convType').value,
+    conversationTitle: document.getElementById('cm-title').value.trim() || undefined,
+    dingToken: document.getElementById('cm-dingToken').value.trim() || undefined,
+    model: document.getElementById('cm-model').value.trim() || undefined,
+    whiteUserList: document.getElementById('cm-whiteList').value.trim(),
+    linkConversationId: document.getElementById('cm-linkConv').value.trim() || undefined,
+    agent: document.getElementById('cm-agent').value.trim() || undefined,
+    preBash: document.getElementById('cm-preBash').value.trim() || undefined,
+    permissionMode: document.getElementById('cm-permMode').value || undefined,
+    receiveReplyMode: document.getElementById('cm-ackMode').value,
+    ackReaction: document.getElementById('cm-ackEmoji').value.trim() || undefined,
+    maxTurnTimeMins: parseInt(document.getElementById('cm-maxTurn').value) || undefined,
+    taskCfg: { skill: document.getElementById('cm-taskSkill').value.trim() || undefined },
+    qaMode: document.getElementById('cm-qaMode').checked,
+    freedomMode: document.getElementById('cm-freedomMode').checked,
+    streaming: document.getElementById('cm-streaming').checked,
+    atSender: document.getElementById('cm-atSender').checked,
+    receiveReply: document.getElementById('cm-receiveReply').checked,
+    ensureAt: document.getElementById('cm-ensureAt').checked,
+    useLocalOcr: document.getElementById('cm-localOcr').checked,
+  };
+
+  // Clean up empty taskCfg
+  if (!payload.taskCfg.skill) delete payload.taskCfg;
+  // Clean up empty strings to undefined
+  Object.keys(payload).forEach(function(k) {
+    if (payload[k] === '' && k !== 'receiveReplyMode') payload[k] = undefined;
+  });
+
+  try {
+    if (isEdit) {
+      await api('/api/clients/' + encodeURIComponent(clientId) + '/conversations/' + encodeURIComponent(convId), {
+        method: 'PUT', body: JSON.stringify(payload)
+      });
+    } else {
+      await api('/api/clients/' + encodeURIComponent(clientId) + '/conversations', {
+        method: 'POST', body: JSON.stringify(payload)
+      });
+    }
+    var modal = document.getElementById('conv-modal');
+    if (modal) modal.remove();
+    toast(isEdit ? '会话已更新' : '会话已创建', 'success');
+    await loadClientConfig(clientId);
+    renderClientDetail(clientId);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteConv(clientId, index) {
+  var conv = state.clientConfig.conversations[index];
+  if (!confirm('确定删除会话 "' + (conv.conversationTitle || conv.conversationId) + '"？')) return;
+  try {
+    await api('/api/clients/' + encodeURIComponent(clientId) + '/conversations/' + encodeURIComponent(conv.conversationId), {
+      method: 'DELETE'
+    });
+    toast('会话已删除', 'success');
+    await loadClientConfig(clientId);
+    renderClientDetail(clientId);
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -1850,16 +2418,58 @@ function renderEnvTab(clientId) {
   ];
   const allVars = new Set([...commonEnvVars, ...envRefs]);
 
-  let html = '<div class="card"><div class="card-title">环境变量编辑器</div>';
-  html += '<p class="text-muted mb-8" style="font-size:13px;">配置中使用 \\$ENV:VAR 语法引用环境变量</p>';
-  html += '<div class="env-list">';
+  let html = '<div class="card">' +
+    '<div class="flex-between"><div class="card-title" style="margin-bottom:0">环境变量</div>' +
+    '<button class="btn btn-primary btn-sm" onclick="saveEnvConfig(' + SQ + clientId + SQ + ')">💾 保存配置中的环境变量</button></div>' +
+    '<div class="divider"></div>' +
+    '<p class="text-muted mb-8" style="font-size:13px;">配置中使用 $ENV:VAR 语法引用环境变量，下方可设置值（仅显示引用和已配置的）</p>';
+
+  html += '<div id="env-tab-vars">';
+  const existingEnvs = cfg.envs || {};
   for (const v of [...allVars].sort()) {
-    const val = process.env[v] || '<span class="text-danger">未设置</span>';
+    const currentVal = existingEnvs[v] || '';
     const isUsed = envRefs.has(v);
-    html += '<div class="env-item"><span class="env-key">' + (isUsed ? '🔗 ' : '') + escHtml(v) + '</span><span class="env-val">= ' + (typeof val === 'string' ? escHtml(val.substring(0, 60)) : val) + '</span></div>';
+    const hasConfig = existingEnvs.hasOwnProperty(v);
+    html += '<div class="form-row" style="margin-bottom:6px;align-items:center;">' +
+      '<div style="flex:1;min-width:200px;"><span class="text-mono">' + (isUsed ? '🔗 ' : '') + escHtml(v) + '</span>' +
+      '<br><span class="text-muted" style="font-size:11px;">' + (hasConfig ? '✅ 已配置' : (isUsed ? '⚠️ 引用但未配置' : '💡 常见变量')) + '</span></div>' +
+      '<input type="text" class="env-tab-val" data-key="' + escHtml(v) + '" value="' + escHtml(currentVal) + '" placeholder="设置值" style="flex:2;">' +
+      '</div>';
   }
   html += '</div></div>';
   return html;
+}
+
+async function saveEnvConfig(clientId) {
+  const cfg = state.clientConfig;
+  if (!cfg) return;
+  const patches = {};
+
+  // 收集 env tab 中的 key-value
+  const envs = {};
+  const inputs = document.querySelectorAll('.env-tab-val');
+  for (let i = 0; i < inputs.length; i++) {
+    const key = inputs[i].getAttribute('data-key');
+    const val = inputs[i].value;
+    if (key && val) envs[key] = val;
+  }
+  // 合并现有的 envs
+  if (cfg.envs) {
+    Object.assign(envs, cfg.envs);
+  }
+  if (Object.keys(envs).length > 0) {
+    patches['envs'] = envs;
+  }
+
+  try {
+    await api('/api/clients/' + encodeURIComponent(clientId) + '/config', {
+      method: 'PATCH',
+      body: JSON.stringify(patches),
+    });
+    toast('环境变量已保存', 'success');
+    await loadClientConfig(clientId);
+    renderClientDetail(clientId);
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 // ===== Render: Raw JSON Tab =====
@@ -1873,7 +2483,7 @@ function renderRawTab(clientId) {
     '</div>' +
     '</div>' +
     '<div class="divider"></div>' +
-    '<textarea id="raw-editor" rows="20" style="width:100%;font-size:13px;">' + '$' + '{escHtml(state.rawConfig)}</textarea>' +
+    '<textarea id="raw-editor" rows="20" style="width:100%;font-size:13px;">' + escHtml(state.rawConfig) + '</textarea>' +
     '</div>';
 }
 
@@ -2013,7 +2623,31 @@ function escHtml(str) {
 }
 
 // ===== Init =====
-renderApp();
+(function initFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const targetClient = params.get('client');
+  const targetTab = params.get('tab');
+
+  if (state.token && !state.firstLogin) {
+    // 已登录，检查 URL 参数是否需要自动导航
+    if (targetClient) {
+      // 先加载客户列表，然后自动选中目标客户
+      loadClients().then(() => {
+        const client = state.clients.find(c => c.clientId === targetClient);
+        if (client) {
+          selectClient(targetClient).then(() => {
+            if (targetTab && ['config', 'keys', 'files', 'env', 'raw'].includes(targetTab)) {
+              switchTab(targetTab);
+            }
+          });
+        }
+      });
+      renderApp();
+      return;
+    }
+  }
+  renderApp();
+})();
 </script>
 </body>
 </html>`;
