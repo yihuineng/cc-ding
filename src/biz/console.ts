@@ -1145,7 +1145,9 @@ export function getConsoleUrl(port?: number, host?: string): string {
   const globalCfg = getGlobalConfig();
   const p = port ?? globalCfg.port ?? 8080;
   const h = host ?? globalCfg.host ?? '0.0.0.0';
-  return `http://${h}:${p}`;
+  // 绑定地址 0.0.0.0/:: 无法在浏览器中访问，替换为 localhost
+  const urlHost = (h === '0.0.0.0' || h === '::') ? 'localhost' : h;
+  return `http://${urlHost}:${p}`;
 }
 
 /** 解析客户端端口（用于 SIGUSR2 后自动更新端口信息） */

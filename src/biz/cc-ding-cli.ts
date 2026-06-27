@@ -1499,16 +1499,26 @@ export class DingClaude {
           : null;
         const processName = `cc-ding-${this.clientId}`;
 
+        // 检测 console 进程是否存在
+        let hasConsole = false;
+        try {
+          const { execSync } = await import('child_process');
+          execSync('pm2 describe cc-ding-console', { stdio: 'ignore' });
+          hasConsole = true;
+        } catch { /* console not running */ }
+
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
           content: cmd
-            ? `✅ 更新并重启，正在执行 ${cmd}...`
-            : `✅ cc-ding 正在重启中...`,
+            ? `✅ 更新并重启${hasConsole ? '（含 console）' : ''}，正在执行 ${cmd}...`
+            : hasConsole
+              ? '✅ cc-ding 正在重启中（含 console）...'
+              : '✅ cc-ding 正在重启中...',
           msgType: 'markdown',
         });
 
-        // 先写 flag 文件，避免进程 crash 丢失
+        // 先写 flag 文件，记录本次 reboot 是否也重启了 console
         const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
         fs.writeFileSync(rebootFlagFile, JSON.stringify({
           conversationId,
@@ -1516,11 +1526,13 @@ export class DingClaude {
           senderNick,
           sessionWebhook,
           update: rebootCmd.update,
+          consoleRestart: hasConsole,
         }), 'utf-8');
 
         setTimeout(() => {
-          console.log(`[${timestamp()}] 执行 pm2 restart ${processName}${cmd ? ' (含更新)' : ''}`);
-          childExec(`${cmd ? `${cmd} && ` : ''}pm2 restart "${processName}"`, { timeout: 60_000 }, (err) => {
+          const consoleCmd = hasConsole ? 'pm2 restart "cc-ding-console" && ' : '';
+          console.log(`[${timestamp()}] 执行 ${consoleCmd}pm2 restart ${processName}${cmd ? ' (含更新)' : ''}`);
+          childExec(`${cmd ? `${cmd} && ` : ''}${consoleCmd}pm2 restart "${processName}"`, { timeout: 60_000 }, (err) => {
             if (err) console.error(`[${timestamp()}] pm2 restart 失败:`, err);
           });
         }, 1000);
@@ -2910,6 +2922,7 @@ export class DingClaude {
         senderNick?: string;
         sessionWebhook?: string;
         update?: boolean;
+        consoleRestart?: boolean;
       };
       fs.unlinkSync(rebootFlagFile);
 
@@ -2942,6 +2955,9 @@ export class DingClaude {
       }
 
       let content = '✅ cc-ding 已重启完成';
+      if (rebootData.consoleRestart) {
+        content += '\n✅ Console 已重启';
+      }
       if (rebootData.update) {
         content += `\n**版本:** ${TOOL_VERSION}`;
       }
