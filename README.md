@@ -1,4 +1,7 @@
-# cc-ding
+<div align="center">
+  <img src="assets/ccd-icon.png" width="180" alt="cc-ding logo">
+  <h1>cc-ding</h1>
+</div>
 
 [![npm version](https://img.shields.io/npm/v/cc-ding.svg?style=flat-square)](https://www.npmjs.com/package/cc-ding)
 [![npm downloads](https://img.shields.io/npm/dm/cc-ding.svg?style=flat-square)](https://www.npmjs.com/package/cc-ding)

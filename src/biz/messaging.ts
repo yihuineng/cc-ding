@@ -469,10 +469,13 @@ export async function sendOwnerMessage(self: DingClaude, content: string, msgTyp
 
 // ==================== Reaction 表情 API ====================
 
+// 自定义文本表情的固定 ID 和背景（钉钉开放平台规范）
+const CUSTOM_TEXT_EMOTION_ID = '2659900';
+const CUSTOM_TEXT_EMOTION_BG = 'im_bg_1';
+
 /**
  * 在指定消息下贴表情 Reaction（收到确认）
- * POST /v1.0/contact/rpc/interaction/emoji/submit
- * @see https://open.dingtalk.com/document/orgapp/submit-emoji-reactions
+ * POST /v1.0/robot/emotion/reply
  */
 export async function attachReaction(
   self: DingClaude,
@@ -482,11 +485,23 @@ export async function attachReaction(
 ): Promise<boolean> {
   try {
     const accessToken = await self.dingStreamClient.getAccessToken();
-    const url = `${DING_API_BASE}/v1.0/contact/rpc/interaction/emoji/submit`;
+    const url = `${DING_API_BASE}/v1.0/robot/emotion/reply`;
 
     const result = await urllib.request(url, {
       method: 'POST',
-      data: { conversationId, msgId, emotionId },
+      data: {
+        robotCode: self.clientId,
+        openMsgId: msgId,
+        openConversationId: conversationId,
+        emotionType: 2,
+        emotionName: emotionId,
+        textEmotion: {
+          emotionId: CUSTOM_TEXT_EMOTION_ID,
+          emotionName: emotionId,
+          text: emotionId,
+          backgroundId: CUSTOM_TEXT_EMOTION_BG,
+        },
+      },
       contentType: 'json',
       headers: { 'x-acs-dingtalk-access-token': accessToken },
       dataType: 'json',
@@ -494,6 +509,12 @@ export async function attachReaction(
     });
 
     if (result.status === 200) {
+      // 检查返回体中的 success 字段
+      const body = result.data as any;
+      if (body && body.success === false) {
+        self.debugLog(`attachReaction 返回 success=false: msgId=${msgId}, data=${JSON.stringify(body)}`);
+        return false;
+      }
       self.debugLog(`attachReaction 成功: msgId=${msgId}, emotionId=${emotionId}`);
       return true;
     }
@@ -507,7 +528,7 @@ export async function attachReaction(
 
 /**
  * 撤回指定消息的表情 Reaction（处理完成确认）
- * POST /v1.0/contact/rpc/interaction/emoji/recall
+ * POST /v1.0/robot/emotion/recall
  */
 export async function recallReaction(
   self: DingClaude,
@@ -517,11 +538,23 @@ export async function recallReaction(
 ): Promise<boolean> {
   try {
     const accessToken = await self.dingStreamClient.getAccessToken();
-    const url = `${DING_API_BASE}/v1.0/contact/rpc/interaction/emoji/recall`;
+    const url = `${DING_API_BASE}/v1.0/robot/emotion/recall`;
 
     const result = await urllib.request(url, {
       method: 'POST',
-      data: { conversationId, msgId, emotionId },
+      data: {
+        robotCode: self.clientId,
+        openMsgId: msgId,
+        openConversationId: conversationId,
+        emotionType: 2,
+        emotionName: emotionId,
+        textEmotion: {
+          emotionId: CUSTOM_TEXT_EMOTION_ID,
+          emotionName: emotionId,
+          text: emotionId,
+          backgroundId: CUSTOM_TEXT_EMOTION_BG,
+        },
+      },
       contentType: 'json',
       headers: { 'x-acs-dingtalk-access-token': accessToken },
       dataType: 'json',
@@ -529,6 +562,11 @@ export async function recallReaction(
     });
 
     if (result.status === 200) {
+      const body = result.data as any;
+      if (body && body.success === false) {
+        self.debugLog(`recallReaction 返回 success=false: msgId=${msgId}, data=${JSON.stringify(body)}`);
+        return false;
+      }
       self.debugLog(`recallReaction 成功: msgId=${msgId}, emotionId=${emotionId}`);
       return true;
     }

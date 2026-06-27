@@ -49,6 +49,8 @@ interface IAuthToken {
 // ==================== 常量 ====================
 
 const CONSOLE_HTML = generateConsoleHtml();
+const FAVICON_PATH = path.join(__dirname, '..', '..', '..', 'favicon.ico');
+const FAVICON_DATA = fs.existsSync(FAVICON_PATH) ? fs.readFileSync(FAVICON_PATH) : Buffer.alloc(0);
 const GLOBAL_CONFIG_PATH = path.join(getHomeDir(), '.cc-ding', 'config.json');
 const SETTINGS_TPL_PATH = path.join(getHomeDir(), '.cc-ding', 'settings-tpl.json');
 
@@ -113,6 +115,13 @@ function getGlobalConfig(): IConsoleGlobalConfig {
     if (fs.existsSync(GLOBAL_CONFIG_PATH)) {
       const content = fs.readFileSync(GLOBAL_CONFIG_PATH, 'utf-8');
       const parsed = JSON.parse(content);
+      const users = parsed.console?.authUsers || [];
+      // 如果没有配置用户，自动创建默认 admin 用户
+      if (users.length === 0) {
+        parsed.console = parsed.console || {};
+        parsed.console.authUsers = [{ account: 'admin', passwordHash: sha256('admin'), firstLogin: true }];
+        atomicWrite(GLOBAL_CONFIG_PATH, JSON.stringify(parsed, null, 2));
+      }
       return {
         port: parsed.console?.port || parsed.consolePort || 8080,
         host: parsed.console?.host || parsed.consoleHost || '0.0.0.0',
@@ -125,7 +134,7 @@ function getGlobalConfig(): IConsoleGlobalConfig {
   return {
     port: 8080,
     host: '0.0.0.0',
-    authUsers: [],
+    authUsers: [{ account: 'admin', passwordHash: sha256('admin'), firstLogin: true }],
   };
 }
 
@@ -1012,6 +1021,18 @@ export class ConsoleServer {
           return;
         }
 
+        // favicon
+        if (pathname === '/favicon.ico') {
+          if (FAVICON_DATA.length > 0) {
+            res.writeHead(200, { 'Content-Type': 'image/x-icon', 'Cache-Control': 'public, max-age=86400' });
+            res.end(FAVICON_DATA);
+          } else {
+            res.writeHead(204);
+            res.end();
+          }
+          return;
+        }
+
         // API 请求
         if (pathname.startsWith('/api/')) {
           await handleApiRequest(req, res, pathname, query);
@@ -1162,6 +1183,7 @@ function generateConsoleHtml(): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>cc-ding Console</title>
+<link rel="icon" href="/favicon.ico" type="image/x-icon">
 <style>
 /* ===== CSS Variables ===== */
 :root {
@@ -1314,6 +1336,7 @@ tr:hover td { background: var(--bg-tertiary); }
 
 <script>
 // ===== State =====
+const SQ = String.fromCharCode(39); // single quote, survives minification
 const state = {
   token: localStorage.getItem('ccding_token') || '',
   account: localStorage.getItem('ccding_account') || '',
@@ -1590,7 +1613,7 @@ function renderClientDetail(clientId) {
   let tabHtml = '<div class="tabs">';
   const tabLabels = { config: '️ 配置', keys: ' API Key', files: ' 文件', env: '🌍 环境变量', raw: '📝 原始JSON' };
   for (const t of tabs) {
-    tabHtml += '<button class="tab' + (state.activeTab === t ? ' active' : '') + '" onclick="switchTab(\\'' + t + '\\')">' + tabLabels[t] + '</button>';
+    tabHtml += '<button class="tab' + (state.activeTab === t ? ' active' : '') + '" onclick="switchTab(' + SQ + t + SQ + ')">' + tabLabels[t] + '</button>';
   }
   tabHtml += '</div>';
 
@@ -1692,12 +1715,12 @@ function renderKeysTab(clientId) {
     html += '<td class="text-mono">' + escHtml(key.model || '-') + '</td>';
     html += '<td class="text-mono" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(key.baseUrl || '-') + '</td>';
     html += '<td>' + escHtml(key.memo || '-') + '</td>';
-    html += '<td style="white-space:nowrap;"><button class="btn btn-sm" onclick="toggleKey(\'' + clientId + '\\',' + key.index + ')">切换</button> <button class="btn btn-sm" onclick="editKey(\'' + clientId + '\\',' + key.index + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="deleteKey(\'' + clientId + '\\',' + key.index + ')">删除</button></td>';
+    html += '<td style="white-space:nowrap;"><button class="btn btn-sm" onclick="toggleKey(' + SQ + clientId + SQ + ',' + key.index + ')">切换</button> <button class="btn btn-sm" onclick="editKey(' + SQ + clientId + SQ + ',' + key.index + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="deleteKey(' + SQ + clientId + SQ + ',' + key.index + ')">删除</button></td>';
     html += '</tr>';
   }
   html += '</tbody></table>';
   html += '<div class="divider"></div>';
-  html += '<div class="flex-between"><span class="text-muted text-mono">重置时间: ' + (keys[0]?.resetTime || '-') + '</span><button class="btn btn-sm" onclick="resetAllKeys(\\'' + clientId + '\\')">一键重置所有 Key</button></div>';
+  html += '<div class="flex-between"><span class="text-muted text-mono">重置时间: ' + (keys[0]?.resetTime || '-') + '</span><button class="btn btn-sm" onclick="resetAllKeys(' + SQ + clientId + SQ + ')">一键重置所有 Key</button></div>';
   html += '</div>';
   return html;
 }
@@ -1766,13 +1789,13 @@ async function deleteKey(clientId, index) {
 function renderFilesTab(clientId) {
   const fileNames = ['menu.json', 'model.json', 'cron.json', 'todo.json', 'user-map.json', 'active.json'];
   let html = '<div class="card"><div class="card-title">客户端文件管理</div>';
-  html += '<div class="form-group"><label>选择文件</label><select id="file-select" onchange="loadFile(\\'' + clientId + '\\')">';
+  html += '<div class="form-group"><label>选择文件</label><select id="file-select" onchange="loadFile(' + SQ + clientId + SQ + ')">';
   html += '<option value="">-- 选择文件 --</option>';
   for (const f of fileNames) {
     html += '<option value="' + f + '">' + f + '</option>';
   }
   html += '</select></div>';
-  html += '<div id="file-content-area" style="display:none;"><textarea id="file-editor" rows="12" style="width:100%;"></textarea><div class="form-actions"><button class="btn btn-primary" onclick="saveFile(\\'' + clientId + '\\')">💾 保存</button></div></div>';
+  html += '<div id="file-content-area" style="display:none;"><textarea id="file-editor" rows="12" style="width:100%;"></textarea><div class="form-actions"><button class="btn btn-primary" onclick="saveFile(' + SQ + clientId + SQ + ')">💾 保存</button></div></div>';
   html += '</div>';
   return html;
 }
