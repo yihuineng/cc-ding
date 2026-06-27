@@ -1544,7 +1544,7 @@ export class DingClaude {
           }
 
           const clients = JSON.parse(pm2List)
-            .filter((p: any) => /^cc-ding-[a-zA-Z0-9]+$/.test(p.name))
+            .filter((p: any) => /^cc-ding-[a-zA-Z0-9]+$/.test(p.name) && p.name !== 'cc-ding-console')
             .map((p: any) => p.name);
 
           if (clients.length === 0) {
