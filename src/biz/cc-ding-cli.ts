@@ -6,7 +6,7 @@ import path from 'path';
 import { projUtil } from '../common';
 import { IConfig, IActiveSession, ISession, IRawCallbackData, IAuthRequest, IConversation } from './types';
 import { extractQuoteInfo, formatPromptWithQuote, enrichQuoteInfo } from './quote';
-import { sendMessageToUser, sendOwnerMessage, attachReaction } from './messaging';
+import { sendMessageToUser, sendOwnerMessage } from './messaging';
 import { processPictureMessage, processRichTextMessage, processFileMessage, extractDownloadCode } from './image';
 import {
   parseInfoCommand, formatConversationInfo, formatGlobalConfig, parseLogCommand,
@@ -20,7 +20,7 @@ import {
 } from './commands';
 import { parseA2ACommand, formatAgentList, formatHubAgents, formatAgentInfo, formatTaskStatus } from './commands-a2a';
 import { createA2AClient, createHubClient } from './a2a/client';
-import { sendDingMessage, sendClaudeResponseToDing, cacheUserName, getCachedUserName, restoreMentions } from './messaging';
+import { sendDingMessage, sendClaudeResponseToDing, cacheUserName, getCachedUserName, restoreMentions, queryDingUser } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts, refreshSessionContext } from './claude-process';
 import { recordMessage, getRecorderDir } from './recorder';
 import {
@@ -37,7 +37,7 @@ import {
   getActiveSessionsFile, saveActiveSession, loadActiveSessions,
   endSession, switchToSession, startNewSession, handleSessionMessage,
   findActiveSession, cleanCache, destroyConversation,
-  ensureAgent,
+  ensureAgent, sendAckConfirmation, recallAckReaction,
   timestamp,
   resolveAllPhonesInConfig, resolveUserId, resolveToUserId, userIdToPhone, isMobile,
   resolveUserIdName,
@@ -1513,6 +1513,7 @@ export class DingClaude {
         fs.writeFileSync(rebootFlagFile, JSON.stringify({
           conversationId,
           senderStaffId,
+          senderNick,
           sessionWebhook,
           update: rebootCmd.update,
         }), 'utf-8');
@@ -2377,6 +2378,8 @@ export class DingClaude {
             senderNick,
             message: actualMsg,
             conversationConfig,
+            msgCreateAt,
+            msgId: res.headers.messageId,
           });
         } else {
           await this.sendDingMessage({
@@ -2409,6 +2412,37 @@ export class DingClaude {
 
       // /log 命令：读取最近 n 行会话日志
       route('/log', () => parseLogCommand(prompt), async logLines => {
+        const activeSession = this.findActiveSession(conversationId);
+
+        if (!activeSession) {
+          // 内存中无活跃会话，尝试从磁盘恢复
+          const activeFile = this.getActiveSessionsFile(conversationId);
+          let onDisk = false;
+          try {
+            const raw = fs.readFileSync(activeFile, 'utf-8');
+            const data = JSON.parse(raw);
+            onDisk = !!data?.session;
+          } catch { /* 文件不存在或无效 */ }
+
+          if (onDisk) {
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              content: '⚠️ 内存中无活跃会话（可能已重启），但磁盘上存在持久化会话。请发送任意消息重新激活会话。',
+              msgType: 'markdown',
+            });
+          } else {
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              content: '⚠️ 当前无活跃会话，可通过 `/new` 或发送消息开始新会话',
+              msgType: 'markdown',
+            });
+          }
+          return;
+        }
+
+        // 有活跃会话，读取日志
         const logContent = this.readSessionLogTail(conversationId, logLines);
         if (logContent) {
           await this.sendDingMessage({
@@ -2421,7 +2455,8 @@ export class DingClaude {
           await this.sendDingMessage({
             conversationId,
             sessionWebhook,
-            content: '⚠️ 当前无活跃会话或暂无日志',
+            content: '⚠️ 会话存在但日志文件为空（可能刚创建或被清理）',
+            msgType: 'markdown',
           });
         }
       }),
@@ -2744,21 +2779,14 @@ export class DingClaude {
           return;
         }
         activeSession.isProcessing = true;
+        const msgId = res.headers.messageId;
         try {
           // streaming 开启时跳过确认（卡片本身即为进度反馈）
           if (activeSession.conversationConfig.receiveReply !== false && !activeSession.conversationConfig.streaming) {
-            const mode = activeSession.conversationConfig.receiveReplyMode ?? 'reaction';
-            // ackReaction 未配置时默认 '👀'，配置为空字符串时不发送表情
-            const emoji = activeSession.conversationConfig.ackReaction !== undefined ? activeSession.conversationConfig.ackReaction : '👀';
-            const msgId = res.headers.messageId;
-            if (mode === 'reaction' && msgId && emoji) {
-              await attachReaction(this, conversationId, msgId, emoji).catch(() => {});
-            } else {
-              await this.sendDingMessage({
-                conversationId, sessionWebhook,
-                content: '📥 已收到，正在处理...',
-              }).catch(() => {});
-            }
+            await sendAckConfirmation(
+              this, conversationId, sessionWebhook, activeSession.conversationConfig, msgId,
+              '📥 已收到，正在处理...',
+            );
           }
           ensureAgent(this, activeSession);
           const agent = activeSession.agent!;
@@ -2769,6 +2797,10 @@ export class DingClaude {
           });
         } finally {
           activeSession.isProcessing = false;
+          // 处理完成，撤回确认表情
+          if (activeSession.conversationConfig.receiveReply !== false && !activeSession.conversationConfig.streaming) {
+            await recallAckReaction(this, conversationId, msgId, activeSession.conversationConfig);
+          }
         }
       }),
 
@@ -2876,15 +2908,11 @@ export class DingClaude {
       const rebootData = JSON.parse(fs.readFileSync(rebootFlagFile, 'utf-8')) as {
         conversationId: string;
         senderStaffId: string;
+        senderNick?: string;
         sessionWebhook?: string;
         update?: boolean;
       };
       fs.unlinkSync(rebootFlagFile);
-
-      let content = '✅ cc-ding 已重启完成';
-      if (rebootData.update) {
-        content += `\n**版本:** ${TOOL_VERSION}`;
-      }
 
       // 优先使用 activeSession 的 webhook（关联群场景可能不同），回退到 flag 文件保存的 webhook
       let sessionWebhook: string | undefined;
@@ -2899,12 +2927,36 @@ export class DingClaude {
         return;
       }
 
+      // 解析 userId：dingtalkId 格式（含 -）无法直接通过 atUserIds @ 提及，
+      // 尝试通过 API 查询真正的 staffId/unionid，查询失败则用纯文本提及
+      let atUserId: string | undefined = rebootData.senderStaffId;
+      const atUserName: string | undefined = rebootData.senderNick || getCachedUserName(rebootData.senderStaffId);
+      if (rebootData.senderStaffId.includes('-')) {
+        const userDetail = await queryDingUser(this, rebootData.senderStaffId);
+        if (userDetail?.userid && userDetail.userid !== rebootData.senderStaffId) {
+          atUserId = userDetail.userid;
+          console.log(`[${timestamp()}] 重启通知：将 dingtalkId 解析为 staffId: ${userDetail.userid}`);
+        } else if (rebootData.senderNick) {
+          // 无法解析为 staffId，用昵称做纯文本提及，跳过 atUserId
+          atUserId = undefined;
+        }
+      }
+
+      let content = '✅ cc-ding 已重启完成';
+      if (rebootData.update) {
+        content += `\n**版本:** ${TOOL_VERSION}`;
+      }
+      if (!atUserId && rebootData.senderNick) {
+        content += `\n@${rebootData.senderNick}`;
+      }
+
       await this.sendDingMessage({
         conversationId: rebootData.conversationId,
         sessionWebhook,
         content,
         msgType: 'markdown',
-        atUserId: rebootData.senderStaffId,
+        atUserId,
+        atUserName,
       });
       console.log(`[${timestamp()}] 重启完成通知已发送`);
     } catch (err) {

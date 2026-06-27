@@ -265,7 +265,7 @@ program
       `)
   .option('-p, --port <value>', 'HTTP 端口')
   .option('--host <value>', 'HTTP 监听地址')
-  .option('--no-browser', '禁止自动打开浏览器')
+  .option('--browser', '启动后自动打开浏览器')
   .option('--open', '仅打印 URL 并退出（不启动服务）')
   .action(async (opts) => {
     const { startConsoleServer, getConsoleUrl, getConsolePort, getConsoleHost } = await import('../src/biz/console');
@@ -280,8 +280,7 @@ program
     const options: { port?: number; host?: string; autoOpen?: boolean; noBrowser?: boolean } = {};
     if (opts.port) options.port = parseInt(opts.port, 10);
     if (opts.host) options.host = opts.host;
-    if (opts.browser === false) options.noBrowser = true;
-    options.autoOpen = true;
+    if (opts.browser) options.autoOpen = true;
 
     const server = await startConsoleServer(options);
     console.log(`[Console] 按 Ctrl+C 停止服务`);

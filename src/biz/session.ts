@@ -20,7 +20,7 @@ import { userMessageWatermark } from './dedup';
  * - 否则发文本消息（text 模式 或 无 msgId 降级）
  * - best-effort: Reaction 失败不影响主流程
  */
-async function sendAckConfirmation(
+export async function sendAckConfirmation(
   self: DingClaude,
   conversationId: string,
   sessionWebhook: string,
@@ -47,7 +47,7 @@ async function sendAckConfirmation(
 /**
  * 撤回确认表情（处理完成时）
  */
-async function recallAckReaction(
+export async function recallAckReaction(
   self: DingClaude,
   conversationId: string,
   msgId: string | undefined,
@@ -409,7 +409,7 @@ export function getReplyConversationId(session: ISession): string {
  * 先按当前群ID查找，未找到时查找相同linkConversationId的其他群的活跃会话
  */
 export function findActiveSession(self: DingClaude, conversationId: string): { key: string; session: IActiveSession } | undefined {
-  // 直接查找
+  // 直接查找（Map key 匹配）
   const directSession = self.activeSessions.get(conversationId);
   if (directSession) return { key: conversationId, session: directSession };
 
@@ -421,6 +421,14 @@ export function findActiveSession(self: DingClaude, conversationId: string): { k
       if (otherCfg?.linkConversationId === convCfg.linkConversationId) {
         return { key: entry[0], session: entry[1] };
       }
+    }
+  }
+
+  // 兜底：遍历所有活跃会话，通过内部 conversationId 字段匹配
+  // 处理 Map key 与 conversationId 不一致的边界情况（如配置变更、持久化恢复等）
+  for (const [ key, activeSession ] of self.activeSessions) {
+    if (activeSession.session.conversationId === conversationId) {
+      return { key, session: activeSession };
     }
   }
 
@@ -1098,6 +1106,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
   } else {
     await startNewSession(self, {
       conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig,
+      msgCreateAt, msgId,
     });
   }
 }

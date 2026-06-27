@@ -996,7 +996,7 @@ export class ConsoleServer {
     const globalCfg = getGlobalConfig();
     this.port = options.port ?? globalCfg.port ?? 8080;
     this.host = options.host ?? globalCfg.host ?? '0.0.0.0';
-    this.autoOpen = options.autoOpen ?? true;
+    this.autoOpen = options.autoOpen ?? false;
     this.noBrowser = options.noBrowser ?? false;
   }
 

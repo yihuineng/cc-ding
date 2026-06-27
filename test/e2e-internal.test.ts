@@ -197,6 +197,7 @@ describe('E2E: 内部消息链路测试', () => {
           dingToken: 'test-ding-token',
           agent: 'claude',
           receiveReply: true,
+          receiveReplyMode: 'text',
         },
       ],
     };
