@@ -629,20 +629,39 @@ export function loadActiveSessions(self: DingClaude): void {
         console.log(`活跃会话文件无效，跳过: ${filePath}`);
         continue;
       }
-      const sessionDir = getSessionDir(self, data.session);
+
+      // 数据迁移：旧会话可能只有 startTimeStr 目录，需要重命名为 UUID
+      const session = data.session;
+      if (!session.agentSessionId) {
+        // 旧数据没有 agentSessionId，预生成一个
+        session.agentSessionId = crypto.randomUUID();
+        console.log(`旧会话数据迁移: 预生成 agentSessionId=${session.agentSessionId}`);
+      }
+      const uuidDir = path.join(getSessionsDir(self, session.conversationId), session.agentSessionId);
+      const timeDir = path.join(getSessionsDir(self, session.conversationId), session.startTimeStr);
+      if (!fs.existsSync(uuidDir) && fs.existsSync(timeDir)) {
+        try {
+          fs.renameSync(timeDir, uuidDir);
+          console.log(`旧会话目录迁移: ${session.startTimeStr} -> ${session.agentSessionId}`);
+        } catch (err) {
+          console.error(`旧会话目录迁移失败: ${timeDir} -> ${uuidDir}`, err);
+        }
+      }
+
+      const sessionDir = getSessionDir(self, session);
       if (!fs.existsSync(sessionDir)) {
         console.log(`活跃会话目录已不存在，清理持久化文件: ${filePath}`);
         fs.unlinkSync(filePath);
         continue;
       }
       self.activeSessions.set(conv.conversationId, {
-        session: data.session,
-        lastSenderStaffId: data.lastSenderStaffId || data.session.startStaffId,
+        session,
+        lastSenderStaffId: data.lastSenderStaffId || session.startStaffId,
         isProcessing: false,
         messageQueue: [],
         conversationConfig: data.conversationConfig,
       });
-      console.log(`恢复活跃会话: 群=${conv.conversationId}, 会话ID=${getSessionId(data.session)}`);
+      console.log(`恢复活跃会话: 群=${conv.conversationId}, 会话ID=${getSessionId(session)}`);
     } catch (err) {
       console.error(`加载活跃会话失败: ${filePath}`, err);
     }
@@ -669,13 +688,23 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
   const sessionId = getSessionId(session);
   console.log(`结束会话: 群=${conversationId}, 会话ID=${sessionId}`);
 
+  // 会话目录不存在时跳过日志写入，直接结束
+  const dirExists = fs.existsSync(sessionDir);
+  if (!dirExists) {
+    console.log(`会话目录不存在，跳过日志写入: ${sessionDir}`);
+  }
+
   const agent = activeSession.agent;
   if (agent?.interrupt(activeSession, '结束会话时中断正在执行的 Agent 进程')) {
-    fs.appendFileSync(
-      `${sessionDir}/session.log`,
-      `[${timestamp()}] [SYSTEM]: 结束会话时中断 Claude 进程\n`,
-      'utf-8',
-    );
+    if (dirExists) {
+      try {
+        fs.appendFileSync(
+          `${sessionDir}/session.log`,
+          `[${timestamp()}] [SYSTEM]: 结束会话时中断 Claude 进程\n`,
+          'utf-8',
+        );
+      } catch { /* 日志写入失败不影响主流程 */ }
+    }
   }
 
   // 清空消息队列
@@ -694,11 +723,15 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
   self.activeSessions.delete(sessionKey);
   saveActiveSession(self, sessionKey);
 
-  fs.appendFileSync(
-    `${sessionDir}/session.log`,
-    `[${timestamp()}] [SYSTEM]: 用户请求结束会话\n`,
-    'utf-8',
-  );
+  if (dirExists) {
+    try {
+      fs.appendFileSync(
+        `${sessionDir}/session.log`,
+        `[${timestamp()}] [SYSTEM]: 用户请求结束会话\n`,
+        'utf-8',
+      );
+    } catch { /* 日志写入失败不影响主流程 */ }
+  }
 }
 
 export async function switchToSession(
@@ -764,7 +797,7 @@ export async function switchToSession(
 /**
  * 确保 activeSession.agent 已设置（agent 是运行时对象，无法持久化，重启或新会话都需要创建）
  */
-export function ensureAgent(self: DingClaude, activeSession: IActiveSession): void {
+export function ensureAgent(activeSession: IActiveSession): void {
   if (!activeSession.agent) {
     activeSession.agent = createAgent(activeSession.conversationConfig.agent || 'claude');
   }
@@ -801,6 +834,7 @@ export async function startNewSession(self: DingClaude, opts: {
     startTimeStr: dateUtil.mm(now).format('YYYY-MM-DD-HH-mm-ss'),
     startStaffId: senderStaffId,
     startNickName: senderNick,
+    agentSessionId: newSessionId, // 预生成 UUID 作为目录名，后续 Claude 返回的 sessionId 不再改变目录路径
   };
 
   console.log(`创建新会话: 群=${conversationId}, 会话ID=${newSessionId}, 发起者=${senderStaffId}, 当前并发=${self.activeSessions.size + 1}/${maxConcurrency}`);
@@ -913,7 +947,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   }
 
   try {
-    ensureAgent(self, activeSession);
+    ensureAgent(activeSession);
     const agent = activeSession.agent!;
     await agent.executeQuery(self, activeSession.session, {
       message,
@@ -939,7 +973,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
     activeSession.interrupted = false;
     activeSession.isProcessing = true;
     try {
-      ensureAgent(self, activeSession);
+      ensureAgent(activeSession);
       const agent = activeSession.agent!;
       await agent.executeQuery(self, activeSession.session, {
         message: '继续',
@@ -985,10 +1019,13 @@ export async function handleSessionMessage(self: DingClaude, opts: {
   if (activeSession) {
     const activeSessionDir = getSessionDir(self, activeSession.session);
     if (!fs.existsSync(activeSessionDir)) {
-      // 目录不存在，重新创建（可能因目录重命名或清理导致）
-      fs.mkdirSync(activeSessionDir, { recursive: true });
-      fs.writeFileSync(`${activeSessionDir}/session.json`, JSON.stringify(activeSession.session, null, 2), 'utf-8');
-      console.log(`会话目录已重建: 群=${conversationId}, 路径=${activeSessionDir}`);
+      // 会话目录不存在（可能被 /clean 清理），报错让用户感知
+      self.activeSessions.delete(conversationId);
+      await sendDingMessage(self, {
+        conversationId, sessionWebhook,
+        content: '⚠️ 当前会话数据已被清理，请发送新消息开始新会话。',
+      });
+      return;
     }
 
     if (activeSession.isProcessing) {
@@ -1052,7 +1089,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     }
 
     try {
-      ensureAgent(self, activeSession);
+      ensureAgent(activeSession);
       const agent = activeSession.agent!;
       await agent.executeQuery(self, activeSession.session, {
         message,
@@ -1067,7 +1104,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         activeSession.session.agentSessionId = undefined;
         self.updateSessionFile(activeSession.session, {});
         try {
-          ensureAgent(self, activeSession);
+          ensureAgent(activeSession);
           const agent = activeSession.agent!;
           await agent.executeQuery(self, activeSession.session, {
             message,

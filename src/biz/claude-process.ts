@@ -267,11 +267,6 @@ function runClaudeOnce(
   let sessionDir = self.getSessionDir(session);
   let sessionLog = `${sessionDir}/session.log`;
 
-  // 确保 session 目录存在（可能被 /clean 清理了）
-  if (!fs.existsSync(sessionDir)) {
-    fs.mkdirSync(sessionDir, { recursive: true });
-  }
-
   const startTime = Date.now();
 
   return new Promise((resolve, reject) => {
@@ -346,7 +341,8 @@ function runClaudeOnce(
         if (parsed.type === 'system' && parsed.sessionId && !sessionIdCaptured) {
           self.updateSessionFile(session, { agentSessionId: parsed.sessionId });
           sessionIdCaptured = true;
-          // agentSessionId 已设置，无需重命名目录（目录已用预生成的 UUID 命名）
+          // agentSessionId 已在 startNewSession 预生成，此处仅记录 Claude 返回的 sessionId
+          // 无需重命名目录（目录名即为预生成的 UUID）
           sessionDir = self.getSessionDir(session);
           sessionLog = `${sessionDir}/session.log`;
         }
@@ -865,7 +861,10 @@ export async function executeClaudeQuery(
   // 会话开始时，检查配置是否变更并注入 Claude 上下文（仅在变更时写入）
   injectSessionContextIfChanged(self, session);
 
-  fs.mkdirSync(sessionDir, { recursive: true });
+  // sessionDir 不存在说明会话数据已被清理，报错让用户感知
+  if (!fs.existsSync(sessionDir)) {
+    throw new Error('会话目录已被清理，请发送新消息开始新会话');
+  }
   // 从 settings-ding.json 恢复上次使用的 Claude Setting
   let currentSetting: IClaudeSetting | null = null;
   const savedApiKey = readApiKeyFromSettings(dingGroupDir);
@@ -1038,7 +1037,8 @@ export async function executeClaudeQuery(
 
     // 每次循环动态构建命令参数（settings 和 resume 可能在重试时变化）
     const cmdArgs = [ ...fixedCmdArgs ];
-    if (session.agentSessionId) {
+    if (session.agentSessionId && !newSessionId) {
+      // 恢复已有会话（newSessionId 存在说明是首次创建，不能用 --resume）
       cmdArgs.push('--resume', session.agentSessionId);
       if (!isRetry) {
         console.log(`[${timestamp()}] 恢复 Agent 会话: ${session.agentSessionId}`);
@@ -1072,7 +1072,7 @@ export async function executeClaudeQuery(
       await runClaudeOnce(self, session, cmdArgs, entryCmd, dingGroupDir, stdinMessage, isRetry, streamingCard, mergedEnvs);
       return; // 成功，退出
     } catch (err) {
-      // runClaudeOnce 可能因设置 agentSessionId 而更新了 session 目录路径，需要重新计算
+      // 重试时重新获取 session 目录（可能被 /clean 等命令清理过）
       sessionDir = self.getSessionDir(session);
       sessionLog = `${sessionDir}/session.log`;
 

@@ -2748,7 +2748,7 @@ export class DingClaude {
           });
           return;
         }
-        ensureAgent(this, activeSession);
+        ensureAgent(activeSession);
         const agent = activeSession.agent;
         if (activeSession.currentProcess) {
           console.log(`[${timestamp()}] /goon: 终止当前 Agent 进程`);
@@ -2799,7 +2799,7 @@ export class DingClaude {
               '📥 已收到，正在处理...',
             );
           }
-          ensureAgent(this, activeSession);
+          ensureAgent(activeSession);
           const agent = activeSession.agent!;
           await agent.executeQuery(this, activeSession.session, {
             message: ccMessage,
