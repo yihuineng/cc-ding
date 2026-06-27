@@ -49,6 +49,23 @@ export interface IConfig {
   cardTemplateId?: string;
   /** AI Card 模板变量名，默认 "content" */
   cardTemplateKey?: string;
+  /** 自定义环境变量，会注入到 Agent 进程中 */
+  envs?: Record<string, string>;
+  /** A2A (Agent-to-Agent) 协议配置（中心化 Hub 模式） */
+  a2aCfg?: {
+    /** 中心化 Hub URL（配置后自动向 Hub 注册 + 心跳） */
+    hubUrl?: string;
+    /** Hub 认证密钥 */
+    apiKey?: string;
+    /** 本地配置的远端 Agent 列表（备用，Hub 不可用时直连） */
+    remoteAgents?: Array<{
+      id: string;
+      name: string;
+      baseUrl: string;
+      apiKey?: string;
+      defaultSkill?: string;
+    }>;
+  };
 }
 
 export interface IConversation {
@@ -67,6 +84,10 @@ export interface IConversation {
   atSender?: boolean; // 回复时是否 at 发送人，默认 true
   /** 是否回复"收到"等确认消息，默认 true */
   receiveReply?: boolean;
+  /** 消息接收确认模式：'reaction' 为贴表情（默认），'text' 为发文本消息 */
+  receiveReplyMode?: 'reaction' | 'text';
+  /** 确认表情的 emoji 文本，默认 ''，6 个中英文字符以内 */
+  ackReaction?: string;
   /** /bash 执行前的前置命令（群级别，与全局 preBash 叠加执行） */
   preBash?: string;
   /** Claude 进程权限模式，默认 acceptEdits（bypassPermissions 需显式配置，启动时会告警）。可选值: default | acceptEdits | plan | auto | bypassPermissions | dontAsk */
@@ -89,6 +110,8 @@ export interface IConversation {
   streaming?: boolean;
   /** markdown 回复后是否追加 text 消息确保 @ 通知生效，默认 false */
   ensureAt?: boolean;
+  /** 自定义环境变量（群维度，同名 key 覆盖 client 维度） */
+  envs?: Record<string, string>;
 }
 
 /** 问答模式配置 */
@@ -111,8 +134,7 @@ export interface ISession {
   startTimeStr: string;
   startStaffId: string;
   startNickName: string;
-  claudeSessionId?: string;
-  agentSessionId?: string; // Agent 会话 ID（Claude 用 claudeSessionId，Codex 用 thread_id）
+  agentSessionId?: string; // Agent 会话 ID
 }
 
 // 任务信息
@@ -140,6 +162,7 @@ export interface IMessageQueueItem {
   sessionWebhook: string;     // 入队时的 webhook 地址（消费时使用，webhook 可能过期）
   conversationId: string;     // 入队时的会话ID（消费时确认来源，避免跨会话混用）
   enqueueTime: number;        // 入队时间戳（用于超时清理或优先级排序）
+  createAt?: number;           // 消息原始创建时间（用于水印时序检查）
 }
 
 export interface IActiveSession {
@@ -282,6 +305,8 @@ export interface ISendMsgOpts {
   conversationId: string;
   sessionWebhook: string;
   atUserId?: string;
+  /** @ 通知时使用的用户名，用于 Markdown 格式 @[userName](userId) */
+  atUserName?: string;
   content: string;
   msgType?: 'text' | 'markdown';
 }

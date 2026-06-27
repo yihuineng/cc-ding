@@ -91,13 +91,13 @@ program
 program
   .command('run')
   .description(`
-        - 功能: 钉钉机器人对接本地Claude, 支持会话模式和任务队列模式
-        - 会话数据路径: ~/.cc-ding/{clientId}/{MD5}/.sessions/{claudeSessionId}/session.{json|log}
+        - 功能: 钉钉机器人对接本地 Agent, 支持会话模式和任务队列模式
+        - 会话数据路径: ~/.cc-ding/{clientId}/{MD5}/.sessions/{sessionId}/session.{json|log}
         - 任务数据路径: ~/.cc-ding/{clientId}/{MD5}/.tasks/{时间戳}/task.{json|log}
         - 定时任务数据: ~/.cc-ding/{clientId}/cron.json
         - 启动方式: pm2 start --name "cc-ding-{clientId}" npx -- -p cc-ding run -ci {clientId}
         - 会话模式说明
-          - 会话ID: 由 Claude 分配的 claudeSessionId
+          - 会话ID: 由 Agent 分配的 sessionId
           - 结束会话: /end
           - 新会话: /new [初始消息] 强制结束当前会话并开启新会话
           - 恢复会话: /resume [会话ID] 恢复指定历史会话, 不指定则恢复最近一个
@@ -107,7 +107,7 @@ program
         - 图片消息支持
           - 支持接收钉钉图片消息(picture)和富文本消息(richText, 含内嵌图片)
           - 图片自动下载保存到 <会话目录>/.images/ 下
-          - useLocalOcr: 默认开启, 使用本地OCR识别图片文字, 同时传入原图路径供Claude自主查看
+          - useLocalOcr: 默认开启, 使用本地OCR识别图片文字, 同时传入原图路径供Agent自主查看
           - 配置方式: conversations[].useLocalOcr = false 可关闭OCR(适用于支持图片识别的模型)
         - 任务模式说明
           - 任务ID: 任务接收时间戳
@@ -211,6 +211,89 @@ program
     console.log(`   会话: ${conversationId}`);
     console.log(`   文件: ${absolutePath}`);
     if (caption) console.log(`   说明: ${caption}`);
+  });
+
+program
+  .command('a2a-server')
+  .description('启动全局 A2A Hub 服务（WebSocket + Agent 注册表 + 任务路由）')
+  .requiredOption('-k, --apiKey <value>', 'Hub API Key（用于认证）')
+  .option('-p, --port <value>', 'HTTP 端口', '3000')
+  .option('-t, --timeout <value>', '心跳超时秒数', '60')
+  .action(async (opts) => {
+    const { A2AHub } = await import('../src/biz/a2a/hub');
+    const port = parseInt(opts.port, 10);
+    const timeout = parseInt(opts.timeout, 10);
+
+    const hub = new A2AHub({
+      port,
+      apiKey: opts.apiKey,
+      heartbeatTimeout: timeout,
+    });
+
+    hub.start();
+
+    console.log(`[A2A-Hub] API Key: ${opts.apiKey}`);
+    console.log(`[A2A-Hub] 心跳超时: ${timeout}s`);
+    console.log(`[A2A-Hub] 端点:`);
+    console.log(`  GET  /                    - Dashboard 控制台`);
+    console.log(`  GET  /health              - 健康检查`);
+    console.log(`  GET  /hub/agents          - 列出所有 Agent`);
+    console.log(`  GET  /hub/clients         - 列出已连接 Client`);
+    console.log(`  POST /a2a/{id}/tasks/send - 任务路由`);
+
+    // 优雅退出
+    process.on('SIGINT', async () => {
+      console.log('\n[A2A-Hub] 正在关闭...');
+      await hub.stop();
+      console.log('[A2A-Hub] 已关闭');
+      process.exit(0);
+    });
+    process.on('SIGTERM', async () => {
+      await hub.stop();
+      process.exit(0);
+    });
+  });
+
+program
+  .command('console')
+  .description(`
+        - 功能: 启动 Console Web 管理界面
+        - 默认端口: 8080（可通过 ~/.cc-ding/config.json 的 console.port 修改）
+        - 默认地址: 0.0.0.0（可通过 ~/.cc-ding/config.json 的 console.host 修改）
+        - 默认账号: admin / admin（首次登录强制修改密码）
+        - 管理多个 Client 配置、API Key、文件等
+      `)
+  .option('-p, --port <value>', 'HTTP 端口')
+  .option('--host <value>', 'HTTP 监听地址')
+  .option('--browser', '启动后自动打开浏览器')
+  .option('--open', '仅打印 URL 并退出（不启动服务）')
+  .action(async (opts) => {
+    const { startConsoleServer, getConsoleUrl, getConsolePort, getConsoleHost } = await import('../src/biz/console');
+
+    if (opts.open) {
+      const port = opts.port ? parseInt(opts.port, 10) : getConsolePort();
+      const host = opts.host || getConsoleHost();
+      console.log(getConsoleUrl(port, host));
+      return;
+    }
+
+    const options: { port?: number; host?: string; autoOpen?: boolean; noBrowser?: boolean } = {};
+    if (opts.port) options.port = parseInt(opts.port, 10);
+    if (opts.host) options.host = opts.host;
+    if (opts.browser) options.autoOpen = true;
+
+    const server = await startConsoleServer(options);
+    console.log(`[Console] 按 Ctrl+C 停止服务`);
+
+    // 优雅退出
+    process.on('SIGINT', async () => {
+      await server.stop();
+      process.exit(0);
+    });
+    process.on('SIGTERM', async () => {
+      await server.stop();
+      process.exit(0);
+    });
   });
 
 program.parse(process.argv);

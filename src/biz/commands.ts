@@ -62,14 +62,14 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/goon',
-    description: '强制重启 Claude 进程并发送"继续"恢复执行',
+    description: '强制重启 Agent 进程并发送"继续"恢复执行',
     usage: '/goon',
     examples: [ '/goon' ],
     category: '会话',
   },
   {
     name: '/cc',
-    description: '直接透传消息给 Claude（不附加发送人信息）',
+    description: '直接透传消息给 Agent（不附加发送人信息）',
     usage: '/cc <消息>',
     examples: [ '/cc 继续', '/cc /compact' ],
     category: '会话',
@@ -90,7 +90,7 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/cron',
-    description: '创建和管理定时任务(Claude自动分析自然语言)',
+    description: '创建和管理定时任务(Agent自动分析自然语言)',
     usage: '/cron <自然语言描述> | /cron <cron表达式> <任务描述> | /cron list|pause|resume|delete <id>',
     examples: [ '/cron 每天早上9点查看dima任务', '/cron 0 9 * * * 查看dima任务', '/cron list', '/cron pause cron_123', '/cron delete cron_123' ],
     category: '任务',
@@ -125,9 +125,9 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/open',
-    description: '在文件管理器、终端或VS Code中打开工作目录',
-    usage: '/open [shell|code]',
-    examples: [ '/open', '/open shell', '/open code' ],
+    description: '在文件管理器、终端、VS Code中打开工作目录，或打开Web管理界面',
+    usage: '/open [shell|code|console]',
+    examples: [ '/open', '/open shell', '/open code', '/open console' ],
     category: '管理',
   },
   {
@@ -147,7 +147,7 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/cfg',
     description: '注册当前群到配置，或刷新指定字段(已注册群)',
-    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--preBash "命令"] [--permissionMode mode] [--enableMsgToUser true|false] [--ensureAt true|false] [--model model-name]',
+    usage: '/cfg [--conversationId xxx] [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 138xxxx,139xxxx] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--receiveReplyMode reaction|text] [--ackReaction emoji] [--preBash "命令"] [--permissionMode mode] [--enableMsgToUser true|false] [--ensureAt true|false] [--model model-name] [--agent claude|codex] [--streaming true|false] [--cardTemplateId xxx] [--reload]',
     examples: [ '/cfg', '/cfg --dingToken myToken --whiteUserList 13800138000,13900139000', '/cfg --conversationTitle 工作群', '/cfg --whiteUserList 13800138000', '/cfg --atSender false', '/cfg --receiveReply false', '/cfg --preBash "source .env"', '/cfg --permissionMode auto', '/cfg --conversationId targetConvId --dingToken xxx --conversationTitle 目标群' ],
     category: '管理',
   },
@@ -197,8 +197,8 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/reboot',
     description: '重启 cc-ding 应用（需 pm2 部署）',
-    usage: '/reboot [--update [tag]]',
-    examples: [ '/reboot', '/reboot --update', '/reboot --update beta' ],
+    usage: '/reboot [console|clients] [--update [tag]]',
+    examples: [ '/reboot', '/reboot console', '/reboot clients', '/reboot --update', '/reboot --update beta', '/reboot clients --update' ],
     category: '管理',
   },
   {
@@ -217,14 +217,14 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   },
   {
     name: '/qa',
-    description: '问答模式：开启后 Claude 以只读 plan 模式运行，所有群成员均可使用',
+    description: '问答模式：开启后 Agent 以只读 plan 模式运行，所有群成员均可使用',
     usage: '/qa | /qa exit | /qa --gitRepos https://github.com/a/b | /qa --docs url1,url2 | /qa --autoPull true|false',
     examples: [ '/qa', '/qa exit', '/qa --gitRepos https://github.com/user/repo.git', '/qa --docs https://example.com/doc --autoPull true' ],
     category: '管理',
   },
   {
     name: '/model',
-    description: '查看或切换当前会话使用的 Claude 模型',
+    description: '查看或切换当前会话使用的 Agent 模型',
     usage: '/model | /model list | /model <model-name> | /model add <model-name> | /model rm <model-name>',
     examples: [ '/model', '/model list', '/model claude-sonnet-4-20250514', '/model add claude-3-7-sonnet-20250219', '/model rm claude-haiku-4-20251001' ],
     category: '管理',
@@ -371,6 +371,8 @@ export function formatConversationInfo(
   if (conv.qaCfg?.docs?.length) lines.push(`- **QA docs:** ${conv.qaCfg.docs.join(', ')}`);
   if (conv.qaCfg?.autoPull) lines.push(`- **QA autoPull:** 已开启`);
   if (conv.ensureAt) lines.push(`- **ensureAt:** 已开启（追加 text 消息确保 @ 通知生效）`);
+  if (conv.receiveReplyMode) lines.push(`- **receiveReplyMode:** ${conv.receiveReplyMode}（默认 reaction=表情确认，text=文本确认）`);
+  if (conv.ackReaction && conv.ackReaction !== '') lines.push(`- **ackReaction:** ${conv.ackReaction}`);
   return lines.join('\n');
 }
 
@@ -565,15 +567,18 @@ export function parseVersionCommand(text: string): boolean {
 
 /**
  * 解析 /open 命令
- * - /open      -> 'folder' (在文件管理器中打开)
+ * - /open       -> 'folder' (在文件管理器中打开)
  * - /open shell -> 'shell' (在终端中打开)
+ * - /open code  -> 'code' (在 VS Code 中打开)
+ * - /open console -> 'console' (打开 Web 管理界面)
  * - 其他 -> null
  */
-export function parseOpenCommand(text: string): 'folder' | 'shell' | 'code' | null {
+export function parseOpenCommand(text: string): 'folder' | 'shell' | 'code' | 'console' | null {
   const trimmed = text.trim().toLowerCase();
   if (trimmed === '/open') return 'folder';
   if (trimmed === '/open shell') return 'shell';
   if (trimmed === '/open code') return 'code';
+  if (trimmed === '/open console') return 'console';
   return null;
 }
 
@@ -599,11 +604,14 @@ export function parseResetApiKeyCfgCommand(text: string): boolean {
 
 /**
  * 解析 /cfg 命令
- * 格式: /cfg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--enableMsgToUser true|false] [--ensureAt true|false]
+ * 格式: /cfg [--dingToken xxx] [--linkConversationId yyy] [--whiteUserList 123,456] [--conversationTitle 名称] [--atSender true|false] [--receiveReply true|false] [--receiveReplyMode reaction|text] [--ackReaction emoji] [--enableMsgToUser true|false] [--ensureAt true|false]
  * - /cfg                                -> 注册当前群（所有选项均为默认值）
  * - /cfg --dingToken xxx               -> 指定 dingToken
  * - /cfg --atSender false              -> 关闭回复时 at 发送人
  * - /cfg --receiveReply false          -> 关闭"收到"确认消息
+ * - /cfg --receiveReplyMode reaction   -> 使用表情确认（默认）
+ * - /cfg --receiveReplyMode text       -> 使用文本确认
+ * - /cfg --ackReaction 👍              -> 自定义确认表情
  * - /cfg --enableMsgToUser true|false  -> 开启/关闭私聊消息能力
  * - /cfg --ensureAt true|false         -> 开启/关闭 @ 通知保障
  * - 其他                                -> null
@@ -621,11 +629,25 @@ export interface ICfgOptions {
   streaming?: boolean;
   cardTemplateId?: string;
   model?: string;
+  /** 指定使用的 agent: claude / codex */
+  agent?: string;
+  /** 消息接收确认模式：'reaction' 为贴表情（默认），'text' 为发文本消息 */
+  receiveReplyMode?: 'reaction' | 'text';
+  /** 确认表情的 emoji 文本，默认 ''，6 个中英文字符以内 */
+  ackReaction?: string;
   reload?: boolean;
   /** 是否开启单聊消息能力（oToMessages/batchSend），默认 false */
   enableMsgToUser?: boolean;
   /** markdown 回复后是否追加 text 消息确保 @ 通知生效，默认 false */
   ensureAt?: boolean;
+  /** 自定义环境变量（client 维度），格式 KEY=VALUE */
+  envs?: Record<string, string>;
+  /** 自定义环境变量（群维度），格式 KEY=VALUE */
+  convEnvs?: Record<string, string>;
+  /** 查看环境变量模式：仅列出，不做修改 */
+  envsList?: boolean;
+  /** 原始 envs 键值对（用于区分 client/群维度） */
+  rawEnvs?: Array<{ key: string; value: string }>;
 }
 
 export function parseCfgCommand(text: string): ICfgOptions | null {
@@ -687,15 +709,56 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
       result.cardTemplateId = tokens[++i];
     } else if (token === '--model' && tokens[i + 1]) {
       result.model = tokens[++i];
+    } else if (token === '--agent' && tokens[i + 1]) {
+      result.agent = tokens[++i];
     } else if (token === '--enableMsgToUser' && tokens[i + 1]) {
       const val = tokens[++i].toLowerCase();
       result.enableMsgToUser = val === 'true' || val === '1' || val === 'yes';
     } else if (token === '--ensureAt' && tokens[i + 1]) {
       const val = tokens[++i].toLowerCase();
       result.ensureAt = val === 'true' || val === '1' || val === 'yes';
+    } else if (token === '--receiveReplyMode' && tokens[i + 1]) {
+      const val = tokens[++i].toLowerCase();
+      if (val === 'reaction' || val === 'text') {
+        result.receiveReplyMode = val as 'reaction' | 'text';
+      }
+    } else if (token === '--ackReaction' && tokens[i + 1]) {
+      result.ackReaction = tokens[++i];
     } else if (token === '--reload') {
       result.reload = true;
+    } else if (token === '--envs') {
+      // /cfg --envs          → 查看
+      // /cfg --envs list     → 查看
+      // /cfg --envs KEY=VALUE              → client 维度
+      // /cfg --envs KEY=VALUE --conv <id>  → 群维度
+      if (!tokens[i + 1] || tokens[i + 1] === 'list' || tokens[i + 1] === 'ls') {
+        result.envsList = true;
+      } else {
+        const val = tokens[++i];
+        const [ key, ...valueParts ] = val.split('=');
+        if (key && valueParts.length > 0) {
+          if (!result.rawEnvs) result.rawEnvs = [];
+          result.rawEnvs.push({ key, value: valueParts.join('=') });
+        }
+      }
+    } else if (token === '--conv' && tokens[i + 1]) {
+      // --conv <convId> 指定群维度操作
+      result.conversationId = tokens[++i];
     }
+  }
+
+  // 后置处理：根据 --conv 判断 envs 维度
+  if (result.rawEnvs && result.rawEnvs.length > 0) {
+    if (result.conversationId) {
+      // 有 --conv → 群维度
+      result.convEnvs = {};
+      for (const kv of result.rawEnvs) result.convEnvs[kv.key] = kv.value;
+    } else {
+      // 无 --conv → client 维度
+      result.envs = {};
+      for (const kv of result.rawEnvs) result.envs[kv.key] = kv.value;
+    }
+    delete result.rawEnvs;
   }
 
   return result;
@@ -1098,11 +1161,15 @@ export function parseMenuCommand(text: string): MenuCommand | null {
 
 /**
  * 解析 /reboot 命令
- * - /reboot              -> { update: false }
- * - /reboot --update     -> { update: true, tag: undefined }
- * - /reboot --update tag -> { update: true, tag: 'tag' }
+ * - /reboot              -> { target: 'client', update: false }
+ * - /reboot --update     -> { target: 'client', update: true, tag: undefined }
+ * - /reboot --update tag -> { target: 'client', update: true, tag: 'tag' }
+ * - /reboot console      -> { target: 'console' }
+ * - /reboot clients      -> { target: 'clients', update: false }
+ * - /reboot clients --update -> { target: 'clients', update: true, tag: undefined }
  */
 export interface IRebootCommand {
+  target: 'client' | 'console' | 'clients';
   update: boolean;
   tag?: string;
 }
@@ -1112,11 +1179,26 @@ export function parseRebootCommand(text: string): IRebootCommand | null {
   if (!/^\/reboot(?:\s|$)/i.test(trimmed)) return null;
 
   const rest = trimmed.substring(7).trim();
-  if (!rest) return { update: false };
+  if (!rest) return { target: 'client', update: false };
 
+  // /reboot console
+  if (/^console$/i.test(rest)) return { target: 'console', update: false };
+
+  // /reboot clients [--update [tag]]
+  if (/^clients(?:\s|$)/i.test(rest)) {
+    const after = rest.substring(7).trim();
+    if (!after) return { target: 'clients', update: false };
+    const updateMatch = after.match(/^--update(?:\s+(\S+))?$/i);
+    if (updateMatch) {
+      return { target: 'clients', update: true, tag: updateMatch[1] };
+    }
+    return null;
+  }
+
+  // /reboot --update [tag]  (默认 target=client)
   const updateMatch = rest.match(/^--update(?:\s+(\S+))?$/i);
   if (updateMatch) {
-    return { update: true, tag: updateMatch[1] };
+    return { target: 'client', update: true, tag: updateMatch[1] };
   }
 
   return null;

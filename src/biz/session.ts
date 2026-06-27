@@ -7,9 +7,59 @@ import path from 'path';
 import type { DingClaude } from './cc-ding-cli';
 import { IActiveSession, IActiveSessionPersist, IConfig, IMessageQueueItem, ISession } from './types';
 import { parseEndCommand } from './commands';
-import { sendDingMessage, queryUserIdByMobile, queryUserIdByJobNumber, queryDingUser } from './messaging';
+import { sendDingMessage, queryUserIdByMobile, queryUserIdByJobNumber, queryDingUser, attachReaction, recallReaction } from './messaging';
 import { createAgent } from './agent-registry';
 import { isWindows } from './platform';
+import { userMessageWatermark } from './dedup';
+
+// ==================== 消息确认辅助函数 ====================
+
+/**
+ * 发送消息确认（Reaction 表情 或 文本消息）
+ * - receiveReplyMode === 'reaction' 且有 msgId 时，贴表情
+ * - 否则发文本消息（text 模式 或 无 msgId 降级）
+ * - best-effort: Reaction 失败不影响主流程
+ */
+export async function sendAckConfirmation(
+  self: DingClaude,
+  conversationId: string,
+  sessionWebhook: string,
+  conversationConfig: IConfig['conversations'][0],
+  msgId: string | undefined,
+  textContent: string,
+): Promise<void> {
+  const mode = conversationConfig.receiveReplyMode ?? 'reaction';
+  // ackReaction 未配置时默认 '👀'，配置为空字符串时不发送表情
+  const emoji = conversationConfig.ackReaction !== undefined ? conversationConfig.ackReaction : '👀';
+
+  if (mode === 'reaction' && msgId && emoji) {
+    // Reaction 模式：有 msgId 且 emoji 非空时贴表情
+    await attachReaction(self, conversationId, msgId, emoji).catch(() => {});
+  } else {
+    // text 模式、无 msgId 降级、或 emoji 为空时发文本
+    await sendDingMessage(self, {
+      conversationId, sessionWebhook,
+      content: textContent,
+    }).catch(() => {});
+  }
+}
+
+/**
+ * 撤回确认表情（处理完成时）
+ */
+export async function recallAckReaction(
+  self: DingClaude,
+  conversationId: string,
+  msgId: string | undefined,
+  conversationConfig: IConfig['conversations'][0],
+): Promise<void> {
+  const mode = conversationConfig.receiveReplyMode ?? 'reaction';
+  const emoji = conversationConfig.ackReaction !== undefined ? conversationConfig.ackReaction : '👀';
+
+  if (mode === 'reaction' && msgId && emoji) {
+    await recallReaction(self, conversationId, msgId, emoji).catch(() => {});
+  }
+}
 
 /**
  * 获取当前时间戳字符串 (YYYY-MM-DD HH:mm:ss)
@@ -359,7 +409,7 @@ export function getReplyConversationId(session: ISession): string {
  * 先按当前群ID查找，未找到时查找相同linkConversationId的其他群的活跃会话
  */
 export function findActiveSession(self: DingClaude, conversationId: string): { key: string; session: IActiveSession } | undefined {
-  // 直接查找
+  // 直接查找（Map key 匹配）
   const directSession = self.activeSessions.get(conversationId);
   if (directSession) return { key: conversationId, session: directSession };
 
@@ -371,6 +421,14 @@ export function findActiveSession(self: DingClaude, conversationId: string): { k
       if (otherCfg?.linkConversationId === convCfg.linkConversationId) {
         return { key: entry[0], session: entry[1] };
       }
+    }
+  }
+
+  // 兜底：遍历所有活跃会话，通过内部 conversationId 字段匹配
+  // 处理 Map key 与 conversationId 不一致的边界情况（如配置变更、持久化恢复等）
+  for (const [ key, activeSession ] of self.activeSessions) {
+    if (activeSession.session.conversationId === conversationId) {
+      return { key, session: activeSession };
     }
   }
 
@@ -401,12 +459,12 @@ export function getImagesDir(self: DingClaude, conversationId: string): string {
 }
 
 export function getSessionDir(self: DingClaude, session: ISession): string {
-  const dirName = session.claudeSessionId || session.startTimeStr;
+  const dirName = session.agentSessionId || session.startTimeStr;
   return path.join(getSessionsDir(self, session.conversationId), dirName);
 }
 
 export function getSessionId(session: ISession): string {
-  return session.claudeSessionId || session.startTimeStr;
+  return session.agentSessionId || session.startTimeStr;
 }
 
 // ==================== 会话信息与日志 ====================
@@ -507,17 +565,8 @@ export function findLatestSession(self: DingClaude, conversationId: string): ISe
 export function updateSessionFile(
   self: DingClaude,
   session: ISession,
-  opts: { claudeSessionId?: string; agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string },
+  opts: { agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string },
 ): void {
-  if (opts.claudeSessionId && !session.claudeSessionId) {
-    const oldDir = getSessionDir(self, session);
-    session.claudeSessionId = opts.claudeSessionId;
-    const newDir = getSessionDir(self, session);
-    if (oldDir !== newDir && fs.existsSync(oldDir)) {
-      fs.renameSync(oldDir, newDir);
-      console.log(`[${timestamp()}] 会话目录重命名: ${path.basename(oldDir)} -> ${path.basename(newDir)}`);
-    }
-  }
   if (opts.agentSessionId && !session.agentSessionId) {
     session.agentSessionId = opts.agentSessionId;
   }
@@ -528,7 +577,7 @@ export function updateSessionFile(
     if (opts.currentWebhook !== undefined) session.currentWebhook = opts.currentWebhook || undefined;
     if (opts.currentConversationId !== undefined) session.currentConversationId = opts.currentConversationId || undefined;
     fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2), 'utf-8');
-    const changedField = opts.claudeSessionId ? 'claudeSessionId' : opts.agentSessionId ? 'agentSessionId' : opts.currentWebhook !== undefined ? 'currentWebhook' : 'sessionWebhook';
+    const changedField = opts.agentSessionId ? 'agentSessionId' : opts.currentWebhook !== undefined ? 'currentWebhook' : 'sessionWebhook';
     console.log(`[${timestamp()}] 会话文件已保存: ${changedField}`);
     saveActiveSession(self, session.conversationId);
   } catch (err) {
@@ -580,20 +629,39 @@ export function loadActiveSessions(self: DingClaude): void {
         console.log(`活跃会话文件无效，跳过: ${filePath}`);
         continue;
       }
-      const sessionDir = getSessionDir(self, data.session);
+
+      // 数据迁移：旧会话可能只有 startTimeStr 目录，需要重命名为 UUID
+      const session = data.session;
+      if (!session.agentSessionId) {
+        // 旧数据没有 agentSessionId，预生成一个
+        session.agentSessionId = crypto.randomUUID();
+        console.log(`旧会话数据迁移: 预生成 agentSessionId=${session.agentSessionId}`);
+      }
+      const uuidDir = path.join(getSessionsDir(self, session.conversationId), session.agentSessionId);
+      const timeDir = path.join(getSessionsDir(self, session.conversationId), session.startTimeStr);
+      if (!fs.existsSync(uuidDir) && fs.existsSync(timeDir)) {
+        try {
+          fs.renameSync(timeDir, uuidDir);
+          console.log(`旧会话目录迁移: ${session.startTimeStr} -> ${session.agentSessionId}`);
+        } catch (err) {
+          console.error(`旧会话目录迁移失败: ${timeDir} -> ${uuidDir}`, err);
+        }
+      }
+
+      const sessionDir = getSessionDir(self, session);
       if (!fs.existsSync(sessionDir)) {
         console.log(`活跃会话目录已不存在，清理持久化文件: ${filePath}`);
         fs.unlinkSync(filePath);
         continue;
       }
       self.activeSessions.set(conv.conversationId, {
-        session: data.session,
-        lastSenderStaffId: data.lastSenderStaffId || data.session.startStaffId,
+        session,
+        lastSenderStaffId: data.lastSenderStaffId || session.startStaffId,
         isProcessing: false,
         messageQueue: [],
         conversationConfig: data.conversationConfig,
       });
-      console.log(`恢复活跃会话: 群=${conv.conversationId}, 会话ID=${getSessionId(data.session)}`);
+      console.log(`恢复活跃会话: 群=${conv.conversationId}, 会话ID=${getSessionId(session)}`);
     } catch (err) {
       console.error(`加载活跃会话失败: ${filePath}`, err);
     }
@@ -620,13 +688,23 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
   const sessionId = getSessionId(session);
   console.log(`结束会话: 群=${conversationId}, 会话ID=${sessionId}`);
 
+  // 会话目录不存在时跳过日志写入，直接结束
+  const dirExists = fs.existsSync(sessionDir);
+  if (!dirExists) {
+    console.log(`会话目录不存在，跳过日志写入: ${sessionDir}`);
+  }
+
   const agent = activeSession.agent;
   if (agent?.interrupt(activeSession, '结束会话时中断正在执行的 Agent 进程')) {
-    fs.appendFileSync(
-      `${sessionDir}/session.log`,
-      `[${timestamp()}] [SYSTEM]: 结束会话时中断 Claude 进程\n`,
-      'utf-8',
-    );
+    if (dirExists) {
+      try {
+        fs.appendFileSync(
+          `${sessionDir}/session.log`,
+          `[${timestamp()}] [SYSTEM]: 结束会话时中断 Claude 进程\n`,
+          'utf-8',
+        );
+      } catch { /* 日志写入失败不影响主流程 */ }
+    }
   }
 
   // 清空消息队列
@@ -645,11 +723,15 @@ export async function endSession(self: DingClaude, conversationId: string, sessi
   self.activeSessions.delete(sessionKey);
   saveActiveSession(self, sessionKey);
 
-  fs.appendFileSync(
-    `${sessionDir}/session.log`,
-    `[${timestamp()}] [SYSTEM]: 用户请求结束会话\n`,
-    'utf-8',
-  );
+  if (dirExists) {
+    try {
+      fs.appendFileSync(
+        `${sessionDir}/session.log`,
+        `[${timestamp()}] [SYSTEM]: 用户请求结束会话\n`,
+        'utf-8',
+      );
+    } catch { /* 日志写入失败不影响主流程 */ }
+  }
 }
 
 export async function switchToSession(
@@ -701,21 +783,21 @@ export async function switchToSession(
   });
   saveActiveSession(self, conversationId);
 
-  const hasClaudeSession = !!targetSession.claudeSessionId;
+  const hasAgentSession = !!targetSession.agentSessionId;
   const displayId = getSessionId(targetSession);
   await sendDingMessage(self, {
     conversationId, sessionWebhook,
-    content: `✅ 已切换到历史会话 (🆔 ${displayId})\n${hasClaudeSession ? '🔄 已恢复对话上下文' : '⚠️ 该会话无历史上下文，将从头开始'}\n💡 回复 /end 可结束本轮对话`,
+    content: `✅ 已切换到历史会话 (🆔 ${displayId})\n${hasAgentSession ? '🔄 已恢复对话上下文' : '⚠️ 该会话无历史上下文，将从头开始'}\n💡 回复 /end 可结束本轮对话`,
   });
 
-  console.log(`已切换到历史会话: 群=${conversationId}, 会话ID=${displayId}, 有Claude上下文=${hasClaudeSession}`);
+  console.log(`已切换到历史会话: 群=${conversationId}, 会话ID=${displayId}, 有Claude上下文=${hasAgentSession}`);
   return true;
 }
 
 /**
  * 确保 activeSession.agent 已设置（agent 是运行时对象，无法持久化，重启或新会话都需要创建）
  */
-export function ensureAgent(self: DingClaude, activeSession: IActiveSession): void {
+export function ensureAgent(activeSession: IActiveSession): void {
   if (!activeSession.agent) {
     activeSession.agent = createAgent(activeSession.conversationConfig.agent || 'claude');
   }
@@ -728,8 +810,10 @@ export async function startNewSession(self: DingClaude, opts: {
   senderNick: string;
   message: string;
   conversationConfig: IConfig['conversations'][0];
+  msgCreateAt?: number; // 消息创建时间戳（用于水印）
+  msgId?: string; // 钉钉消息ID（用于 Reaction 确认）
 }): Promise<void> {
-  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig } = opts;
+  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig, msgCreateAt, msgId } = opts;
 
   const maxConcurrency = self.config.sessionMaxConcurrency ?? self.DEFAULT_SESSION_MAX_CONCURRENCY;
   if (self.activeSessions.size >= maxConcurrency) {
@@ -750,6 +834,7 @@ export async function startNewSession(self: DingClaude, opts: {
     startTimeStr: dateUtil.mm(now).format('YYYY-MM-DD-HH-mm-ss'),
     startStaffId: senderStaffId,
     startNickName: senderNick,
+    agentSessionId: newSessionId, // 预生成 UUID 作为目录名，后续 Claude 返回的 sessionId 不再改变目录路径
   };
 
   console.log(`创建新会话: 群=${conversationId}, 会话ID=${newSessionId}, 发起者=${senderStaffId}, 当前并发=${self.activeSessions.size + 1}/${maxConcurrency}`);
@@ -769,11 +854,14 @@ export async function startNewSession(self: DingClaude, opts: {
   });
   saveActiveSession(self, conversationId);
 
-  if (conversationConfig.receiveReply !== false) {
-    await sendDingMessage(self, {
-      conversationId, sessionWebhook,
-      content: `✅ 收到，我来处理...\n🆔 ${newSessionId}`,
-    });
+  // 水印：新会话标记进入处理中
+  if (msgCreateAt) userMessageWatermark.markInFlight(conversationId, msgCreateAt);
+
+  if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
+    await sendAckConfirmation(
+      self, conversationId, sessionWebhook, conversationConfig, msgId,
+      `✅ 收到，我来处理...\n🆔 ${newSessionId}`,
+    );
   }
 
   try {
@@ -795,6 +883,12 @@ export async function startNewSession(self: DingClaude, opts: {
     if (activeSession) {
       activeSession.isProcessing = false;
     }
+    // 水印：新会话处理完成
+    if (msgCreateAt) userMessageWatermark.markCompleted(conversationId, msgCreateAt);
+    // 处理完成，撤回确认表情
+    if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
+      await recallAckReaction(self, conversationId, msgId, conversationConfig);
+    }
   }
   // 检查并处理排队消息（含 /new 后的 drain）
   const finalSession = self.activeSessions.get(conversationId);
@@ -811,12 +905,22 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   if (!activeSession || !activeSession.messageQueue || activeSession.messageQueue.length === 0) return;
 
   const entry = activeSession.messageQueue.shift()!;
-  const { message, senderStaffId, senderNick, sessionWebhook, conversationId: entryConvId, enqueueTime } = entry;
+  const { message, senderStaffId, senderNick, sessionWebhook, conversationId: entryConvId, enqueueTime, createAt: entryCreateAt } = entry;
 
   // 检查消息是否过期（超过 10 分钟跳过）
   const MAX_QUEUE_AGE_MS = 10 * 60 * 1000;
   if (Date.now() - enqueueTime > MAX_QUEUE_AGE_MS) {
     console.log(`队列消息已过期，跳过: 入队时间=${new Date(enqueueTime).toLocaleString()}, 群=${entryConvId}`);
+    // 继续处理下一条
+    if (activeSession.messageQueue.length > 0) {
+      await processMessageQueue(self, conversationId);
+    }
+    return;
+  }
+
+  // 第四层：出队排水阶段时序检查
+  if (entryCreateAt && userMessageWatermark.isExpired(conversationId, entryCreateAt, 'drain')) {
+    console.log(`水印[跳过旧消息-排水]: 群=${entryConvId}, createAt=${entryCreateAt}`);
     // 继续处理下一条
     if (activeSession.messageQueue.length > 0) {
       await processMessageQueue(self, conversationId);
@@ -830,16 +934,20 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   activeSession.lastSenderStaffId = senderStaffId;
   saveActiveSession(self, conversationId);
 
+  // 水印：出队标记进入处理中
+  if (entryCreateAt) userMessageWatermark.markInFlight(conversationId, entryCreateAt);
+
   if (activeSession.conversationConfig.receiveReply !== false) {
     const preview = message.length > 50 ? message.substring(0, 50) + '…' : message;
-    await sendDingMessage(self, {
-      conversationId: entryConvId, sessionWebhook, atUserId: senderStaffId,
-      content: `🚀 开始处理消息「${preview}」`,
-    }).catch(() => {});
+    // 队列消息无 msgId，自动降级为文本确认
+    await sendAckConfirmation(
+      self, entryConvId, sessionWebhook, activeSession.conversationConfig, undefined,
+      `🚀 开始处理消息「${preview}」`,
+    );
   }
 
   try {
-    ensureAgent(self, activeSession);
+    ensureAgent(activeSession);
     const agent = activeSession.agent!;
     await agent.executeQuery(self, activeSession.session, {
       message,
@@ -855,6 +963,8 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
     });
   } finally {
     activeSession.isProcessing = false;
+    // 水印：队列消息处理完成
+    if (entryCreateAt) userMessageWatermark.markCompleted(conversationId, entryCreateAt);
   }
 
   // goonPending: /goon 命令触发的强制重启，发送"继续"恢复执行
@@ -863,7 +973,7 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
     activeSession.interrupted = false;
     activeSession.isProcessing = true;
     try {
-      ensureAgent(self, activeSession);
+      ensureAgent(activeSession);
       const agent = activeSession.agent!;
       await agent.executeQuery(self, activeSession.session, {
         message: '继续',
@@ -890,8 +1000,10 @@ export async function handleSessionMessage(self: DingClaude, opts: {
   senderNick: string;
   message: string;
   conversationConfig: IConfig['conversations'][0];
+  msgCreateAt?: number; // 消息创建时间戳（用于水印时序检查）
+  msgId?: string; // 钉钉消息ID（用于 Reaction 确认）
 }): Promise<void> {
-  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig } = opts;
+  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig, msgCreateAt, msgId } = opts;
 
   // 剥离可能存在的 [提及用户: ...] 前缀，确保命令精确匹配
   const rawMessage = message.replace(/^\[提及用户: .+\]\n/, '');
@@ -907,21 +1019,33 @@ export async function handleSessionMessage(self: DingClaude, opts: {
   if (activeSession) {
     const activeSessionDir = getSessionDir(self, activeSession.session);
     if (!fs.existsSync(activeSessionDir)) {
-      // 目录不存在，重新创建（可能因目录重命名或清理导致）
-      fs.mkdirSync(activeSessionDir, { recursive: true });
-      fs.writeFileSync(`${activeSessionDir}/session.json`, JSON.stringify(activeSession.session, null, 2), 'utf-8');
-      console.log(`会话目录已重建: 群=${conversationId}, 路径=${activeSessionDir}`);
+      // 会话目录不存在（可能被 /clean 清理），报错让用户感知
+      self.activeSessions.delete(conversationId);
+      await sendDingMessage(self, {
+        conversationId, sessionWebhook,
+        content: '⚠️ 当前会话数据已被清理，请发送新消息开始新会话。',
+      });
+      return;
     }
 
     if (activeSession.isProcessing) {
+      // 第四层：队列阶段时序检查
+      if (msgCreateAt && userMessageWatermark.isExpired(conversationId, msgCreateAt, 'queue')) {
+        console.log(`水印[跳过旧消息]: 群=${conversationId}, createAt=${msgCreateAt}`);
+        return;
+      }
+
       // 正在处理中，将消息加入队列
       const queueEntry: IMessageQueueItem = {
         message, senderStaffId, senderNick,
         sessionWebhook, conversationId,
         enqueueTime: Date.now(),
+        createAt: msgCreateAt || 0,
       };
       if (!activeSession.messageQueue) activeSession.messageQueue = [];
       activeSession.messageQueue.push(queueEntry);
+      // 更新排队水印
+      if (msgCreateAt) userMessageWatermark.markQueued(conversationId, msgCreateAt);
       const queuePos = activeSession.messageQueue.length;
       console.log(`会话 ${conversationId} 消息已入队，排队第 ${queuePos} 条`);
       await sendDingMessage(self, {
@@ -937,6 +1061,16 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     activeSession.isProcessing = true;
     saveActiveSession(self, found!.key);
 
+    // 第四层：直接处理阶段时序检查
+    if (msgCreateAt && userMessageWatermark.isExpired(conversationId, msgCreateAt, 'process')) {
+      console.log(`水印[跳过旧消息-直接处理]: 群=${conversationId}, createAt=${msgCreateAt}`);
+      activeSession.isProcessing = false;
+      await processMessageQueue(self, conversationId);
+      return;
+    }
+    // 标记进入处理中状态
+    if (msgCreateAt) userMessageWatermark.markInFlight(conversationId, msgCreateAt);
+
     // 同群消息刷新sessionWebhook，关联群消息只更新currentWebhook/currentConversationId
     if (isFromSessionOwner && sessionWebhook !== activeSession.session.sessionWebhook) {
       activeSession.session.sessionWebhook = sessionWebhook;
@@ -947,15 +1081,15 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     activeSession.session.currentConversationId = conversationId;
     updateSessionFile(self, activeSession.session, { currentWebhook: sessionWebhook, currentConversationId: conversationId });
 
-    if (conversationConfig.receiveReply !== false) {
-      await sendDingMessage(self, {
-        conversationId, sessionWebhook,
-        content: '✅ 收到，我来处理...',
-      });
+    if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
+      await sendAckConfirmation(
+        self, conversationId, sessionWebhook, conversationConfig, msgId,
+        '✅ 收到，我来处理...',
+      );
     }
 
     try {
-      ensureAgent(self, activeSession);
+      ensureAgent(activeSession);
       const agent = activeSession.agent!;
       await agent.executeQuery(self, activeSession.session, {
         message,
@@ -964,13 +1098,13 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         senderStaffId,
       });
     } catch (err) {
-      // 恢复会话失败（可能会话已失效），清除 claudeSessionId 重新发起一次
-      if (activeSession.session.claudeSessionId) {
-        console.log(`[会话恢复失败] 清除 claudeSessionId 并重新发起: ${activeSession.session.claudeSessionId}`);
-        activeSession.session.claudeSessionId = undefined;
+      // 恢复会话失败（可能会话已失效），清除 agentSessionId 重新发起一次
+      if (activeSession.session.agentSessionId) {
+        console.log(`[会话恢复失败] 清除 agentSessionId 并重新发起: ${activeSession.session.agentSessionId}`);
+        activeSession.session.agentSessionId = undefined;
         self.updateSessionFile(activeSession.session, {});
         try {
-          ensureAgent(self, activeSession);
+          ensureAgent(activeSession);
           const agent = activeSession.agent!;
           await agent.executeQuery(self, activeSession.session, {
             message,
@@ -993,16 +1127,23 @@ export async function handleSessionMessage(self: DingClaude, opts: {
       console.error('执行 Agent 查询失败:', err);
       await sendDingMessage(self, {
         conversationId, sessionWebhook, atUserId: senderStaffId,
-        content: `❌ 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
+        content: ` 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
       });
     } finally {
       activeSession.isProcessing = false;
+      // 水印：标记处理完成
+      if (msgCreateAt) userMessageWatermark.markCompleted(conversationId, msgCreateAt);
+      // 处理完成，撤回确认表情
+      if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
+        await recallAckReaction(self, conversationId, msgId, conversationConfig);
+      }
     }
     // 检查并处理排队消息
     await processMessageQueue(self, conversationId);
   } else {
     await startNewSession(self, {
       conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig,
+      msgCreateAt, msgId,
     });
   }
 }

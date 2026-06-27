@@ -293,10 +293,12 @@ export async function sendDingMessage(self: DingClaude, opts: ISendMsgOpts): Pro
   // 优先: 会话级 dingToken > sessionWebhook > 客户端级 defaultDingToken
   const dingToken = resolveSecret(conversation?.dingToken);
 
-  // 钉钉 markdown 消息需要在 content 中显式写 @staffId 才能触发 at 提醒
+  // 钉钉 markdown 消息 @ 通知使用专属格式: @[用户名](userId)
+  // 同时需要在 at 对象中声明 atUserIds 才能触发通知
   let actualContent = content;
   if (effectiveAtUserId && msgType === 'markdown') {
-    actualContent = `${content}\n@${effectiveAtUserId}`;
+    const userName = opts.atUserName || getCachedUserName(effectiveAtUserId) || effectiveAtUserId;
+    actualContent = `${content}\n@[${userName}](${effectiveAtUserId})`;
   }
 
   const body = msgType === 'markdown'
@@ -366,6 +368,7 @@ export async function sendClaudeResponseToDing(
   sessionWebhook: string,
   atUserId: string,
   content: string,
+  atUserName?: string,
 ): Promise<void> {
   const MAX_MSG_LENGTH = 18000;
 
@@ -380,6 +383,7 @@ export async function sendClaudeResponseToDing(
       conversationId,
       sessionWebhook,
       atUserId,
+      atUserName,
       content: filteredContent,
       msgType: 'markdown',
     });
@@ -391,6 +395,7 @@ export async function sendClaudeResponseToDing(
         conversationId,
         sessionWebhook,
         atUserId: i === chunks.length - 1 ? atUserId : '',
+        atUserName: i === chunks.length - 1 ? atUserName : undefined,
         content: chunkHeader + chunks[i],
         msgType: 'markdown',
       });
@@ -407,6 +412,7 @@ export async function sendClaudeResponseToDing(
       conversationId,
       sessionWebhook,
       atUserId,
+      atUserName,
       content: '',
       msgType: 'text',
     });
@@ -459,6 +465,117 @@ export async function sendOwnerMessage(self: DingClaude, content: string, msgTyp
     return false;
   }
   return sendMessageToUser(self, userId, content, msgType);
+}
+
+// ==================== Reaction 表情 API ====================
+
+// 自定义文本表情的固定 ID 和背景（钉钉开放平台规范）
+const CUSTOM_TEXT_EMOTION_ID = '2659900';
+const CUSTOM_TEXT_EMOTION_BG = 'im_bg_1';
+
+/**
+ * 在指定消息下贴表情 Reaction（收到确认）
+ * POST /v1.0/robot/emotion/reply
+ */
+export async function attachReaction(
+  self: DingClaude,
+  conversationId: string,
+  msgId: string,
+  emotionId: string,
+): Promise<boolean> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `${DING_API_BASE}/v1.0/robot/emotion/reply`;
+
+    const result = await urllib.request(url, {
+      method: 'POST',
+      data: {
+        robotCode: self.clientId,
+        openMsgId: msgId,
+        openConversationId: conversationId,
+        emotionType: 2,
+        emotionName: emotionId,
+        textEmotion: {
+          emotionId: CUSTOM_TEXT_EMOTION_ID,
+          emotionName: emotionId,
+          text: emotionId,
+          backgroundId: CUSTOM_TEXT_EMOTION_BG,
+        },
+      },
+      contentType: 'json',
+      headers: { 'x-acs-dingtalk-access-token': accessToken },
+      dataType: 'json',
+      timeout: 5000,
+    });
+
+    if (result.status === 200) {
+      // 检查返回体中的 success 字段
+      const body = result.data as any;
+      if (body && body.success === false) {
+        self.debugLog(`attachReaction 返回 success=false: msgId=${msgId}, data=${JSON.stringify(body)}`);
+        return false;
+      }
+      self.debugLog(`attachReaction 成功: msgId=${msgId}, emotionId=${emotionId}`);
+      return true;
+    }
+    self.debugLog(`attachReaction 返回非200: status=${result.status}, data=${JSON.stringify(result.data)}`);
+    return false;
+  } catch (err) {
+    console.warn(`attachReaction 失败 (msgId=${msgId}):`, err);
+    return false;
+  }
+}
+
+/**
+ * 撤回指定消息的表情 Reaction（处理完成确认）
+ * POST /v1.0/robot/emotion/recall
+ */
+export async function recallReaction(
+  self: DingClaude,
+  conversationId: string,
+  msgId: string,
+  emotionId: string,
+): Promise<boolean> {
+  try {
+    const accessToken = await self.dingStreamClient.getAccessToken();
+    const url = `${DING_API_BASE}/v1.0/robot/emotion/recall`;
+
+    const result = await urllib.request(url, {
+      method: 'POST',
+      data: {
+        robotCode: self.clientId,
+        openMsgId: msgId,
+        openConversationId: conversationId,
+        emotionType: 2,
+        emotionName: emotionId,
+        textEmotion: {
+          emotionId: CUSTOM_TEXT_EMOTION_ID,
+          emotionName: emotionId,
+          text: emotionId,
+          backgroundId: CUSTOM_TEXT_EMOTION_BG,
+        },
+      },
+      contentType: 'json',
+      headers: { 'x-acs-dingtalk-access-token': accessToken },
+      dataType: 'json',
+      timeout: 5000,
+    });
+
+    if (result.status === 200) {
+      const body = result.data as any;
+      if (body && body.success === false) {
+        self.debugLog(`recallReaction 返回 success=false: msgId=${msgId}, data=${JSON.stringify(body)}`);
+        return false;
+      }
+      self.debugLog(`recallReaction 成功: msgId=${msgId}, emotionId=${emotionId}`);
+      return true;
+    }
+    self.debugLog(`recallReaction 返回非200: status=${result.status}, data=${JSON.stringify(result.data)}`);
+    return false;
+  } catch (err) {
+    console.warn(`recallReaction 失败 (msgId=${msgId}):`, err);
+    return false;
+  }
 }
 
 // ==================== 群消息：图片/文件推送 ====================
@@ -578,4 +695,182 @@ export async function sendGroupFileMessage(
     console.error(`sendGroupFileMessage 失败: ${conversationId}`, err);
     return false;
   }
+}
+
+// ==================== 图片/文件消息发送（便捷封装） ====================
+
+/** sendImageMessage 选项 */
+export interface ISendImageOptions {
+  /** 钉钉群会话ID（用于 webhook/dingToken 发送途径） */
+  conversationId: string;
+  /** 会话 webhook 地址 */
+  sessionWebhook: string;
+  /** 图片 mediaId（已上传到钉钉的 mediaId）。与 localPath 二选一 */
+  mediaId?: string;
+  /** 本地图片路径。与 mediaId 二选一，传入后自动上传再发送 */
+  localPath?: string;
+  /** 是否通过群消息 API 独立推送（push 模式，默认 false）
+   * - false: 通过 sendDingMessage 发送，可嵌入文本回复（upload-img 模式）
+   * - true:  通过 sendGroupImageMessage 独立推送图片（push 模式）
+   */
+  push?: boolean;
+  /** 发送图片时附带的前置文本（仅 push=false 时生效） */
+  text?: string;
+  /** @ 通知的 userId */
+  atUserId?: string;
+  /** @ 通知时使用的用户名 */
+  atUserName?: string;
+}
+
+/** sendFileMessage 选项 */
+export interface ISendFileOptions {
+  /** 钉钉群会话ID */
+  conversationId: string;
+  /** 会话 webhook 地址 */
+  sessionWebhook: string;
+  /** 文件 mediaId（已上传到钉钉）。与 localPath 二选一 */
+  mediaId?: string;
+  /** 本地文件路径。与 mediaId 二选一，传入后自动上传再发送 */
+  localPath?: string;
+  /** 文件名（显示在钉钉消息中），localPath 模式下自动取 basename */
+  fileName?: string;
+  /** 是否通过群消息 API 独立推送（push 模式，默认 true）
+   * - false: 通过 Markdown 嵌入链接（效果有限，不推荐）
+   * - true:  通过 sendGroupFileMessage 独立推送文件（默认）
+   */
+  push?: boolean;
+  /** @ 通知的 userId */
+  atUserId?: string;
+  /** @ 通知时使用的用户名 */
+  atUserName?: string;
+  /** 发送文件前/后的附加文本（仅 push=true 时生效，先发文本再推文件） */
+  text?: string;
+}
+
+/**
+ * 发送图片消息
+ * 支持两种模式：
+ * - embed (push=false): 先发送 Markdown 文本（含图片 markdown 嵌入），适合与文字一起回复
+ * - push (push=true): 通过群消息 API 独立推送图片，适合纯图片发送
+ */
+export async function sendImageMessage(
+  self: DingClaude,
+  opts: ISendImageOptions,
+): Promise<boolean> {
+  const { conversationId, sessionWebhook, atUserId, atUserName } = opts;
+  let mediaId = opts.mediaId;
+
+  // 如果提供了 localPath，先上传获取 mediaId
+  if (!mediaId && opts.localPath) {
+    if (!fs.existsSync(opts.localPath)) {
+      console.error(`sendImageMessage: 本地文件不存在 ${opts.localPath}`);
+      return false;
+    }
+    mediaId = await uploadMediaToDingTalk(self, opts.localPath);
+    if (!mediaId) {
+      console.error(`sendImageMessage: 上传图片到钉钉失败 ${opts.localPath}`);
+      return false;
+    }
+  }
+
+  if (!mediaId) {
+    console.error('sendImageMessage: mediaId 和 localPath 均未提供');
+    return false;
+  }
+
+  if (opts.push) {
+    // push 模式：通过群消息 API 独立推送图片
+    const success = await sendGroupImageMessage(self, conversationId, mediaId);
+    if (!success) {
+      console.error(`sendImageMessage: 群消息 API 推送图片失败`);
+    }
+    return success;
+  }
+
+  // embed 模式：先发送文本（如有），再在 Markdown 中嵌入图片
+  const imgMarkdown = `![image](dingtalk://${mediaId})`;
+  const content = opts.text ? `${opts.text}\n\n${imgMarkdown}` : imgMarkdown;
+
+  await sendDingMessage(self, {
+    conversationId,
+    sessionWebhook,
+    atUserId,
+    atUserName,
+    content,
+    msgType: 'markdown',
+  });
+  return true;
+}
+
+/**
+ * 发送文件消息
+ * 支持两种模式：
+ * - push (push=true, 默认): 通过群消息 API 独立推送文件
+ * - embed (push=false): 通过 Markdown 发送文件下载链接（效果有限）
+ */
+export async function sendFileMessage(
+  self: DingClaude,
+  opts: ISendFileOptions,
+): Promise<boolean> {
+  const { conversationId, sessionWebhook, atUserId, atUserName } = opts;
+  let mediaId = opts.mediaId;
+  let fileName = opts.fileName;
+
+  // 如果提供了 localPath，先上传获取 mediaId
+  if (!mediaId && opts.localPath) {
+    if (!fs.existsSync(opts.localPath)) {
+      console.error(`sendFileMessage: 本地文件不存在 ${opts.localPath}`);
+      return false;
+    }
+    mediaId = await uploadMediaToDingTalk(self, opts.localPath);
+    if (!mediaId) {
+      console.error(`sendFileMessage: 上传文件到钉钉失败 ${opts.localPath}`);
+      return false;
+    }
+    // 未指定文件名时，从路径中提取
+    if (!fileName) {
+      fileName = path.basename(opts.localPath);
+    }
+  }
+
+  if (!mediaId) {
+    console.error('sendFileMessage: mediaId 和 localPath 均未提供');
+    return false;
+  }
+  if (!fileName) {
+    fileName = 'file';
+  }
+
+  if (opts.push !== false) {
+    // push 模式（默认）：先发送文本（如有），再通过群消息 API 独立推送文件
+    if (opts.text) {
+      await sendDingMessage(self, {
+        conversationId,
+        sessionWebhook,
+        atUserId,
+        atUserName,
+        content: opts.text,
+        msgType: 'markdown',
+      });
+    }
+    const success = await sendGroupFileMessage(self, conversationId, mediaId, fileName);
+    if (!success) {
+      console.error(`sendFileMessage: 群消息 API 推送文件失败`);
+    }
+    return success;
+  }
+
+  // embed 模式：通过 Markdown 发送文件下载链接
+  const linkMarkdown = `[${fileName}](dingtalk://${mediaId})`;
+  const content = opts.text ? `${opts.text}\n\n${linkMarkdown}` : linkMarkdown;
+
+  await sendDingMessage(self, {
+    conversationId,
+    sessionWebhook,
+    atUserId,
+    atUserName,
+    content,
+    msgType: 'markdown',
+  });
+  return true;
 }

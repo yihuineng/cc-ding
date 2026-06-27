@@ -18,7 +18,9 @@ import {
   parseGoonCommand, parseCcCommand, parseClaudeMdCommand,
   parseRebootCommand, parseInterruptCommand, parseMenuCommand, parseDestroyCommand, parseFreedomCommand, parseQaCommand, parseTimerCommand, parseModelCommand,
 } from './commands';
-import { sendDingMessage, sendClaudeResponseToDing, cacheUserName, getCachedUserName, restoreMentions } from './messaging';
+import { parseA2ACommand, formatAgentList, formatHubAgents, formatAgentInfo, formatTaskStatus } from './commands-a2a';
+import { createA2AClient, createHubClient } from './a2a/client';
+import { sendDingMessage, sendClaudeResponseToDing, cacheUserName, getCachedUserName, restoreMentions, queryDingUser } from './messaging';
 import { parseClaudeStreamLine, interruptClaudeProcess, executeClaudeQuery, injectStartupContexts, refreshSessionContext } from './claude-process';
 import { recordMessage, getRecorderDir } from './recorder';
 import {
@@ -35,7 +37,7 @@ import {
   getActiveSessionsFile, saveActiveSession, loadActiveSessions,
   endSession, switchToSession, startNewSession, handleSessionMessage,
   findActiveSession, cleanCache, destroyConversation,
-  ensureAgent,
+  ensureAgent, sendAckConfirmation, recallAckReaction,
   timestamp,
   resolveAllPhonesInConfig, resolveUserId, resolveToUserId, userIdToPhone, isMobile,
   resolveUserIdName,
@@ -60,6 +62,8 @@ import { TimerEngine, formatTimerList, formatTimerInfo } from './timer';
 import { SendQueueProcessor } from './send-queue';
 import { initModelOptions, loadModelOptions, addModelOptions, removeModelOptions, resolveCurrentModel, setConversationModel } from './model';
 import { commandExists, isWindows, isWindowsPlatform, spawnCommand } from './platform';
+import { isOldMessage, messageDedup, bounceDedup, PROCESS_START_TIME } from './dedup';
+import { checkForUpdates, formatVersionInfo } from './version-check';
 
 /** 工具版本号 */
 const TOOL_VERSION = projUtil().getPkgVersion();
@@ -192,6 +196,12 @@ export class DingClaude {
   /** 消息推送队列处理器 */
   sendQueueProcessor!: SendQueueProcessor;
 
+  /** A2A Hub WebSocket client */
+  a2aHubClient: import('./a2a/client').HubClient | null = null;
+
+  /** A2A Hub heartbeat timer */
+  hubHeartbeatTimer: NodeJS.Timeout | null = null;
+
   /** 默认最大并发会话数 */
   readonly DEFAULT_SESSION_MAX_CONCURRENCY = 5;
   /** 默认任务处理器数量 */
@@ -227,8 +237,8 @@ export class DingClaude {
 
   // messaging
   sendDingMessage = (opts: import('./types').ISendMsgOpts) => sendDingMessage(this, opts);
-  sendClaudeResponseToDing = (conversationId: string, sessionWebhook: string, atUserId: string, content: string) =>
-    sendClaudeResponseToDing(this, conversationId, sessionWebhook, atUserId, content);
+  sendClaudeResponseToDing = (conversationId: string, sessionWebhook: string, atUserId: string, content: string, atUserName?: string) =>
+    sendClaudeResponseToDing(this, conversationId, sessionWebhook, atUserId, content, atUserName);
 
   // claude-process
   parseClaudeStreamLine = parseClaudeStreamLine;
@@ -263,7 +273,7 @@ export class DingClaude {
   // session - persistence
   findHistorySession = (conversationId: string, sessionId: string) => findHistorySession(this, conversationId, sessionId);
   findLatestSession = (conversationId: string) => findLatestSession(this, conversationId);
-  updateSessionFile = (session: ISession, opts: { claudeSessionId?: string; agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string }) =>
+  updateSessionFile = (session: ISession, opts: { agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string }) =>
     updateSessionFile(this, session, opts);
   appendSessionLog = appendSessionLog;
   getActiveSessionsFile = (conversationId: string) => getActiveSessionsFile(this, conversationId);
@@ -277,10 +287,12 @@ export class DingClaude {
   startNewSession = (opts: {
     conversationId: string; sessionWebhook: string; senderStaffId: string;
     senderNick: string; message: string; conversationConfig: IConfig['conversations'][0];
+    msgCreateAt?: number; msgId?: string;
   }) => startNewSession(this, opts);
   handleSessionMessage = (opts: {
     conversationId: string; sessionWebhook: string; senderStaffId: string;
     senderNick: string; message: string; conversationConfig: IConfig['conversations'][0];
+    msgCreateAt?: number; msgId?: string;
   }) => handleSessionMessage(this, opts);
   cleanCache = (conversationId: string | null, keepActiveSession = true) => cleanCache(this, conversationId, keepActiveSession);
 
@@ -906,7 +918,7 @@ export class DingClaude {
     this.dingStreamClient.socketCallBackResponse(res.headers.messageId, '');
     const rawData = JSON.parse(res.data) as IRawCallbackData;
     console.log('rawData', rawData);
-    const { senderNick, senderStaffId, conversationId, conversationTitle, sessionWebhook, msgtype, conversationType } = rawData;
+    const { senderNick, senderStaffId, conversationId, conversationTitle, sessionWebhook, msgtype, conversationType, msgId } = rawData;
     const textContent = rawData.text?.content?.trim() ?? '';
 
     // ---- 缓存用户名（用于 @提及还原） ----
@@ -939,6 +951,26 @@ export class DingClaude {
     }
 
     const conversationConfig = this.getConversationConfig(conversationId);
+
+    // ==================== 四层消息去重 ====================
+    // 第一层：丢弃进程重启前的旧消息
+    const msgCreateAt = (rawData as any).createAt || 0;
+    if (isOldMessage(msgCreateAt)) {
+      this.debugLog(`去重[旧消息]: createAt=${msgCreateAt}, PROCESS_START_TIME=${PROCESS_START_TIME}`);
+      return;
+    }
+
+    // 第二层：基于 msgId 的精确去重，过滤 WebSocket 重连重复
+    if (messageDedup.isDuplicate(res.headers.messageId)) {
+      this.debugLog(`去重[重复msgId]: ${res.headers.messageId}`);
+      return;
+    }
+
+    // 第三层：钉钉抖动去重，过滤同一用户短时间重复发送
+    if (bounceDedup.isBounce(senderStaffId, conversationId, textContent)) {
+      this.debugLog(`去重[抖动]: sender=${senderStaffId}, conv=${conversationId}, content=${textContent.substring(0, 20)}`);
+      return;
+    }
 
     // ==================== Recorder 模式处理 ====================
     const recorderCmd = parseRecorderCommandEnhanced(textContent);
@@ -1185,6 +1217,46 @@ export class DingClaude {
           return;
         }
 
+        // ---- /cfg --envs list: 查看环境变量 ----
+        if (cfgOpts.envsList) {
+          const targetEnvConvId = cfgOpts.conversationId || conversationId;
+          const targetEnvConv = targetEnvConvId === conversationId
+            ? conversationConfig
+            : this.config.conversations.find(c => c.conversationId === targetEnvConvId);
+          const lines: string[] = [];
+          lines.push('### 🌍 环境变量');
+          lines.push('');
+          // client 维度
+          const clientEnvs = this.config.envs;
+          if (clientEnvs && Object.keys(clientEnvs).length > 0) {
+            lines.push('**全局 (client)**');
+            for (const [ k, v ] of Object.entries(clientEnvs)) {
+              lines.push(`- \`${k}=${v}\``);
+            }
+            lines.push('');
+          } else {
+            lines.push('全局 (client): 无');
+            lines.push('');
+          }
+          // 群维度
+          if (targetEnvConv?.envs && Object.keys(targetEnvConv.envs).length > 0) {
+            lines.push(`**群 ${targetEnvConv.conversationTitle || targetEnvConvId}**`);
+            for (const [ k, v ] of Object.entries(targetEnvConv.envs)) {
+              lines.push(`- \`${k}=${v}\``);
+            }
+          } else {
+            lines.push(`群 ${targetEnvConv?.conversationTitle || targetEnvConvId}: 无`);
+          }
+          lines.push('');
+          lines.push('💡 `/cfg --envs KEY=VALUE` 设置全局 | `/cfg --envs KEY=VALUE --conv <id>` 设置群维度');
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: lines.join('\n'),
+            msgType: 'markdown',
+          });
+          return;
+        }
+
         // 确定目标 conversationId
         const targetConvId = cfgOpts.conversationId || conversationId;
         const isTargetOther = targetConvId !== conversationId;
@@ -1198,7 +1270,8 @@ export class DingClaude {
         const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
         cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
-        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model || cfgOpts.enableMsgToUser !== undefined || cfgOpts.ensureAt !== undefined);
+        cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model || cfgOpts.agent || cfgOpts.enableMsgToUser !== undefined || cfgOpts.ensureAt !== undefined || cfgOpts.receiveReplyMode !== undefined || cfgOpts.ackReaction !== undefined ||
+        cfgOpts.envs || cfgOpts.convEnvs);
 
         if (existingConv && hasUpdates) {
         // 已注册群，刷新指定字段
@@ -1212,7 +1285,10 @@ export class DingClaude {
           if (cfgOpts.permissionMode !== undefined) existingConv.permissionMode = cfgOpts.permissionMode;
           if (cfgOpts.streaming !== undefined) existingConv.streaming = cfgOpts.streaming;
           if (cfgOpts.ensureAt !== undefined) existingConv.ensureAt = cfgOpts.ensureAt;
+          if (cfgOpts.receiveReplyMode !== undefined) existingConv.receiveReplyMode = cfgOpts.receiveReplyMode;
+          if (cfgOpts.ackReaction !== undefined) existingConv.ackReaction = cfgOpts.ackReaction;
           if (cfgOpts.model) existingConv.model = cfgOpts.model;
+          if (cfgOpts.agent) existingConv.agent = cfgOpts.agent;
           // cardTemplateId 是全局配置
           if (cfgOpts.cardTemplateId) this.config.cardTemplateId = cfgOpts.cardTemplateId;
           // enableMsgToUser 是全局配置
@@ -1224,6 +1300,15 @@ export class DingClaude {
                 await resolveUserId(this, item);
               }
             }
+          }
+          // 自定义环境变量
+          if (cfgOpts.envs) {
+            if (!this.config.envs) this.config.envs = {};
+            Object.assign(this.config.envs, cfgOpts.envs);
+          }
+          if (cfgOpts.convEnvs) {
+            if (!existingConv.envs) existingConv.envs = {};
+            Object.assign(existingConv.envs, cfgOpts.convEnvs);
           }
           saveClientConfig(this);
           console.log(`[${timestamp()}] 刷新群配置: ${existingConv.conversationTitle || targetConvId}(${targetConvId})`);
@@ -1242,7 +1327,10 @@ export class DingClaude {
           if (cfgOpts.permissionMode !== undefined) newConv.permissionMode = cfgOpts.permissionMode;
           if (cfgOpts.streaming !== undefined) newConv.streaming = cfgOpts.streaming;
           if (cfgOpts.ensureAt !== undefined) newConv.ensureAt = cfgOpts.ensureAt;
+          if (cfgOpts.receiveReplyMode !== undefined) newConv.receiveReplyMode = cfgOpts.receiveReplyMode;
+          if (cfgOpts.ackReaction !== undefined) newConv.ackReaction = cfgOpts.ackReaction;
           if (cfgOpts.model) newConv.model = cfgOpts.model;
+          if (cfgOpts.agent) newConv.agent = cfgOpts.agent;
           // cardTemplateId 是全局配置
           if (cfgOpts.cardTemplateId) this.config.cardTemplateId = cfgOpts.cardTemplateId;
           // enableMsgToUser 是全局配置
@@ -1254,6 +1342,14 @@ export class DingClaude {
                 await resolveUserId(this, item);
               }
             }
+          }
+          // 自定义环境变量
+          if (cfgOpts.envs) {
+            if (!this.config.envs) this.config.envs = {};
+            Object.assign(this.config.envs, cfgOpts.envs);
+          }
+          if (cfgOpts.convEnvs) {
+            newConv.envs = cfgOpts.convEnvs;
           }
           this.config.conversations.push(newConv);
           saveClientConfig(this);
@@ -1323,25 +1419,44 @@ export class DingClaude {
               else resolve({ stdout });
             });
           });
-          claudeCliVersion = stdout.trim() || '未知';
+          claudeCliVersion = (stdout.trim() || '未知').replace(/\s*\(.*\)\s*$/, '');
         } catch { /* ignore */ }
 
-        const md = [
-          '### 📦 cc-ding 版本信息',
+        let codexVersion = '未安装';
+        try {
+          const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+            childExec('codex --version', { timeout: 5000 }, (err, stdout, _stderr) => {
+              if (err) reject(err);
+              else resolve({ stdout });
+            });
+          });
+          codexVersion = stdout.trim() || '未知';
+        } catch { /* ignore */ }
+
+        // 拼接版本检查信息 + 运行环境信息
+        const versionInfo = formatVersionInfo();
+        const envInfo = [
           '',
-          `- **cc-ding:** ${TOOL_VERSION}`,
+          '---',
           `- **claude:** ${claudeCliVersion}`,
+          `- **codex:** ${codexVersion}`,
           `- **os:** ${os.hostname()} ${os.platform()} ${os.release()}`,
           `- **node:** ${process.version}`,
           `- **cardTemplateId:** ${this.config.cardTemplateId || '(未配置)'}`,
           `- **model:** ${conversationConfig?.model || this.config.model || '(默认)'}`,
         ].join('\n');
+
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: md,
+          content: versionInfo + envInfo,
           msgType: 'markdown',
         });
+      }),
+
+      // /a2a 命令：Agent-to-Agent 协议
+      route('/a2a', () => parseA2ACommand(prompt), async a2aCmd => {
+        await this.handleA2ACommand(a2aCmd, { conversationId, sessionWebhook });
       }),
 
       // /{cmd} --help 命令：查看单个命令详细帮助
@@ -1379,35 +1494,133 @@ export class DingClaude {
         }
 
         const tag = rebootCmd.tag ? `@${rebootCmd.tag}` : '@latest';
-        const cmd = rebootCmd.update
-          ? `npm install -g cc-ding${tag}`
-          : null;
         const processName = `cc-ding-${this.clientId}`;
 
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: cmd
-            ? `✅ 更新并重启，正在执行 ${cmd}...`
-            : `✅ cc-ding 正在重启中...`,
-          msgType: 'markdown',
-        });
+        // ---- /reboot console：仅重启 console ----
+        if (rebootCmd.target === 'console') {
+          const { execSync } = await import('child_process');
+          let hasConsole = false;
+          try {
+            execSync('pm2 describe cc-ding-console', { stdio: 'ignore' });
+            hasConsole = true;
+          } catch { /* console not running */ }
 
-        // 先写 flag 文件，避免进程 crash 丢失
-        const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
-        fs.writeFileSync(rebootFlagFile, JSON.stringify({
-          conversationId,
-          senderStaffId,
-          sessionWebhook,
-          update: rebootCmd.update,
-        }), 'utf-8');
+          if (!hasConsole) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: '❌ 未找到 cc-ding-console 进程',
+              msgType: 'markdown',
+            });
+            return;
+          }
 
-        setTimeout(() => {
-          console.log(`[${timestamp()}] 执行 pm2 restart ${processName}${cmd ? ' (含更新)' : ''}`);
-          childExec(`${cmd ? `${cmd} && ` : ''}pm2 restart "${processName}"`, { timeout: 60_000 }, (err) => {
-            if (err) console.error(`[${timestamp()}] pm2 restart 失败:`, err);
+          // 直接执行重启，不写 flag 文件（console 不发送通知）
+          console.log(`[${timestamp()}] 执行 pm2 restart cc-ding-console`);
+          childExec('pm2 restart "cc-ding-console"', { timeout: 60_000 }, (err) => {
+            if (err) console.error(`[${timestamp()}] pm2 restart console 失败:`, err);
           });
-        }, 1000);
+
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '✅ Console 已重启完成',
+            msgType: 'markdown',
+          });
+          return;
+        }
+
+        // ---- /reboot clients [--update]：重启所有 client ----
+        if (rebootCmd.target === 'clients') {
+          const { execSync } = await import('child_process');
+          let pm2List: string;
+          try {
+            pm2List = execSync('pm2 jlist', { encoding: 'utf-8' });
+          } catch {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: '❌ 无法获取 pm2 进程列表',
+              msgType: 'markdown',
+            });
+            return;
+          }
+
+          const clients = JSON.parse(pm2List)
+            .filter((p: any) => /^cc-ding-[a-zA-Z0-9]+$/.test(p.name))
+            .map((p: any) => p.name);
+
+          if (clients.length === 0) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: '❌ 未找到任何 cc-ding client 进程',
+              msgType: 'markdown',
+            });
+            return;
+          }
+
+          const installCmd = rebootCmd.update ? `npm install -g cc-ding${tag}` : null;
+          const clientNames = clients.join(', ');
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: installCmd
+              ? `✅ 更新并重启 ${clients.length} 个 client，正在执行 ${installCmd}...`
+              : `✅ 重启 ${clients.length} 个 client：${clientNames}`,
+            msgType: 'markdown',
+          });
+
+          const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
+          fs.writeFileSync(rebootFlagFile, JSON.stringify({
+            conversationId,
+            senderStaffId,
+            senderNick,
+            sessionWebhook,
+            update: rebootCmd.update,
+            consoleRestart: false,
+            target: 'clients',
+            clientCount: clients.length,
+          }), 'utf-8');
+
+          setTimeout(() => {
+            const cmd = installCmd ? `${installCmd} && ` : '';
+            const pm2Cmd = `pm2 restart ${clients.map(c => `"${c}"`).join(' ')}`;
+            console.log(`[${timestamp()}] 执行 ${cmd}${pm2Cmd}`);
+            childExec(`${cmd}${pm2Cmd}`, { timeout: 120_000 }, (err) => {
+              if (err) console.error(`[${timestamp()}] pm2 restart clients 失败:`, err);
+            });
+          }, 1000);
+          return;
+        }
+
+        // ---- /reboot [--update]：仅重启当前 client（不再带 console） ----
+        {
+          const cmd = rebootCmd.update
+            ? `npm install -g cc-ding${tag}`
+            : null;
+
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: cmd
+              ? `✅ 更新并重启，正在执行 ${cmd}...`
+              : '✅ cc-ding 正在重启中...',
+            msgType: 'markdown',
+          });
+
+          const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
+          fs.writeFileSync(rebootFlagFile, JSON.stringify({
+            conversationId,
+            senderStaffId,
+            senderNick,
+            sessionWebhook,
+            update: rebootCmd.update,
+            consoleRestart: false,
+            target: 'client',
+          }), 'utf-8');
+
+          setTimeout(() => {
+            console.log(`[${timestamp()}] 执行 pm2 restart ${processName}${cmd ? ' (含更新)' : ''}`);
+            childExec(`${cmd ? `${cmd} && ` : ''}pm2 restart "${processName}"`, { timeout: 60_000 }, (err) => {
+              if (err) console.error(`[${timestamp()}] pm2 restart 失败:`, err);
+            });
+          }, 1000);
+        }
       }),
     ];
 
@@ -1624,7 +1837,7 @@ export class DingClaude {
           refreshSessionContext(this, conversationId);
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: '✅ 问答模式已开启\n- Claude 将以只读 plan 模式运行\n- 所有群成员均可使用\n- 使用 `/qa --gitRepos https://github.com/user/repo.git` 配置仓库(首次 clone，后续 pull)\n- 使用 `/qa --docs url1,url2` 配置参考文档\n- 使用 `/qa --autoPull true` 开启自动拉取',
+            content: '✅ 问答模式已开启\n- Agent 将以只读 plan 模式运行\n- 所有群成员均可使用\n- 使用 `/qa --gitRepos https://github.com/user/repo.git` 配置仓库(首次 clone，后续 pull)\n- 使用 `/qa --docs url1,url2` 配置参考文档\n- 使用 `/qa --autoPull true` 开启自动拉取',
             msgType: 'markdown',
           });
         } else if (qaOpts.action === 'exit') {
@@ -2038,6 +2251,41 @@ export class DingClaude {
               content: `💻 已在 VS Code 中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
               msgType: 'markdown',
             });
+          } else if (openTarget === 'console') {
+            const { getConsoleUrl, getConsolePort, getConsoleHost, isLocalHost } = await import('./console');
+            const host = getConsoleHost();
+            const port = getConsolePort();
+            // 检测 console.host 是否为本机，非本机不执行 open
+            if (!isLocalHost(host)) {
+              const url = getConsoleUrl(port, host);
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: `️ Console 管理界面:\n\`\`\`\n${url}?client=${this.clientId}&conv=${conversationId}&tab=config\n\`\`\`\n> 注意: Console 服务未运行在本机，请手动在浏览器中打开`,
+                msgType: 'markdown',
+              });
+              return;
+            }
+            const url = getConsoleUrl(port, host);
+            const openUrl = `${url}?client=${this.clientId}&conv=${conversationId}&tab=config`;
+            if (platform === 'darwin') {
+              await launchDetached('open', [ openUrl ]);
+            } else if (isWindowsPlatform(platform)) {
+              await launchDetached('cmd.exe', [ '/c', 'start', openUrl ]);
+            } else if (commandExists('xdg-open')) {
+              await launchDetached('xdg-open', [ openUrl ]);
+            } else {
+              await this.sendDingMessage({
+                conversationId, sessionWebhook,
+                content: `🖥️ Console 管理界面:\n\`\`\`\n${openUrl}\n\`\`\`\n> 注意: 未检测到浏览器打开命令，请手动访问`,
+                msgType: 'markdown',
+              });
+              return;
+            }
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: `🖥️ 已在浏览器中打开 Console:\n\`\`\`\n${openUrl}\n\`\`\``,
+              msgType: 'markdown',
+            });
           } else {
             if (platform === 'darwin') {
               await launchDetached('open', [ '-a', 'Terminal', conversationDir ]);
@@ -2109,7 +2357,7 @@ export class DingClaude {
           setConversationModel(this, conversationId, modelCmd.model);
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: `✅ 已设置当前会话模型为: \`${modelCmd.model}\`\n\n💡 仅影响后续新建的 Claude 会话`,
+            content: `✅ 已设置当前会话模型为: \`${modelCmd.model}\`\n\n💡 仅影响后续新建的 Agent 会话`,
             msgType: 'markdown',
           });
         } else if (modelCmd.action === 'add') {
@@ -2227,6 +2475,8 @@ export class DingClaude {
             senderNick,
             message: actualMsg,
             conversationConfig,
+            msgCreateAt,
+            msgId: rawData.msgId,
           });
         } else {
           await this.sendDingMessage({
@@ -2259,6 +2509,37 @@ export class DingClaude {
 
       // /log 命令：读取最近 n 行会话日志
       route('/log', () => parseLogCommand(prompt), async logLines => {
+        const activeSession = this.findActiveSession(conversationId);
+
+        if (!activeSession) {
+          // 内存中无活跃会话，尝试从磁盘恢复
+          const activeFile = this.getActiveSessionsFile(conversationId);
+          let onDisk = false;
+          try {
+            const raw = fs.readFileSync(activeFile, 'utf-8');
+            const data = JSON.parse(raw);
+            onDisk = !!data?.session;
+          } catch { /* 文件不存在或无效 */ }
+
+          if (onDisk) {
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              content: '⚠️ 内存中无活跃会话（可能已重启），但磁盘上存在持久化会话。请发送任意消息重新激活会话。',
+              msgType: 'markdown',
+            });
+          } else {
+            await this.sendDingMessage({
+              conversationId,
+              sessionWebhook,
+              content: '⚠️ 当前无活跃会话，可通过 `/new` 或发送消息开始新会话',
+              msgType: 'markdown',
+            });
+          }
+          return;
+        }
+
+        // 有活跃会话，读取日志
         const logContent = this.readSessionLogTail(conversationId, logLines);
         if (logContent) {
           await this.sendDingMessage({
@@ -2271,7 +2552,8 @@ export class DingClaude {
           await this.sendDingMessage({
             conversationId,
             sessionWebhook,
-            content: '⚠️ 当前无活跃会话或暂无日志',
+            content: '⚠️ 会话存在但日志文件为空（可能刚创建或被清理）',
+            msgType: 'markdown',
           });
         }
       }),
@@ -2551,7 +2833,7 @@ export class DingClaude {
           });
           return;
         }
-        ensureAgent(this, activeSession);
+        ensureAgent(activeSession);
         const agent = activeSession.agent;
         if (activeSession.currentProcess) {
           console.log(`[${timestamp()}] /goon: 终止当前 Agent 进程`);
@@ -2595,13 +2877,14 @@ export class DingClaude {
         }
         activeSession.isProcessing = true;
         try {
-          if (activeSession.conversationConfig.receiveReply !== false) {
-            await this.sendDingMessage({
-              conversationId, sessionWebhook,
-              content: '📥 已收到，正在处理...',
-            }).catch(() => {});
+          // streaming 开启时跳过确认（卡片本身即为进度反馈）
+          if (activeSession.conversationConfig.receiveReply !== false && !activeSession.conversationConfig.streaming) {
+            await sendAckConfirmation(
+              this, conversationId, sessionWebhook, activeSession.conversationConfig, msgId,
+              '📥 已收到，正在处理...',
+            );
           }
-          ensureAgent(this, activeSession);
+          ensureAgent(activeSession);
           const agent = activeSession.agent!;
           await agent.executeQuery(this, activeSession.session, {
             message: ccMessage,
@@ -2610,6 +2893,10 @@ export class DingClaude {
           });
         } finally {
           activeSession.isProcessing = false;
+          // 处理完成，撤回确认表情
+          if (activeSession.conversationConfig.receiveReply !== false && !activeSession.conversationConfig.streaming) {
+            await recallAckReaction(this, conversationId, msgId, activeSession.conversationConfig);
+          }
         }
       }),
 
@@ -2701,6 +2988,8 @@ export class DingClaude {
       senderNick,
       message: finalPrompt,
       conversationConfig,
+      msgCreateAt,
+      msgId: rawData.msgId,
     });
   }
 
@@ -2715,15 +3004,14 @@ export class DingClaude {
       const rebootData = JSON.parse(fs.readFileSync(rebootFlagFile, 'utf-8')) as {
         conversationId: string;
         senderStaffId: string;
+        senderNick?: string;
         sessionWebhook?: string;
         update?: boolean;
+        consoleRestart?: boolean;
+        target?: 'client' | 'console' | 'clients';
+        clientCount?: number;
       };
       fs.unlinkSync(rebootFlagFile);
-
-      let content = '✅ cc-ding 已重启完成';
-      if (rebootData.update) {
-        content += `\n**版本:** ${TOOL_VERSION}`;
-      }
 
       // 优先使用 activeSession 的 webhook（关联群场景可能不同），回退到 flag 文件保存的 webhook
       let sessionWebhook: string | undefined;
@@ -2738,12 +3026,42 @@ export class DingClaude {
         return;
       }
 
+      // 解析 userId：dingtalkId 格式（含 -）无法直接通过 atUserIds @ 提及，
+      // 尝试通过 API 查询真正的 staffId/unionid，查询失败则用纯文本提及
+      let atUserId: string | undefined = rebootData.senderStaffId;
+      const atUserName: string | undefined = rebootData.senderNick || getCachedUserName(rebootData.senderStaffId);
+      if (rebootData.senderStaffId.includes('-')) {
+        const userDetail = await queryDingUser(this, rebootData.senderStaffId);
+        if (userDetail?.userid && userDetail.userid !== rebootData.senderStaffId) {
+          atUserId = userDetail.userid;
+          console.log(`[${timestamp()}] 重启通知：将 dingtalkId 解析为 staffId: ${userDetail.userid}`);
+        } else if (rebootData.senderNick) {
+          // 无法解析为 staffId，用昵称做纯文本提及，跳过 atUserId
+          atUserId = undefined;
+        }
+      }
+
+      let content = '✅ cc-ding 已重启完成';
+      if (rebootData.target === 'clients' && rebootData.clientCount) {
+        content = `✅ ${rebootData.clientCount} 个 cc-ding client 已重启完成`;
+      }
+      if (rebootData.consoleRestart) {
+        content += '\n✅ Console 已重启';
+      }
+      if (rebootData.update) {
+        content += `\n**版本:** ${TOOL_VERSION}`;
+      }
+      if (!atUserId && rebootData.senderNick) {
+        content += `\n@${rebootData.senderNick}`;
+      }
+
       await this.sendDingMessage({
         conversationId: rebootData.conversationId,
         sessionWebhook,
         content,
         msgType: 'markdown',
-        atUserId: rebootData.senderStaffId,
+        atUserId,
+        atUserName,
       });
       console.log(`[${timestamp()}] 重启完成通知已发送`);
     } catch (err) {
@@ -2757,36 +3075,214 @@ export class DingClaude {
   }
 
   /**
-   * 连接健康监控：定期检查 dingStreamClient 是否已连接，
-   * 如果长时间 disconnected 且未自动重连，强制重新 connect
+   * WebSocket 连接健康监控：每 5 分钟检查一次 DingStreamClient 连接状态，
+   * 检测到断线自动重连，重连失败通知 owner，配合 dedup.ts 过滤重连回放消息。
    */
-  private startConnectionWatchdog(): void {
-    const CHECK_INTERVAL_MS = 30 * 1000;  // 每 30 秒检查一次
-    const DISCONNECT_THRESHOLD_MS = 60 * 1000;  // 超过 60 秒未连接则强制重连
+  private startConnectionMonitor(): void {
+    const CHECK_INTERVAL_MS = 5 * 60 * 1000;  // 每 5 分钟检查一次
     let lastConnectedTime = Date.now();
+    let isReconnecting = false;
 
-    setInterval(() => {
+    this.connectionMonitor = setInterval(async () => {
       const client = this.dingStreamClient;
       if (client.connected) {
         lastConnectedTime = Date.now();
+        if (isReconnecting) {
+          console.log(`[${timestamp()}] 连接监控: 钉钉 WebSocket 已恢复连接`);
+          isReconnecting = false;
+          // 重连成功后，messageDedup 仍在 60s TTL 内，自动过滤重连回放消息
+          console.log(`[${timestamp()}] 连接监控: messageDedup 有效期内，重连回放消息将被自动过滤`);
+        }
         return;
       }
 
       const elapsed = Date.now() - lastConnectedTime;
-      if (elapsed >= DISCONNECT_THRESHOLD_MS) {
-        console.log(`[${timestamp()}] 连接监控: 已断开 ${elapsed / 1000}s，强制重新连接`);
+      if (isReconnecting) {
+        this.debugLog(`连接监控: 正在重连中，已断开 ${elapsed / 1000}s`);
+        return;
+      }
+
+      console.log(`[${timestamp()}] 连接监控: 钉钉 WebSocket 已断开 ${elapsed / 1000}s，尝试重连`);
+      isReconnecting = true;
+
+      // 通知 owner 连接中断
+      await sendOwnerMessage(this, '⚠️ 钉钉连接中断，尝试重连中...', 'markdown').catch(() => {});
+
+      try {
+        // 先断开旧连接再重新连接
+        try { client.disconnect(); } catch { /* ignore */ }
+        await client.connect();
+        console.log(`[${timestamp()}] 连接监控: 重连成功`);
         lastConnectedTime = Date.now();
-        // 强制清理并重新连接
-        try {
-          client.disconnect();
-        } catch { /* ignore */ }
-        client.connect().catch(err => {
-          console.error(`[${timestamp()}] 强制重连失败:`, err);
-        });
-      } else {
-        this.debugLog(`连接监控: 已断开 ${elapsed / 1000}s，等待自动重连...`);
+        isReconnecting = false;
+        // 通知 owner 重连成功
+        await sendOwnerMessage(this, '✅ 钉钉连接已恢复', 'markdown').catch(() => {});
+      } catch (err) {
+        console.error(`[${timestamp()}] 连接监控: 重连失败`, err);
+        // 重连失败，通知 owner
+        await sendOwnerMessage(this, '❌ 钉钉重连失败，请检查网络或重启服务', 'markdown').catch(() => {});
+        isReconnecting = false;
       }
     }, CHECK_INTERVAL_MS);
+  }
+
+  /** 连接监控定时器 ID */
+  private connectionMonitor: NodeJS.Timeout | null = null;
+
+  /**
+   * 处理 /a2a 命令
+   */
+  private async handleA2ACommand(
+    cmd: ReturnType<typeof parseA2ACommand>,
+    ctx: { conversationId: string; sessionWebhook: string },
+  ): Promise<void> {
+    if (!cmd) return;
+    const { conversationId, sessionWebhook } = ctx;
+    const remoteAgents = this.config.a2aCfg?.remoteAgents || [];
+
+    const msg = (content: string, msgType: 'text' | 'markdown' = 'markdown') =>
+      this.sendDingMessage({ conversationId, sessionWebhook, content, msgType });
+
+    switch (cmd.type) {
+      case 'list':
+        await msg(formatAgentList(remoteAgents));
+        break;
+
+      case 'agents': {
+        const hubClient = createHubClient(this);
+        if (!hubClient) { await msg('未配置 hubUrl，无法查询 Hub Agent 列表'); return; }
+        try {
+          const result = await hubClient.listAgents() as { agents?: Array<{ id: string; name: string; description?: string; status: string; baseUrl: string }> };
+          await msg(formatHubAgents(result.agents || []));
+        } catch (err) {
+          await msg(`查询 Hub Agent 失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+
+      case 'info': {
+        const agent = remoteAgents.find(a => a.id === cmd.agentId);
+        if (!agent) { await msg(`Agent 未找到: ${cmd.agentId}`); return; }
+        try {
+          const client = createA2AClient(cmd.agentId, this);
+          const card = client ? await client.getAgentCard() : undefined;
+          await msg(formatAgentInfo(agent, card as Record<string, unknown>));
+        } catch (err) {
+          await msg(`获取 Agent 信息失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+
+      case 'send': {
+        const taskId = `a2a-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const hubClient = createHubClient(this);
+
+        if (hubClient) {
+          // Hub 模式：通过 Hub 路由
+          await msg(`通过 Hub 发送任务到 ${cmd.agentId}...`);
+          try {
+            const result = await hubClient.sendTask(cmd.agentId, taskId, {
+              role: 'user',
+              parts: [{ type: 'text', text: cmd.message }],
+            });
+            const r = result as { status?: { state?: string; message?: string } };
+            await msg(`**任务已发送**\n\n**Task ID:** ${taskId}\n**状态:** ${r.status?.state || 'unknown'}`);
+          } catch (err) {
+            await msg(`发送任务失败: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else {
+          // 直连模式：直接调用远端
+          const agent = remoteAgents.find(a => a.id === cmd.agentId);
+          if (!agent) { await msg(`Agent 未找到: ${cmd.agentId}`); return; }
+          await msg(`正在发送任务到 ${agent.name}...`);
+          try {
+            const client = createA2AClient(cmd.agentId, this);
+            if (!client) throw new Error('创建 A2A 客户端失败');
+            const result = await client.sendTask(taskId, {
+              role: 'user',
+              parts: [{ type: 'text', text: cmd.message }],
+            });
+            const r = result as { status?: { state?: string; message?: string } };
+            await msg(`**任务已发送**\n\n**Task ID:** ${taskId}\n**状态:** ${r.status?.state || 'unknown'}`);
+          } catch (err) {
+            await msg(`发送任务失败: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        break;
+      }
+
+      case 'status': {
+        const hubClient = createHubClient(this);
+        try {
+          const result = hubClient
+            ? await hubClient.getTaskStatus(cmd.agentId, cmd.taskId)
+            : await createA2AClient(cmd.agentId, this)?.getTaskStatus(cmd.taskId);
+          if (!result) throw new Error('无法连接到 Agent');
+          const r = result as { status?: { state?: string; message?: string } };
+          await msg(formatTaskStatus(cmd.taskId, r.status?.state || 'unknown', r.status?.message));
+        } catch (err) {
+          await msg(`获取任务状态失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+
+      case 'cancel': {
+        const hubClient = createHubClient(this);
+        try {
+          if (hubClient) {
+            await hubClient.cancelTask(cmd.agentId, cmd.taskId);
+          } else {
+            const client = createA2AClient(cmd.agentId, this);
+            if (!client) throw new Error('无法连接到 Agent');
+            await client.cancelTask(cmd.taskId);
+          }
+          await msg(`任务已取消\n\n**Task ID:** ${cmd.taskId}`);
+        } catch (err) {
+          await msg(`取消任务失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+
+      case 'discover': {
+        try {
+          const url = new URL(cmd.url);
+          const agentUrl = `${url.protocol}//${url.host}`;
+          const cardRes = await fetch(`${agentUrl}/.well-known/agent.json`);
+          if (!cardRes.ok) throw new Error(`HTTP ${cardRes.status}`);
+          const card = await cardRes.json() as Record<string, unknown>;
+          await msg(`**发现远端 Agent**\n\n**名称:** ${card.name}\n**描述:** ${card.description}\n**版本:** ${card.version}\n**URL:** \`${agentUrl}\`\n\n使用 /cfg 添加到配置`);
+        } catch (err) {
+          await msg(`发现 Agent 失败: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        break;
+      }
+    }
+  }
+
+  /**
+   * 连接到 A2A Hub（WebSocket），并注册所有 conversation 为独立 agent
+   * Agent ID 格式: <clientId>:<conversationId>
+   */
+  private async connectToHub(hubClient: import('./a2a/client').HubClient): Promise<void> {
+    const conversations = Array.isArray(this.config.conversations) ? this.config.conversations : [];
+    const name = this.config.clientName || this.clientId;
+
+    // 构建 agent 列表
+    const agents = conversations.map(conv => ({
+      id: `${this.clientId}:${conv.conversationId}`,
+      name: conv.conversationTitle || name,
+      description: `cc-ding conversation: ${conv.conversationTitle || conv.conversationId}`,
+    }));
+
+    // 连接 WebSocket 并注册
+    await hubClient.connect(this.clientId, name, agents);
+    console.log(`[A2A-Hub] 已连接并注册 ${agents.length} 个 agent`);
+
+    // 启动心跳定时器（按 client 维度）
+    this.a2aHubClient = hubClient;
+    this.hubHeartbeatTimer = setInterval(() => {
+      hubClient.heartbeat(this.clientId);
+    }, 30000);
   }
 
   /**
@@ -2803,6 +3299,9 @@ export class DingClaude {
 
     // 启动自检
     startupCheck(this);
+
+    // 异步检查版本更新（不阻塞启动）
+    checkForUpdates().catch(() => { /* ignore */ });
 
     // 解析 config 中的手机号为 userId
     await resolveAllPhonesInConfig(this);
@@ -2831,11 +3330,17 @@ export class DingClaude {
     // 启动消息推送队列处理器
     this.sendQueueProcessor.start();
 
+    // 连接到 A2A Hub（WebSocket 模式）
+    const hubClient = createHubClient(this);
+    if (hubClient) {
+      await this.connectToHub(hubClient);
+    }
+
     // 启动 /menu 待选状态过期清理定时器
     startSelectionCleanupTimer();
 
-    // 启动连接健康监控
-    this.startConnectionWatchdog();
+    // 启动 WebSocket 连接健康监控
+    this.startConnectionMonitor();
 
     if (hasTaskEnabled) {
       console.log(`[${timestamp()}] 任务处理器数量: ${taskHandlerCount}`);
@@ -2859,13 +3364,32 @@ export class DingClaude {
       process.exit(1);
     });
 
-    // 进程退出时清理 Timer 引擎和消息推送队列
+    // 进程退出时清理定时器和资源
     const onShutdown = () => {
+      if (this.hubHeartbeatTimer) clearInterval(this.hubHeartbeatTimer);
+      if (this.connectionMonitor) clearInterval(this.connectionMonitor);
+      this.a2aHubClient?.disconnect();
       this.timerEngine.destroy();
       this.sendQueueProcessor.destroy();
     };
     process.on('SIGTERM', onShutdown);
     process.on('SIGINT', onShutdown);
+
+    // SIGUSR2: 热重载配置（用于 Console Web 管理界面触发）
+    process.on('SIGUSR2', () => {
+      try {
+        const { config } = reloadClientConfig(this);
+        const diff = buildConfigDiff(this.config, config);
+        this.config = config;
+        if (diff.length > 0) {
+          console.log(`\n[config-reload] 配置已重载，变更:\n  ${diff.join('\n  ')}`);
+        } else {
+          console.log('[config-reload] 配置已重载，无变更');
+        }
+      } catch (err: any) {
+        console.error('[config-reload] 重载失败:', err.message);
+      }
+    });
 
     await Promise.all([ receiverPromise, ...handlerPromises ]);
   }

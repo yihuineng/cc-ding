@@ -24,6 +24,7 @@ import {
 import { resolveSecret } from './secrets';
 import { commandExists, formatClaudeCommandMissingMessage, isWindows, spawnCommand } from './platform';
 import { AgentWatchdog } from './watchdog';
+import { getMergedEnvs } from './env-utils';
 
 const MAX_FAST_FAIL = 20;
 const API_RETRY_DELAY_MS = 10_000;
@@ -120,7 +121,7 @@ class RetryableApiError extends Error {
   }
 }
 
-/** Claude 会话已失效（会话被清理或过期），需清除 claudeSessionId 重新发起 */
+/** Agent 会话已失效（会话被清理或过期），需清除 agentSessionId 重新发起 */
 class ConversationNotFoundError extends Error {
   constructor() {
     super('Claude conversation not found');
@@ -261,14 +262,10 @@ function runClaudeOnce(
   stdinMessage: string,
   isRetry: boolean,
   streamingCard?: StreamingCard | null,
+  mergedEnvs?: Record<string, string>,
 ): Promise<number> {
   let sessionDir = self.getSessionDir(session);
   let sessionLog = `${sessionDir}/session.log`;
-
-  // 确保 session 目录存在（可能被 /clean 清理了）
-  if (!fs.existsSync(sessionDir)) {
-    fs.mkdirSync(sessionDir, { recursive: true });
-  }
 
   const startTime = Date.now();
 
@@ -276,6 +273,7 @@ function runClaudeOnce(
     const child = spawnCommand(entryCmd, cmdArgs, {
       cwd: dingGroupDir,
       stdio: [ 'pipe', 'pipe', 'pipe' ],
+      env: mergedEnvs,
     });
 
     const activeSession = self.activeSessions.get(session.conversationId);
@@ -290,7 +288,7 @@ function runClaudeOnce(
     child.stdin?.write(`${stdinMessage}\n`);
     child.stdin?.end();
 
-    let sessionIdCaptured = !isRetry && !!session.claudeSessionId;
+    let sessionIdCaptured = !isRetry && !!session.agentSessionId;
     let responseBuffer: string[] = [];
     let stderrOutput = '';
     let stdoutOutput = ''; // 累积 stdout 原始输出，用于错误检测
@@ -311,7 +309,7 @@ function runClaudeOnce(
           interruptClaudeProcess(activeSession, 'Watchdog: 自动终止超时进程');
         }
       },
-      onTimeout: (attempts, maxAutoRecovery, timeoutSec) => {
+      onTimeout: (_attempts, _maxAutoRecovery, timeoutSec) => {
         console.warn(`[${timestamp()}] Watchdog: Claude 进程 ${timeoutSec}s 无活动，执行自动恢复`);
         try { fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Watchdog 超时，${timeoutSec}s 无活动，自动 kill 进程并恢复\n`, 'utf-8'); } catch { /* ignore */ }
         // 标记 watchdog 超时，让 runClaudeOnce 以特殊方式退出
@@ -341,10 +339,10 @@ function runClaudeOnce(
 
       if (parsed) {
         if (parsed.type === 'system' && parsed.sessionId && !sessionIdCaptured) {
-          self.updateSessionFile(session, { claudeSessionId: parsed.sessionId });
+          self.updateSessionFile(session, { agentSessionId: parsed.sessionId });
           sessionIdCaptured = true;
-          // updateSessionFile 可能重命名了 session 目录（从 startTimeStr 改为 claudeSessionId），
-          // 需要重新计算路径，否则后续 appendFileSync 会因旧路径不存在而抛出 ENOENT
+          // agentSessionId 已在 startNewSession 预生成，此处仅记录 Claude 返回的 sessionId
+          // 无需重命名目录（目录名即为预生成的 UUID）
           sessionDir = self.getSessionDir(session);
           sessionLog = `${sessionDir}/session.log`;
         }
@@ -402,11 +400,11 @@ function runClaudeOnce(
 
             // 流式卡片 finalize，成功后跳过普通消息，否则回退
             if (streamingCard && !streamingCard.permissionDenied) {
+              hasSentResponse = true;
               streamingCard.finalize(fullResponse).then(ok => {
                 if (!ok || streamingCard.failed || streamingCard.permissionDenied) {
                   const activeSessionRef = self.activeSessions.get(session.conversationId);
                   const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
-                  hasSentResponse = true;
                   sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
                     .catch(err => console.error('发送钉钉消息失败:', err));
                 }
@@ -414,7 +412,6 @@ function runClaudeOnce(
                 // finalize 异常，回退到普通消息
                 const activeSessionRef = self.activeSessions.get(session.conversationId);
                 const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
-                hasSentResponse = true;
                 sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
                   .catch(err => console.error('发送钉钉消息失败:', err));
               });
@@ -484,16 +481,15 @@ function runClaudeOnce(
 
           // 流式卡片 finalize，成功后跳过普通消息，否则回退
           if (streamingCard && !streamingCard.permissionDenied) {
+            hasSentResponse = true;
             streamingCard.finalize(fullResponse).then(ok => {
               if (!ok || streamingCard.failed || streamingCard.permissionDenied) {
                 const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
-                hasSentResponse = true;
                 sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
                   .catch(err => console.error('发送钉钉消息失败:', err));
               }
             }).catch(() => {
               const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
-              hasSentResponse = true;
               sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
                 .catch(err => console.error('发送钉钉消息失败:', err));
             });
@@ -571,9 +567,9 @@ function runClaudeOnce(
         return;
       }
 
-      // Claude 会话已失效（被清理或过期），抛出特殊错误让外层清除 claudeSessionId 后重试
-      if (session.claudeSessionId && isConversationNotFoundError(combinedOutput)) {
-        console.log(`[${timestamp()}] Claude 会话已失效: ${session.claudeSessionId}，通知外层重新发起新会话`);
+      // Agent 会话已失效（被清理或过期），抛出特殊错误让外层清除 agentSessionId 后重试
+      if (session.agentSessionId && isConversationNotFoundError(combinedOutput)) {
+        console.log(`[${timestamp()}] Agent 会话已失效: ${session.agentSessionId}，通知外层重新发起新会话`);
         reject(new ConversationNotFoundError());
         return;
       }
@@ -638,16 +634,129 @@ function buildContextContent(self: DingClaude, conversationId: string): string {
     '- 回答时要考虑用户的使用场景（钉钉聊天界面，非终端环境）',
     '- 用户一般情况下只能通过 cc-ding 进行操作',
     '- cc-ding 文档: https://github.com/yihuineng/cc-ding',
-    END_MARK,
+  ];
+
+  // A2A 协议上下文（如果已配置）
+  const a2aCfg = config.a2aCfg;
+  if (a2aCfg) {
+    lines.push('## A2A (Agent-to-Agent)');
+    lines.push('cc-ding 支持 A2A 协议，可以调度任务到其他 cc-ding 实例。');
+    if (a2aCfg.remoteAgents?.length) {
+      const agentList = a2aCfg.remoteAgents.map(a => `- \`${a.id}\` (${a.name}): \`${a.baseUrl}\``).join('\n');
+      lines.push('');
+      lines.push('### 可用 Agent');
+      lines.push(agentList);
+    }
+    lines.push('');
+    lines.push('### 使用方式');
+    lines.push('可以通过执行以下命令将任务发送给其他 Agent：');
+    lines.push('```');
+    lines.push('cc-ding a2a send <agent-id> <任务描述>');
+    lines.push('cc-ding a2a list          # 查看可用 Agent');
+    lines.push('cc-ding a2a agents        # 查看 Hub 上所有在线 Agent');
+    lines.push('cc-ding a2a status <id> <taskId>  # 查看任务状态');
+    lines.push('```');
+    lines.push('当用户请求需要其他 Agent 的专长处理时，可以直接调用上述命令。');
+  }
+
+  lines.push(END_MARK);
+
+  return lines.filter(Boolean).join('\n') + '\n';
+}
+
+/**
+ * 构建 Codex 上下文内容（AGENTS.md 格式，无 HTML 标记）。
+ */
+function buildCodexContext(self: DingClaude, conversationId: string): string {
+  const convCfg = self.getConversationConfig(conversationId);
+  const config = self.config;
+  const lines: string[] = [
+    '# cc-ding Session Context',
+    '',
+    '## Client',
+    `- clientId: \`${self.clientId}\``,
+    config.clientName ? `- clientName: ${config.clientName}` : '',
+    `- owner: ${config.owner}`,
+    '',
+    '## Conversation',
+    `- conversationId: \`${conversationId}\``,
+    convCfg?.conversationType ? `- conversationType: ${convCfg.conversationType === '1' ? '单聊' : '群聊'}` : '',
+    convCfg?.conversationTitle ? `- conversationTitle: ${convCfg.conversationTitle}` : '',
+    '',
+    '## DingTalk Context',
+    '当 prompt 中包含 "消息来自: xxx(用户ID)" 时，说明消息来自钉钉用户。',
+    '- 回答时要考虑用户的使用场景（钉钉聊天界面，非终端环境）',
+    '- 用户一般情况下只能通过 cc-ding 进行操作',
+    '- cc-ding 文档: https://github.com/yihuineng/cc-ding',
   ].filter(Boolean);
+
+  // A2A 协议上下文（如果已配置）
+  const a2aCfg = config.a2aCfg;
+  if (a2aCfg) {
+    lines.push('');
+    lines.push('## A2A (Agent-to-Agent)');
+    lines.push('cc-ding 支持 A2A 协议，可以调度任务到其他 cc-ding 实例。');
+    if (a2aCfg.remoteAgents?.length) {
+      lines.push('');
+      lines.push('### 可用 Agent');
+      for (const a of a2aCfg.remoteAgents) {
+        lines.push(`- \`${a.id}\` (${a.name}): \`${a.baseUrl}\``);
+      }
+    }
+    lines.push('');
+    lines.push('### 使用方式');
+    lines.push('可以通过执行以下命令将任务发送给其他 Agent：');
+    lines.push('```');
+    lines.push('cc-ding a2a send <agent-id> <任务描述>');
+    lines.push('cc-ding a2a list          # 查看可用 Agent');
+    lines.push('cc-ding a2a agents        # 查看 Hub 上所有在线 Agent');
+    lines.push('cc-ding a2a status <id> <taskId>  # 查看任务状态');
+    lines.push('```');
+    lines.push('当用户请求需要其他 Agent 的专长处理时，可以直接调用上述命令。');
+  }
 
   return lines.join('\n') + '\n';
 }
 
 /**
- * 将 cc-ding 上下文写入/更新到指定群的 .claude/CLAUDE.md 文件。
- * 不比对缓存，直接写入（用于启动时首次注入）。
+ * 将 cc-ding 上下文写入 Codex 的 AGENTS.md 文件。
  */
+function writeCodexContext(self: DingClaude, conversationId: string): void {
+  const dingGroupDir = self.getConversationDir(conversationId);
+  const agentsMdPath = path.join(dingGroupDir, 'AGENTS.md');
+  const newSection = buildCodexContext(self, conversationId);
+
+  if (!fs.existsSync(agentsMdPath)) {
+    fs.writeFileSync(agentsMdPath, newSection, 'utf-8');
+    console.log(`[${timestamp()}] cc-ding 上下文已注入 AGENTS.md: ${agentsMdPath}`);
+    return;
+  }
+
+  const existing = fs.readFileSync(agentsMdPath, 'utf-8');
+  if (existing.includes('# cc-ding Session Context')) {
+    // 已存在，替换整个 cc-ding 段落
+    const lines = existing.split('\n');
+    let startLine = -1;
+    let endLine = lines.length;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim() === '# cc-ding Session Context') {
+        startLine = i;
+      } else if (startLine >= 0 && lines[i].match(/^#{1,2} /) && !lines[i].includes('Client') && !lines[i].includes('Conversation') && !lines[i].includes('DingTalk') && !lines[i].includes('A2A')) {
+        endLine = i;
+        break;
+      }
+    }
+    if (startLine >= 0) {
+      const before = lines.slice(0, startLine).join('\n');
+      const after = lines.slice(endLine).join('\n');
+      fs.writeFileSync(agentsMdPath, [ before, newSection, after ].filter(Boolean).join('\n'), 'utf-8');
+      console.log(`[${timestamp()}] cc-ding 上下文已更新: ${agentsMdPath}`);
+    }
+  } else {
+    fs.writeFileSync(agentsMdPath, newSection + '\n' + existing, 'utf-8');
+    console.log(`[${timestamp()}] cc-ding 上下文已追加到现有 AGENTS.md: ${agentsMdPath}`);
+  }
+}
 function writeContextToFile(self: DingClaude, conversationId: string, newSection: string): void {
   const dingGroupDir = self.getConversationDir(conversationId);
   const claudeDir = path.join(dingGroupDir, '.claude');
@@ -684,9 +793,13 @@ function writeContextToFile(self: DingClaude, conversationId: string, newSection
 export function injectStartupContexts(self: DingClaude): void {
   const conversations = Array.isArray(self.config.conversations) ? self.config.conversations : [];
   for (const conv of conversations) {
+    // Claude: 注入 CLAUDE.md
     const newSection = buildContextContent(self, conv.conversationId);
     injectedContextCache.set(conv.conversationId, newSection);
     writeContextToFile(self, conv.conversationId, newSection);
+
+    // Codex: 注入 AGENTS.md
+    writeCodexContext(self, conv.conversationId);
   }
 }
 
@@ -742,10 +855,16 @@ export async function executeClaudeQuery(
   let sessionLog = `${sessionDir}/session.log`;
   const dingGroupDir = self.getConversationDir(session.conversationId);
 
+  // 合并环境变量：process.env → config.envs → conversation.envs
+  const mergedEnvs = getMergedEnvs(self, session.conversationId);
+
   // 会话开始时，检查配置是否变更并注入 Claude 上下文（仅在变更时写入）
   injectSessionContextIfChanged(self, session);
 
-  fs.mkdirSync(sessionDir, { recursive: true });
+  // sessionDir 不存在说明会话数据已被清理，报错让用户感知
+  if (!fs.existsSync(sessionDir)) {
+    throw new Error('会话目录已被清理，请发送新消息开始新会话');
+  }
   // 从 settings-ding.json 恢复上次使用的 Claude Setting
   let currentSetting: IClaudeSetting | null = null;
   const savedApiKey = readApiKeyFromSettings(dingGroupDir);
@@ -918,15 +1037,15 @@ export async function executeClaudeQuery(
 
     // 每次循环动态构建命令参数（settings 和 resume 可能在重试时变化）
     const cmdArgs = [ ...fixedCmdArgs ];
-    if (session.claudeSessionId) {
-      cmdArgs.push('--resume', session.claudeSessionId);
+    if (session.agentSessionId && !newSessionId) {
+      // 恢复已有会话（newSessionId 存在说明是首次创建，不能用 --resume）
+      cmdArgs.push('--resume', session.agentSessionId);
       if (!isRetry) {
-        console.log(`[${timestamp()}] 恢复 Claude 会话: ${session.claudeSessionId}`);
+        console.log(`[${timestamp()}] 恢复 Agent 会话: ${session.agentSessionId}`);
       }
     } else if (!isRetry) {
       // 首轮新会话：显式指定 session-id，确保 session 从开始就被持久化到磁盘，
-      // 这样后续 --resume 一定能找到该会话。不预先设置 claudeSessionId，
-      // 因为 Claude 可能在内部使用不同的 UUID；改为依赖 stream 中返回的真实 session_id。
+      // 这样后续 --resume 一定能找到该会话。
       const explicitSessionId = newSessionId || randomUUID();
       cmdArgs.push('--session-id', explicitSessionId);
       console.log(`[${timestamp()}] 创建 Claude 会话(显式 session-id): ${explicitSessionId}`);
@@ -950,10 +1069,10 @@ export async function executeClaudeQuery(
     self.debugLog(`发送消息: ${stdinMessage.substring(0, 100)}...`);
 
     try {
-      await runClaudeOnce(self, session, cmdArgs, entryCmd, dingGroupDir, stdinMessage, isRetry, streamingCard);
+      await runClaudeOnce(self, session, cmdArgs, entryCmd, dingGroupDir, stdinMessage, isRetry, streamingCard, mergedEnvs);
       return; // 成功，退出
     } catch (err) {
-      // runClaudeOnce 可能因获取 claudeSessionId 而重命名了目录，需要重新计算路径
+      // 重试时重新获取 session 目录（可能被 /clean 等命令清理过）
       sessionDir = self.getSessionDir(session);
       sessionLog = `${sessionDir}/session.log`;
 
@@ -1017,11 +1136,11 @@ export async function executeClaudeQuery(
       if (err instanceof ConversationNotFoundError) {
         totalRetries++; retryStartTime = retryStartTime || Date.now();
         retryHistory.push(`[${timestamp()}] 会话失效，清除旧会话`);
-        // Claude 会话已失效，清除 claudeSessionId 后重新发起新会话
-        console.log(`[${timestamp()}] Claude 会话失效，清除 claudeSessionId 并重新发起`);
-        fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Claude 会话已失效，清除旧会话并重新发起\n`, 'utf-8');
-        if (session.claudeSessionId) {
-          session.claudeSessionId = undefined;
+        // Agent 会话已失效，清除 agentSessionId 后重新发起新会话
+        console.log(`[${timestamp()}] Agent 会话失效，清除 agentSessionId 并重新发起`);
+        fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Agent 会话已失效，清除旧会话并重新发起\n`, 'utf-8');
+        if (session.agentSessionId) {
+          session.agentSessionId = undefined;
           self.updateSessionFile(session, {});
         }
         consecutiveFastFail = 0;
@@ -1087,15 +1206,15 @@ export async function executeClaudeQuery(
           content: '📦 上下文超长，正在自动压缩上下文(/compact)后继续...',
         });
         const compactCmdArgs = [ ...fixedCmdArgs ];
-        if (session.claudeSessionId) {
-          compactCmdArgs.push('--resume', session.claudeSessionId);
+        if (session.agentSessionId) {
+          compactCmdArgs.push('--resume', session.agentSessionId);
         }
         const compactSettingsPath = resolveClaudeSettingsPath(self, dingGroupDir, opts?.settings);
         if (compactSettingsPath) {
           compactCmdArgs.push('--settings', compactSettingsPath);
         }
         try {
-          await runClaudeOnce(self, session, compactCmdArgs, entryCmd, dingGroupDir, '/compact', false);
+          await runClaudeOnce(self, session, compactCmdArgs, entryCmd, dingGroupDir, '/compact', false, null, mergedEnvs);
           console.log(`[${timestamp()}] /compact 执行成功，发送"继续"恢复执行`);
           fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: /compact 执行成功，发送"继续"恢复执行\n`, 'utf-8');
         } catch (compactErr) {
