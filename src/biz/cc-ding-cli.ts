@@ -918,7 +918,7 @@ export class DingClaude {
     this.dingStreamClient.socketCallBackResponse(res.headers.messageId, '');
     const rawData = JSON.parse(res.data) as IRawCallbackData;
     console.log('rawData', rawData);
-    const { senderNick, senderStaffId, conversationId, conversationTitle, sessionWebhook, msgtype, conversationType } = rawData;
+    const { senderNick, senderStaffId, conversationId, conversationTitle, sessionWebhook, msgtype, conversationType, msgId } = rawData;
     const textContent = rawData.text?.content?.trim() ?? '';
 
     // ---- 缓存用户名（用于 @提及还原） ----
@@ -2379,7 +2379,7 @@ export class DingClaude {
             message: actualMsg,
             conversationConfig,
             msgCreateAt,
-            msgId: res.headers.messageId,
+            msgId: rawData.msgId,
           });
         } else {
           await this.sendDingMessage({
@@ -2779,7 +2779,6 @@ export class DingClaude {
           return;
         }
         activeSession.isProcessing = true;
-        const msgId = res.headers.messageId;
         try {
           // streaming 开启时跳过确认（卡片本身即为进度反馈）
           if (activeSession.conversationConfig.receiveReply !== false && !activeSession.conversationConfig.streaming) {
@@ -2893,7 +2892,7 @@ export class DingClaude {
       message: finalPrompt,
       conversationConfig,
       msgCreateAt,
-      msgId: res.headers.messageId,
+      msgId: rawData.msgId,
     });
   }
 
