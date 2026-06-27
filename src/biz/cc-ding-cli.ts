@@ -1494,48 +1494,133 @@ export class DingClaude {
         }
 
         const tag = rebootCmd.tag ? `@${rebootCmd.tag}` : '@latest';
-        const cmd = rebootCmd.update
-          ? `npm install -g cc-ding${tag}`
-          : null;
         const processName = `cc-ding-${this.clientId}`;
 
-        // 检测 console 进程是否存在
-        let hasConsole = false;
-        try {
+        // ---- /reboot console：仅重启 console ----
+        if (rebootCmd.target === 'console') {
           const { execSync } = await import('child_process');
-          execSync('pm2 describe cc-ding-console', { stdio: 'ignore' });
-          hasConsole = true;
-        } catch { /* console not running */ }
+          let hasConsole = false;
+          try {
+            execSync('pm2 describe cc-ding-console', { stdio: 'ignore' });
+            hasConsole = true;
+          } catch { /* console not running */ }
 
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: cmd
-            ? `✅ 更新并重启${hasConsole ? '（含 console）' : ''}，正在执行 ${cmd}...`
-            : hasConsole
-              ? '✅ cc-ding 正在重启中（含 console）...'
-              : '✅ cc-ding 正在重启中...',
-          msgType: 'markdown',
-        });
+          if (!hasConsole) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: '❌ 未找到 cc-ding-console 进程',
+              msgType: 'markdown',
+            });
+            return;
+          }
 
-        // 先写 flag 文件，记录本次 reboot 是否也重启了 console
-        const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
-        fs.writeFileSync(rebootFlagFile, JSON.stringify({
-          conversationId,
-          senderStaffId,
-          senderNick,
-          sessionWebhook,
-          update: rebootCmd.update,
-          consoleRestart: hasConsole,
-        }), 'utf-8');
-
-        setTimeout(() => {
-          const consoleCmd = hasConsole ? 'pm2 restart "cc-ding-console" && ' : '';
-          console.log(`[${timestamp()}] 执行 ${consoleCmd}pm2 restart ${processName}${cmd ? ' (含更新)' : ''}`);
-          childExec(`${cmd ? `${cmd} && ` : ''}${consoleCmd}pm2 restart "${processName}"`, { timeout: 60_000 }, (err) => {
-            if (err) console.error(`[${timestamp()}] pm2 restart 失败:`, err);
+          // 直接执行重启，不写 flag 文件（console 不发送通知）
+          console.log(`[${timestamp()}] 执行 pm2 restart cc-ding-console`);
+          childExec('pm2 restart "cc-ding-console"', { timeout: 60_000 }, (err) => {
+            if (err) console.error(`[${timestamp()}] pm2 restart console 失败:`, err);
           });
-        }, 1000);
+
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '✅ Console 已重启完成',
+            msgType: 'markdown',
+          });
+          return;
+        }
+
+        // ---- /reboot clients [--update]：重启所有 client ----
+        if (rebootCmd.target === 'clients') {
+          const { execSync } = await import('child_process');
+          let pm2List: string;
+          try {
+            pm2List = execSync('pm2 jlist', { encoding: 'utf-8' });
+          } catch {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: '❌ 无法获取 pm2 进程列表',
+              msgType: 'markdown',
+            });
+            return;
+          }
+
+          const clients = JSON.parse(pm2List)
+            .filter((p: any) => /^cc-ding-[a-zA-Z0-9]+$/.test(p.name))
+            .map((p: any) => p.name);
+
+          if (clients.length === 0) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: '❌ 未找到任何 cc-ding client 进程',
+              msgType: 'markdown',
+            });
+            return;
+          }
+
+          const installCmd = rebootCmd.update ? `npm install -g cc-ding${tag}` : null;
+          const clientNames = clients.join(', ');
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: installCmd
+              ? `✅ 更新并重启 ${clients.length} 个 client，正在执行 ${installCmd}...`
+              : `✅ 重启 ${clients.length} 个 client：${clientNames}`,
+            msgType: 'markdown',
+          });
+
+          const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
+          fs.writeFileSync(rebootFlagFile, JSON.stringify({
+            conversationId,
+            senderStaffId,
+            senderNick,
+            sessionWebhook,
+            update: rebootCmd.update,
+            consoleRestart: false,
+            target: 'clients',
+            clientCount: clients.length,
+          }), 'utf-8');
+
+          setTimeout(() => {
+            const cmd = installCmd ? `${installCmd} && ` : '';
+            const pm2Cmd = `pm2 restart ${clients.map(c => `"${c}"`).join(' ')}`;
+            console.log(`[${timestamp()}] 执行 ${cmd}${pm2Cmd}`);
+            childExec(`${cmd}${pm2Cmd}`, { timeout: 120_000 }, (err) => {
+              if (err) console.error(`[${timestamp()}] pm2 restart clients 失败:`, err);
+            });
+          }, 1000);
+          return;
+        }
+
+        // ---- /reboot [--update]：仅重启当前 client（不再带 console） ----
+        {
+          const cmd = rebootCmd.update
+            ? `npm install -g cc-ding${tag}`
+            : null;
+
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: cmd
+              ? `✅ 更新并重启，正在执行 ${cmd}...`
+              : '✅ cc-ding 正在重启中...',
+            msgType: 'markdown',
+          });
+
+          const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
+          fs.writeFileSync(rebootFlagFile, JSON.stringify({
+            conversationId,
+            senderStaffId,
+            senderNick,
+            sessionWebhook,
+            update: rebootCmd.update,
+            consoleRestart: false,
+            target: 'client',
+          }), 'utf-8');
+
+          setTimeout(() => {
+            console.log(`[${timestamp()}] 执行 pm2 restart ${processName}${cmd ? ' (含更新)' : ''}`);
+            childExec(`${cmd ? `${cmd} && ` : ''}pm2 restart "${processName}"`, { timeout: 60_000 }, (err) => {
+              if (err) console.error(`[${timestamp()}] pm2 restart 失败:`, err);
+            });
+          }, 1000);
+        }
       }),
     ];
 
@@ -2923,6 +3008,8 @@ export class DingClaude {
         sessionWebhook?: string;
         update?: boolean;
         consoleRestart?: boolean;
+        target?: 'client' | 'console' | 'clients';
+        clientCount?: number;
       };
       fs.unlinkSync(rebootFlagFile);
 
@@ -2955,6 +3042,9 @@ export class DingClaude {
       }
 
       let content = '✅ cc-ding 已重启完成';
+      if (rebootData.target === 'clients' && rebootData.clientCount) {
+        content = `✅ ${rebootData.clientCount} 个 cc-ding client 已重启完成`;
+      }
       if (rebootData.consoleRestart) {
         content += '\n✅ Console 已重启';
       }

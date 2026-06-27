@@ -307,11 +307,22 @@ describe('commands parsers', () => {
   });
 
   describe('parseRebootCommand', () => {
-    it('reboot 与 --update', () => {
-      assert.deepStrictEqual(parseRebootCommand('/reboot'), { update: false });
-      assert.deepStrictEqual(parseRebootCommand('/reboot --update'), { update: true, tag: undefined });
-      assert.deepStrictEqual(parseRebootCommand('/reboot --update beta'), { update: true, tag: 'beta' });
+    it('默认 reboot 与 --update', () => {
+      assert.deepStrictEqual(parseRebootCommand('/reboot'), { target: 'client', update: false });
+      assert.deepStrictEqual(parseRebootCommand('/reboot --update'), { target: 'client', update: true, tag: undefined });
+      assert.deepStrictEqual(parseRebootCommand('/reboot --update beta'), { target: 'client', update: true, tag: 'beta' });
       assert.strictEqual(parseRebootCommand('/reboot now'), null);
+    });
+
+    it('console 子命令', () => {
+      assert.deepStrictEqual(parseRebootCommand('/reboot console'), { target: 'console', update: false });
+      assert.strictEqual(parseRebootCommand('/reboot console --update'), null);
+    });
+
+    it('clients 子命令', () => {
+      assert.deepStrictEqual(parseRebootCommand('/reboot clients'), { target: 'clients', update: false });
+      assert.deepStrictEqual(parseRebootCommand('/reboot clients --update'), { target: 'clients', update: true, tag: undefined });
+      assert.deepStrictEqual(parseRebootCommand('/reboot clients --update beta'), { target: 'clients', update: true, tag: 'beta' });
     });
   });
 

@@ -197,8 +197,8 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/reboot',
     description: '重启 cc-ding 应用（需 pm2 部署）',
-    usage: '/reboot [--update [tag]]',
-    examples: [ '/reboot', '/reboot --update', '/reboot --update beta' ],
+    usage: '/reboot [console|clients] [--update [tag]]',
+    examples: [ '/reboot', '/reboot console', '/reboot clients', '/reboot --update', '/reboot --update beta', '/reboot clients --update' ],
     category: '管理',
   },
   {
@@ -1161,11 +1161,15 @@ export function parseMenuCommand(text: string): MenuCommand | null {
 
 /**
  * 解析 /reboot 命令
- * - /reboot              -> { update: false }
- * - /reboot --update     -> { update: true, tag: undefined }
- * - /reboot --update tag -> { update: true, tag: 'tag' }
+ * - /reboot              -> { target: 'client', update: false }
+ * - /reboot --update     -> { target: 'client', update: true, tag: undefined }
+ * - /reboot --update tag -> { target: 'client', update: true, tag: 'tag' }
+ * - /reboot console      -> { target: 'console' }
+ * - /reboot clients      -> { target: 'clients', update: false }
+ * - /reboot clients --update -> { target: 'clients', update: true, tag: undefined }
  */
 export interface IRebootCommand {
+  target: 'client' | 'console' | 'clients';
   update: boolean;
   tag?: string;
 }
@@ -1175,11 +1179,26 @@ export function parseRebootCommand(text: string): IRebootCommand | null {
   if (!/^\/reboot(?:\s|$)/i.test(trimmed)) return null;
 
   const rest = trimmed.substring(7).trim();
-  if (!rest) return { update: false };
+  if (!rest) return { target: 'client', update: false };
 
+  // /reboot console
+  if (/^console$/i.test(rest)) return { target: 'console', update: false };
+
+  // /reboot clients [--update [tag]]
+  if (/^clients(?:\s|$)/i.test(rest)) {
+    const after = rest.substring(7).trim();
+    if (!after) return { target: 'clients', update: false };
+    const updateMatch = after.match(/^--update(?:\s+(\S+))?$/i);
+    if (updateMatch) {
+      return { target: 'clients', update: true, tag: updateMatch[1] };
+    }
+    return null;
+  }
+
+  // /reboot --update [tag]  (默认 target=client)
   const updateMatch = rest.match(/^--update(?:\s+(\S+))?$/i);
   if (updateMatch) {
-    return { update: true, tag: updateMatch[1] };
+    return { target: 'client', update: true, tag: updateMatch[1] };
   }
 
   return null;
