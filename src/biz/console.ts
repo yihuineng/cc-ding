@@ -1968,17 +1968,6 @@ function renderConfigTab(clientId) {
     '<div class="form-group"><label>AI Card 模板变量名</label><input type="text" id="cfg-cardTemplateKey" value="' + escHtml(cfg.cardTemplateKey || 'content') + '"></div>' +
     '</div></div>';
 
-  // === 环境变量编辑器 ===
-  const envs = cfg.envs || {};
-  html += '<div class="card"><div class="card-title">全局环境变量 (envs)</div><div id="envs-editor">';
-  for (const ek of Object.keys(envs)) {
-    html += '<div class="form-row" style="margin-bottom:4px;">' +
-      '<input type="text" class="env-key-input" value="' + escHtml(ek) + '" style="flex:1;">' +
-      '<input type="text" class="env-val-input" value="' + escHtml(envs[ek]) + '" style="flex:2;">' +
-      '<button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">×</button></div>';
-  }
-  html += '</div><button class="btn btn-sm mt-8" onclick="addEnvRow()">+ 添加环境变量</button></div>';
-
   // === A2A 配置 ===
   const a2a = cfg.a2aCfg || {};
   html += '<div class="card"><div class="card-title">A2A 配置</div>' +
@@ -2255,16 +2244,6 @@ async function saveClientConfig(clientId) {
   v = document.getElementById('cfg-dingSecret').value.trim();
   if (v && v.indexOf('****') !== 0) patches['dingSecret'] = v;
 
-  // Envs
-  var envs = {};
-  var envRows = document.querySelectorAll('#envs-editor .form-row');
-  for (var i = 0; i < envRows.length; i++) {
-    var ek = envRows[i].querySelector('.env-key-input').value.trim();
-    var ev = envRows[i].querySelector('.env-val-input').value;
-    if (ek) envs[ek] = ev;
-  }
-  patches['envs'] = envs;
-
   // a2aCfg
   var a2aCfg = {};
   var hubUrl = document.getElementById('a2a-hubUrl').value.trim();
@@ -2286,17 +2265,6 @@ async function saveClientConfig(clientId) {
     await loadClientConfig(clientId);
     renderClientDetail(clientId);
   } catch (e) { toast(e.message, 'error'); }
-}
-
-function addEnvRow() {
-  var editor = document.getElementById('envs-editor');
-  var row = document.createElement('div');
-  row.className = 'form-row';
-  row.style.marginBottom = '4px';
-  row.innerHTML = '<input type="text" class="env-key-input" placeholder="KEY" style="flex:1;">' +
-    '<input type="text" class="env-val-input" placeholder="value" style="flex:2;">' +
-    '<button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">×</button>';
-  editor.appendChild(row);
 }
 
 // ===== Conversation Modal =====
@@ -2487,63 +2455,118 @@ function renderEnvTab(clientId) {
   }
   scanEnvRefs(cfg);
 
-  // 常用 Claude Code 环境变量
-  const commonEnvVars = [
-    'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL',
-    'CLAUDE_SMALL_FAST_MODEL', 'CLAUDE_CODE_ENABLE_BACKGROUND_TASKS',
-    'CLAUDE_CODE_HOME', 'PATH',
-  ];
-  const allVars = new Set([...commonEnvVars, ...envRefs]);
+  const existingEnvs = cfg.envs || {};
+  const envKeys = Object.keys(existingEnvs).sort();
 
   let html = '<div class="card">' +
-    '<div class="flex-between"><div class="card-title" style="margin-bottom:0">环境变量</div>' +
-    '<button class="btn btn-primary btn-sm" onclick="saveEnvConfig(' + SQ + clientId + SQ + ')">💾 保存配置中的环境变量</button></div>' +
+    '<div class="flex-between"><div class="card-title" style="margin-bottom:0">环境变量 (' + envKeys.length + ')</div>' +
+    '<button class="btn btn-primary btn-sm" onclick="showAddEnvModal(' + SQ + clientId + SQ + ')">+ 添加</button></div>' +
     '<div class="divider"></div>' +
-    '<p class="text-muted mb-8" style="font-size:13px;">配置中使用 $ENV:VAR 语法引用环境变量，下方可设置值（仅显示引用和已配置的）</p>';
+    '<p class="text-muted mb-8" style="font-size:13px;">配置中使用 $ENV:VAR 语法引用环境变量。🔗 表示被引用</p>';
 
-  html += '<div id="env-tab-vars">';
-  const existingEnvs = cfg.envs || {};
-  for (const v of [...allVars].sort()) {
-    const currentVal = existingEnvs[v] || '';
-    const isUsed = envRefs.has(v);
-    const hasConfig = existingEnvs.hasOwnProperty(v);
-    html += '<div class="form-row" style="margin-bottom:6px;align-items:center;">' +
-      '<div style="flex:1;min-width:200px;"><span class="text-mono">' + (isUsed ? '🔗 ' : '') + escHtml(v) + '</span>' +
-      '<br><span class="text-muted" style="font-size:11px;">' + (hasConfig ? '✅ 已配置' : (isUsed ? '⚠️ 引用但未配置' : '💡 常见变量')) + '</span></div>' +
-      '<input type="text" class="env-tab-val" data-key="' + escHtml(v) + '" value="' + escHtml(currentVal) + '" placeholder="设置值" style="flex:2;">' +
-      '</div>';
+  if (envKeys.length === 0) {
+    html += '<div class="empty-state" style="padding:24px 0;"><div class="icon">🌿</div><p>未配置环境变量</p></div>';
+  } else {
+    html += '<table><thead><tr><th>变量名</th><th>状态</th><th>值</th><th>操作</th></tr></thead><tbody>';
+    for (const key of envKeys) {
+      const val = existingEnvs[key];
+      const isUsed = envRefs.has(key);
+      html += '<tr>';
+      html += '<td class="text-mono">' + escHtml(key) + '</td>';
+      html += '<td>' + (isUsed ? '<span class="status-badge status-online">被引用</span>' : '<span class="text-muted">未引用</span>') + '</td>';
+      html += '<td class="text-mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHtml(val) + '">' + escHtml(val) + '</td>';
+      html += '<td style="white-space:nowrap;">';
+      html += '<button class="btn btn-sm" onclick="showEditEnvModal(' + SQ + clientId + SQ + ',' + SQ + key + SQ + ')">编辑</button> ';
+      html += '<button class="btn btn-sm btn-danger" onclick="deleteEnv(' + SQ + clientId + SQ + ',' + SQ + key + SQ + ')">删除</button>';
+      html += '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
   }
-  html += '</div></div>';
+  html += '</div>';
   return html;
 }
 
-async function saveEnvConfig(clientId) {
-  const cfg = state.clientConfig;
-  if (!cfg) return;
-  const patches = {};
+function showAddEnvModal(clientId) {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'env-modal';
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
 
-  // 收集 env tab 中的 key-value
-  const envs = {};
-  const inputs = document.querySelectorAll('.env-tab-val');
-  for (let i = 0; i < inputs.length; i++) {
-    const key = inputs[i].getAttribute('data-key');
-    const val = inputs[i].value;
-    if (key && val) envs[key] = val;
-  }
-  // 合并现有的 envs
-  if (cfg.envs) {
-    Object.assign(envs, cfg.envs);
-  }
-  if (Object.keys(envs).length > 0) {
-    patches['envs'] = envs;
+  overlay.innerHTML = '<div class="modal" style="max-width:500px;">' +
+    '<div class="modal-title">添加环境变量</div>' +
+    '<div class="form-group"><label>变量名 *</label><input type="text" id="env-key" placeholder="MY_VAR_NAME"></div>' +
+    '<div class="form-group"><label>值 *</label><input type="text" id="env-val" placeholder="变量值"></div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="document.getElementById(' + SQ + 'env-modal' + SQ + ').remove()">取消</button>' +
+    '<button class="btn btn-primary" onclick="doSaveEnv(' + SQ + clientId + SQ + ', null)">添加</button>' +
+    '</div></div>';
+  document.body.appendChild(overlay);
+  document.getElementById('env-key').focus();
+}
+
+function showEditEnvModal(clientId, key) {
+  var cfg = state.clientConfig;
+  if (!cfg || !cfg.envs || !cfg.envs.hasOwnProperty(key)) return;
+  var val = cfg.envs[key];
+
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'env-modal';
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+
+  overlay.innerHTML = '<div class="modal" style="max-width:500px;">' +
+    '<div class="modal-title">编辑环境变量</div>' +
+    '<div class="form-group"><label>变量名</label><input type="text" id="env-key" value="' + escHtml(key) + '" readonly></div>' +
+    '<div class="form-group"><label>值 *</label><input type="text" id="env-val" value="' + escHtml(val) + '"></div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="document.getElementById(' + SQ + 'env-modal' + SQ + ').remove()">取消</button>' +
+    '<button class="btn btn-primary" onclick="doSaveEnv(' + SQ + clientId + SQ + ',' + SQ + key + SQ + ')">保存</button>' +
+    '</div></div>';
+  document.body.appendChild(overlay);
+  document.getElementById('env-val').focus();
+}
+
+async function doSaveEnv(clientId, origKey) {
+  var isEdit = origKey !== null;
+  var key = document.getElementById('env-key').value.trim();
+  var val = document.getElementById('env-val').value;
+  if (!key) { toast('请填写变量名', 'error'); return; }
+
+  var cfg = state.clientConfig;
+  var envs = Object.assign({}, cfg.envs || {});
+
+  if (isEdit) {
+    envs[key] = val;
+  } else {
+    if (envs.hasOwnProperty(key)) { toast('变量名已存在', 'error'); return; }
+    envs[key] = val;
   }
 
   try {
     await api('/api/clients/' + encodeURIComponent(clientId) + '/config', {
       method: 'PATCH',
-      body: JSON.stringify(patches),
+      body: JSON.stringify({ envs: envs }),
     });
-    toast('环境变量已保存', 'success');
+    toast(isEdit ? '已更新' : '已添加', 'success');
+    document.getElementById('env-modal').remove();
+    await loadClientConfig(clientId);
+    renderClientDetail(clientId);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteEnv(clientId, key) {
+  if (!confirm('确定删除环境变量 ' + key + '？')) return;
+  var cfg = state.clientConfig;
+  var envs = Object.assign({}, cfg.envs || {});
+  delete envs[key];
+
+  try {
+    await api('/api/clients/' + encodeURIComponent(clientId) + '/config', {
+      method: 'PATCH',
+      body: JSON.stringify({ envs: envs }),
+    });
+    toast('已删除', 'success');
     await loadClientConfig(clientId);
     renderClientDetail(clientId);
   } catch (e) { toast(e.message, 'error'); }
