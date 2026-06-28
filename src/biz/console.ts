@@ -2278,7 +2278,7 @@ function renderClientList() {
   }
 
   // 构建远程 client 映射
-  const remoteMap = new Map<string, string>();
+  const remoteMap = new Map();
   const remoteConsoles = state.globalConfig.remoteConsoles || [];
   for (const rc of remoteConsoles) {
     for (const cid of rc.clientIds) {
@@ -2452,7 +2452,7 @@ function renderClientDetail(clientId) {
   \`;
 }
 
-async function getPm2Status(clientId: string) {
+async function getPm2Status(clientId) {
   const section = document.getElementById('pm2-status-section');
   if (!section) return;
 
@@ -2478,7 +2478,7 @@ async function getPm2Status(clientId: string) {
   }
 }
 
-async function restartClient(clientId: string) {
+async function restartClient(clientId) {
   if (!confirm('确定重启 ' + clientId + '？')) return;
 
   try {
@@ -2490,7 +2490,7 @@ async function restartClient(clientId: string) {
   }
 }
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
@@ -2498,7 +2498,7 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-function formatUptime(ms: number): string {
+function formatUptime(ms) {
   const seconds = Math.floor(ms / 1000);
   const minutes = Math.floor(seconds / 60);
   const hours = Math.floor(minutes / 60);
@@ -3278,12 +3278,12 @@ function showAddRemoteConsole() {
   showRemoteConsoleModal(null, -1);
 }
 
-function editRemoteConsole(index: number) {
+function editRemoteConsole(index) {
   const rc = (state.globalConfig.remoteConsoles || [])[index];
   showRemoteConsoleModal(rc, index);
 }
 
-function showRemoteConsoleModal(rc: any, index: number) {
+function showRemoteConsoleModal(rc, index) {
   const isEdit = index >= 0;
   const bodyHtml = \`
       <div class="form-group">
@@ -3306,7 +3306,7 @@ function showRemoteConsoleModal(rc: any, index: number) {
   showModal('remote-console-modal', isEdit ? '编辑远程 Console' : '添加远程 Console', bodyHtml, 'rc-url');
 }
 
-async function saveRemoteConsole(index: number) {
+async function saveRemoteConsole(index) {
   const url = document.getElementById('rc-url').value.trim();
   const token = document.getElementById('rc-token').value.trim();
   const clientIdsStr = document.getElementById('rc-clientIds').value.trim();
@@ -3337,7 +3337,7 @@ async function saveRemoteConsole(index: number) {
   }
 }
 
-async function deleteRemoteConsole(index: number) {
+async function deleteRemoteConsole(index) {
   if (!confirm('确定删除此远程 Console？')) return;
 
   try {
