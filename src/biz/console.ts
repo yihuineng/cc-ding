@@ -569,6 +569,7 @@ async function handleAddConversation(req: http.IncomingMessage, res: http.Server
     if (data.permissionMode) newConv.permissionMode = data.permissionMode;
     if (data.preBash) newConv.preBash = data.preBash;
     if (data.linkConversationId) newConv.linkConversationId = data.linkConversationId;
+    if (data.workDir) newConv.workDir = data.workDir;
     if (data.ensureAt) newConv.ensureAt = true;
     if (data.maxTurnTimeMins) newConv.maxTurnTimeMins = data.maxTurnTimeMins;
     if (data.taskCfg?.skill) newConv.taskCfg = { skill: data.taskCfg.skill };
@@ -613,7 +614,7 @@ async function handleUpdateConversation(req: http.IncomingMessage, res: http.Ser
       'whiteUserList', 'agent', 'model', 'useLocalOcr', 'atSender',
       'receiveReply', 'receiveReplyMode', 'ackReaction', 'qaMode',
       'freedomMode', 'streaming', 'permissionMode', 'preBash',
-      'linkConversationId', 'ensureAt', 'maxTurnTimeMins', 'taskCfg', 'qaCfg', 'envs',
+      'linkConversationId', 'workDir', 'ensureAt', 'maxTurnTimeMins', 'taskCfg', 'qaCfg', 'envs',
     ];
     for (const field of updatable) {
       if (data[field] !== undefined) {
@@ -1563,6 +1564,7 @@ const state = {
   activeTab: 'config',
   rawConfig: '',
   apiKeys: [],
+  apiKeysResetTime: '',
   files: {},
   envVars: [],
   globalConfig: {},
@@ -1851,8 +1853,10 @@ async function loadClientApiKeys(clientId) {
   try {
     const data = await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys');
     state.apiKeys = data.apiKeys || [];
+    state.apiKeysResetTime = data.resetTime || '';
   } catch (e) {
     state.apiKeys = [];
+    state.apiKeysResetTime = '';
   }
 }
 
@@ -2014,7 +2018,10 @@ function renderConvTab(clientId) {
   for (let i = 0; i < convs.length; i++) {
     const conv = convs[i];
     html += '<tr>' +
-      '<td>' + escHtml(conv.conversationTitle || conv.conversationId) + '<br><span class="text-mono text-muted">' + escHtml(conv.conversationId) + '</span></td>' +
+      '<td>' + escHtml(conv.conversationTitle || conv.conversationId) +
+        (conv.workDir ? ' <span title="自定义工作目录: ' + escHtml(conv.workDir) + '">📁</span>' : '') +
+        (conv.linkConversationId ? ' <span title="关联会话: ' + escHtml(conv.linkConversationId) + '">🔗</span>' : '') +
+        '<br><span class="text-mono text-muted">' + escHtml(conv.conversationId) + '</span></td>' +
       '<td>' + (conv.conversationType === '2' ? '群聊' : '单聊') + '</td>' +
       '<td>' + (conv.qaMode ? '<span class="text-success">开</span>' : '<span class="text-muted">关</span>') + '</td>' +
       '<td>' + (conv.streaming ? '<span class="text-success">开</span>' : '<span class="text-muted">关</span>') + '</td>' +
@@ -2048,32 +2055,124 @@ function renderConvTab(clientId) {
 // ===== Render: Keys Tab =====
 function renderKeysTab(clientId) {
   const keys = state.apiKeys;
-  if (keys.length === 0) return '<div class="empty-state"><div class="icon">🔑</div><p>未配置 API Key</p></div>';
+  const resetTime = state.apiKeysResetTime || '';
+  const validCount = keys.filter(function(k) { return k.isValid; }).length;
+  const invalidCount = keys.length - validCount;
 
-  let html = '<div class="card"><div class="flex-between"><div class="card-title" style="margin-bottom:0;">API Key 池</div><button class="btn btn-sm btn-primary" onclick="showAddKeyModal()">+ 添加</button></div><div class="divider"></div>';
-  html += '<table><thead><tr><th>#</th><th>状态</th><th>Key</th><th>模型</th><th>Base URL</th><th>备注</th><th>操作</th></tr></thead><tbody>';
-  for (const key of keys) {
-    html += '<tr>';
-    html += '<td>' + key.index + '</td>';
-    html += '<td><span class="status-badge ' + (key.isValid ? 'status-online' : 'status-offline') + '">' + (key.isValid ? '有效' : '无效') + '</span></td>';
-    html += '<td class="text-mono">' + escHtml(key.apiKey || '-') + '</td>';
-    html += '<td class="text-mono">' + escHtml(key.model || '-') + '</td>';
-    html += '<td class="text-mono" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(key.baseUrl || '-') + '</td>';
-    html += '<td>' + escHtml(key.memo || '-') + '</td>';
-    html += '<td style="white-space:nowrap;"><button class="btn btn-sm" onclick="toggleKey(' + SQ + clientId + SQ + ',' + key.index + ')">切换</button> <button class="btn btn-sm" onclick="editKey(' + SQ + clientId + SQ + ',' + key.index + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="deleteKey(' + SQ + clientId + SQ + ',' + key.index + ')">删除</button></td>';
-    html += '</tr>';
-  }
-  html += '</tbody></table>';
+  let html = '<div class="card"><div class="flex-between"><div class="card-title" style="margin-bottom:0;">API Key 池</div>';
+  html += '<div style="display:flex;gap:8px;align-items:center;">';
+  html += '<button class="btn btn-sm" onclick="deleteAllInvalidKeys(' + SQ + clientId + SQ + ')"' + (invalidCount === 0 ? ' disabled' : '') + '>清除无效 Key (' + invalidCount + ')</button>';
+  html += '<button class="btn btn-sm" onclick="showApiKeyModal(' + SQ + clientId + SQ + ', -1)">+ 添加</button>';
+  html += '</div></div>';
   html += '<div class="divider"></div>';
-  html += '<div class="flex-between"><span class="text-muted text-mono">重置时间: ' + (keys[0]?.resetTime || '-') + '</span><button class="btn btn-sm" onclick="resetAllKeys(' + SQ + clientId + SQ + ')">一键重置所有 Key</button></div>';
+
+  if (keys.length === 0) {
+    html += '<div class="empty-state" style="padding:24px 0;"><div class="icon">🔑</div><p>未配置 API Key</p></div>';
+  } else {
+    html += '<table><thead><tr><th>#</th><th>状态</th><th>Key</th><th>模型</th><th>小模型</th><th>Base URL</th><th>备注</th><th>操作</th></tr></thead><tbody>';
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var badgeClass = key.isValid ? 'status-online' : 'status-offline';
+      var badgeText = key.isValid ? '有效' : '无效';
+      var toggleText = key.isValid ? '禁用' : '启用';
+      html += '<tr>';
+      html += '<td>' + i + '</td>';
+      html += '<td><span class="status-badge ' + badgeClass + '">' + badgeText + '</span></td>';
+      html += '<td class="text-mono" title="' + escHtml(key.apiKey || '') + '">' + escHtml(key.apiKey || '-') + '</td>';
+      html += '<td class="text-mono">' + escHtml(key.model || '-') + '</td>';
+      html += '<td class="text-mono">' + escHtml(key.smallModel || '-') + '</td>';
+      html += '<td class="text-mono" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHtml(key.baseUrl || '') + '">' + escHtml(key.baseUrl || '-') + '</td>';
+      html += '<td>' + escHtml(key.memo || '-') + '</td>';
+      html += '<td style="white-space:nowrap;">';
+      html += '<button class="btn btn-sm" onclick="toggleApiKey(' + SQ + clientId + SQ + ',' + i + ')">' + toggleText + '</button> ';
+      html += '<button class="btn btn-sm" onclick="showApiKeyModal(' + SQ + clientId + SQ + ',' + i + ')">编辑</button> ';
+      html += '<button class="btn btn-sm btn-danger" onclick="deleteKey(' + SQ + clientId + SQ + ',' + i + ')">删除</button>';
+      html += '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+  }
+
+  html += '<div class="divider"></div>';
+  html += '<div class="flex-between"><span class="text-muted text-mono">上次重置: ' + (resetTime || '-') + ' · 有效 ' + validCount + '/' + keys.length + '</span>';
+  html += '<button class="btn btn-sm" onclick="resetAllKeys(' + SQ + clientId + SQ + ')"' + (keys.length === 0 ? ' disabled' : '') + '>一键重置所有 Key</button></div>';
   html += '</div>';
   return html;
 }
 
-async function toggleKey(clientId, index) {
+function showApiKeyModal(clientId, index) {
+  var isEdit = index >= 0;
+  var key = isEdit ? (state.apiKeys[index] || {}) : {};
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'apikey-modal';
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+
+  overlay.innerHTML = '<div class="modal" style="max-width:680px;">' +
+    '<div class="modal-title">' + (isEdit ? '编辑 API Key' : '添加 API Key') + '</div>' +
+    '<div class="form-row">' +
+    '<div class="form-group" style="flex:2;"><label>API Key' + (isEdit ? ' (留空保持不变)' : ' *') + '</label><input type="text" id="ak-apiKey" value="' + escHtml(isEdit ? key.apiKey || '' : '') + '" placeholder="sk-ant-... 或 $ENV:VAR_NAME"></div>' +
+    '<div class="form-group" style="flex:1;"><label>状态</label><select id="ak-isValid"><option value="true"' + (!isEdit || key.isValid ? ' selected' : '') + '>有效</option><option value="false"' + (isEdit && !key.isValid ? ' selected' : '') + '>无效</option></select></div>' +
+    '</div>' +
+    '<div class="form-group"><label>Base URL *</label><input type="text" id="ak-baseUrl" value="' + escHtml(key.baseUrl || 'https://api.anthropic.com') + '" placeholder="https://api.anthropic.com"></div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label>模型 *</label><input type="text" id="ak-model" value="' + escHtml(key.model || 'claude-3-opus-latest') + '"></div>' +
+    '<div class="form-group"><label>小模型 (可选)</label><input type="text" id="ak-smallModel" value="' + escHtml(key.smallModel || '') + '" placeholder="claude-haiku-4-5-20251001"></div>' +
+    '</div>' +
+    '<div class="form-group"><label>备注</label><input type="text" id="ak-memo" value="' + escHtml(key.memo || '') + '" placeholder="标签/说明"></div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="document.getElementById(' + SQ + 'apikey-modal' + SQ + ').remove()">取消</button>' +
+    '<button class="btn btn-primary" onclick="doSaveApiKey(' + SQ + clientId + SQ + ',' + index + ')">' + (isEdit ? '保存' : '添加') + '</button>' +
+    '</div></div>';
+  document.body.appendChild(overlay);
+  document.getElementById('ak-apiKey').focus();
+}
+
+async function doSaveApiKey(clientId, index) {
+  var isEdit = index >= 0;
+  var apiKey = document.getElementById('ak-apiKey').value.trim();
+  var baseUrl = document.getElementById('ak-baseUrl').value.trim();
+  var model = document.getElementById('ak-model').value.trim();
+  if (!isEdit && !apiKey) { toast('请填写 API Key', 'error'); return; }
+  if (!baseUrl) { toast('请填写 Base URL', 'error'); return; }
+  if (!model) { toast('请填写模型', 'error'); return; }
+  var smallModel = document.getElementById('ak-smallModel').value.trim() || undefined;
+  var memo = document.getElementById('ak-memo').value.trim() || undefined;
+  var isValid = document.getElementById('ak-isValid').value === 'true';
+
+  var payload = { baseUrl: baseUrl, model: model, smallModel: smallModel, memo: memo, isValid: isValid };
+  // 编辑时：apiKey 为掩码值则跳过，避免把掩码存回配置
+  if (isEdit) {
+    var origKey = (state.apiKeys[index] || {}).apiKey || '';
+    if (apiKey && apiKey !== origKey && apiKey.indexOf('****') === -1) {
+      payload.apiKey = apiKey;
+    }
+  } else {
+    payload.apiKey = apiKey;
+  }
   try {
-    await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index + '/cfuseTokenValid', { method: 'PATCH', body: JSON.stringify({}) });
-    toast('社区版不支持 cfuse 切换', 'info');
+    if (isEdit) {
+      await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index, { method: 'PUT', body: JSON.stringify(payload) });
+      toast('已更新', 'success');
+    } else {
+      await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys', { method: 'POST', body: JSON.stringify(payload) });
+      toast('已添加', 'success');
+    }
+    document.getElementById('apikey-modal').remove();
+    await loadClientApiKeys(clientId);
+    var c = state.selectedClient; if (c) renderClientDetail(c);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function toggleApiKey(clientId, index) {
+  var key = state.apiKeys[index];
+  if (!key) return;
+  try {
+    await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index, {
+      method: 'PUT', body: JSON.stringify({ isValid: !key.isValid })
+    });
+    await loadClientApiKeys(clientId);
+    var c = state.selectedClient; if (c) renderClientDetail(c);
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -2082,50 +2181,8 @@ async function resetAllKeys(clientId) {
   try {
     await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/reset', { method: 'POST' });
     toast('已重置', 'success');
-    loadClientApiKeys(clientId).then(() => { const c = state.selectedClient; if (c) renderClientDetail(c); });
-  } catch (e) { toast(e.message, 'error'); }
-}
-
-function showAddKeyModal() {
-  // 简化处理：弹出 prompt
-  const baseUrl = prompt('Base URL:', 'https://api.anthropic.com');
-  if (!baseUrl) return;
-  const apiKey = prompt('API Key:', '');
-  if (!apiKey) return;
-  const model = prompt('Model:', 'claude-3-opus-latest');
-  const memo = prompt('备注:', '') || '';
-  addKey(state.selectedClient, { baseUrl, apiKey, model, memo });
-}
-
-async function addKey(clientId, data) {
-  try {
-    await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys', { method: 'POST', body: JSON.stringify(data) });
-    toast('API Key 已添加', 'success');
-    loadClientApiKeys(clientId).then(() => { const c = state.selectedClient; if (c) renderClientDetail(c); });
-  } catch (e) { toast(e.message, 'error'); }
-}
-
-async function editKey(clientId, index) {
-  const key = state.apiKeys[index];
-  if (!key) return;
-  // 显示掩码后的 key，允许用户选择是否修改
-  const newApiKey = prompt('API Key (留空保持不变):', key.apiKey);
-  if (newApiKey === null) return;
-  const baseUrl = prompt('Base URL:', key.baseUrl);
-  if (baseUrl === null) return;
-  const model = prompt('Model:', key.model);
-  if (model === null) return;
-  const memo = prompt('备注:', key.memo || '');
-  if (memo === null) return;
-  const payload = { baseUrl, model, memo };
-  // 仅当用户输入了新 key 值时才更新
-  if (newApiKey !== key.apiKey && newApiKey.trim() !== '') {
-    payload.apiKey = newApiKey.trim();
-  }
-  try {
-    await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index, { method: 'PUT', body: JSON.stringify(payload) });
-    toast('已更新', 'success');
-    loadClientApiKeys(clientId).then(() => { const c = state.selectedClient; if (c) renderClientDetail(c); });
+    await loadClientApiKeys(clientId);
+    var c = state.selectedClient; if (c) renderClientDetail(c);
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -2134,7 +2191,25 @@ async function deleteKey(clientId, index) {
   try {
     await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index, { method: 'DELETE' });
     toast('已删除', 'success');
-    loadClientApiKeys(clientId).then(() => { const c = state.selectedClient; if (c) renderClientDetail(c); });
+    await loadClientApiKeys(clientId);
+    var c = state.selectedClient; if (c) renderClientDetail(c);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteAllInvalidKeys(clientId) {
+  var invalidIndices = [];
+  for (var i = state.apiKeys.length - 1; i >= 0; i--) {
+    if (!state.apiKeys[i].isValid) invalidIndices.push(i);
+  }
+  if (invalidIndices.length === 0) { toast('没有无效的 Key', 'info'); return; }
+  if (!confirm('确定删除所有 ' + invalidIndices.length + ' 个无效 Key？')) return;
+  try {
+    for (var j = 0; j < invalidIndices.length; j++) {
+      await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + invalidIndices[j], { method: 'DELETE' });
+    }
+    toast('已删除 ' + invalidIndices.length + ' 个无效 Key', 'success');
+    await loadClientApiKeys(clientId);
+    var c = state.selectedClient; if (c) renderClientDetail(c);
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -2260,6 +2335,7 @@ function showConversationModal(conv, clientId, title) {
     '<div class="form-group"><label>白名单 (逗号分隔)</label><input type="text" id="cm-whiteList" value="' + escHtml((c.whiteUserList || []).join(',')) + '"></div>' +
     '<div class="form-group"><label>关联会话ID</label><input type="text" id="cm-linkConv" value="' + escHtml(c.linkConversationId || '') + '"></div>' +
     '</div>' +
+    '<div class="form-group"><label>自定义工作目录 (绝对路径)</label><input type="text" id="cm-workDir" value="' + escHtml(c.workDir || '') + '" placeholder="留空使用默认目录"></div>' +
     '<div class="form-row">' +
     '<div class="form-group"><label>Agent</label><input type="text" id="cm-agent" value="' + escHtml(c.agent || '') + '"></div>' +
     '<div class="form-group"><label>前置命令 (preBash)</label><input type="text" id="cm-preBash" value="' + escHtml(c.preBash || '') + '"></div>' +
@@ -2301,6 +2377,7 @@ async function doSaveConversation(clientId, isEdit) {
     model: document.getElementById('cm-model').value.trim() || undefined,
     whiteUserList: document.getElementById('cm-whiteList').value.trim(),
     linkConversationId: document.getElementById('cm-linkConv').value.trim() || undefined,
+    workDir: document.getElementById('cm-workDir').value.trim() || undefined,
     agent: document.getElementById('cm-agent').value.trim() || undefined,
     preBash: document.getElementById('cm-preBash').value.trim() || undefined,
     permissionMode: document.getElementById('cm-permMode').value || undefined,
