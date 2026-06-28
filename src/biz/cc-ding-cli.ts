@@ -1559,14 +1559,8 @@ export class DingClaude {
           }
 
           const installCmd = rebootCmd.update ? `npm install -g cc-ding${tag}` : null;
-          const clientNames = clients.join(', ');
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: installCmd
-              ? `✅ 更新并重启 ${clients.length} 个 client，正在执行 ${installCmd}...`
-              : `✅ 重启 ${clients.length} 个 client：${clientNames}`,
-            msgType: 'markdown',
-          });
+
+          // 不发送"正在重启"消息，重启完成后由 notifyPendingReboot() 发送完成通知
 
           const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
           fs.writeFileSync(rebootFlagFile, JSON.stringify({
@@ -1597,13 +1591,7 @@ export class DingClaude {
             ? `npm install -g cc-ding${tag}`
             : null;
 
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: cmd
-              ? `✅ 更新并重启，正在执行 ${cmd}...`
-              : '✅ cc-ding 正在重启中...',
-            msgType: 'markdown',
-          });
+          // 不发送"正在重启"消息，重启完成后由 notifyPendingReboot() 发送完成通知
 
           const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
           fs.writeFileSync(rebootFlagFile, JSON.stringify({
