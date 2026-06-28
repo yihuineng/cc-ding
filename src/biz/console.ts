@@ -9,6 +9,7 @@ import { getHomeDir } from './session';
 import { isEnvRef } from './secrets';
 import { setCorsHeaders, readBody } from './a2a/http-utils';
 import type { IConfig, IClaudeSetting } from './types';
+import { execSync } from 'child_process';
 
 // ==================== 类型定义 ====================
 
@@ -600,6 +601,48 @@ async function handlePatchClientConfig(req: http.IncomingMessage, res: http.Serv
   }
 }
 
+/** GET /api/clients/:id/pm2 — 获取 pm2 进程状态 */
+async function handleGetClientPm2(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  try {
+    const pm2List = execSync('pm2 jlist', { encoding: 'utf-8' });
+    const processes = JSON.parse(pm2List);
+    const processName = `cc-ding-${clientId}`;
+    const proc = processes.find((p: any) => p.name === processName);
+
+    if (!proc) {
+      jsonError(res, 404, `未找到 pm2 进程: ${processName}`);
+      return;
+    }
+
+    jsonResponse(res, 200, {
+      pid: proc.pid,
+      status: proc.pm2_env?.status || 'unknown',
+      uptime: proc.pm2_env?.pm_uptime ? Date.now() - proc.pm2_env.pm_uptime : 0,
+      memory: proc.monit?.memory || 0,
+      cpu: proc.monit?.cpu || 0,
+      restarts: proc.pm2_env?.restart_time || 0,
+    });
+  } catch (err) {
+    jsonError(res, 500, `获取 pm2 状态失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** POST /api/clients/:id/pm2/restart — 重启 pm2 进程 */
+async function handleRestartClientPm2(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  const processName = `cc-ding-${clientId}`;
+
+  try {
+    execSync(`pm2 restart "${processName}"`, { timeout: 30000 });
+    jsonResponse(res, 200, { message: `已重启 ${processName}` });
+  } catch (err) {
+    jsonError(res, 500, `重启失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 /** POST /api/clients/:id/conversations — 添加会话 */
 async function handleAddConversation(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
   if (!requireAuth(req, res)) return;
@@ -1087,6 +1130,8 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   const clientConfigMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/config(?:\/raw)?$/);
   const clientConfigRawMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/config\/raw$/);
   const clientConfigReloadMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/config\/reload$/);
+  const clientPm2Match = pathname.match(/^\/api\/clients\/([^\/]+)\/pm2(?:\/restart)?$/);
+  const clientPm2RestartMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/pm2\/restart$/);
   const clientApiKeysMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys(?:\/(\d+))?(?:\/reset)?$/);
   const clientApiKeyIndexMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys\/(\d+)$/);
   const clientApiKeyResetMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys\/reset$/);
@@ -1176,6 +1221,38 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // POST /api/clients/:id/config/reload
   if (clientConfigReloadMatch && req.method === 'POST') {
     await handleReloadConfig(req, res, clientConfigReloadMatch[1]);
+    return;
+  }
+
+  // GET /api/clients/:id/pm2
+  if (clientPm2Match && req.method === 'GET' && !clientPm2RestartMatch) {
+    const remoteConsole = getClientRemoteConsole(clientPm2Match[1]);
+    if (remoteConsole) {
+      const { status, data } = await proxyToRemoteConsole(remoteConsole, 'GET', `/api/clients/${clientPm2Match[1]}/pm2`);
+      if (status !== 200) {
+        jsonError(res, status, data.error || '获取远程 pm2 状态失败');
+        return;
+      }
+      jsonResponse(res, 200, data);
+    } else {
+      await handleGetClientPm2(req, res, clientPm2Match[1]);
+    }
+    return;
+  }
+
+  // POST /api/clients/:id/pm2/restart
+  if (clientPm2RestartMatch && req.method === 'POST') {
+    const remoteConsole = getClientRemoteConsole(clientPm2RestartMatch[1]);
+    if (remoteConsole) {
+      const { status, data } = await proxyToRemoteConsole(remoteConsole, 'POST', `/api/clients/${clientPm2RestartMatch[1]}/pm2/restart`);
+      if (status !== 200) {
+        jsonError(res, status, data.error || '远程重启失败');
+        return;
+      }
+      jsonResponse(res, 200, data);
+    } else {
+      await handleRestartClientPm2(req, res, clientPm2RestartMatch[1]);
+    }
     return;
   }
 
@@ -2350,20 +2427,86 @@ function renderClientDetail(clientId) {
   else if (state.activeTab === 'env') contentHtml = renderEnvTab(clientId);
   else if (state.activeTab === 'raw') contentHtml = renderRawTab(clientId);
 
+  // 构建远程标识
+  const remoteConsoles = state.globalConfig.remoteConsoles || [];
+  const remoteConsole = remoteConsoles.find(rc => rc.clientIds.includes(clientId));
+  const remoteIndicator = remoteConsole ? '<span class="text-muted" style="font-size:11px;margin-left:8px;" title="远程: ' + escHtml(remoteConsole.url) + '"> 远程</span>' : '';
+
   detail.innerHTML = \`
     <div class="flex-between mb-8">
       <button class="btn btn-sm" onclick="backToList()">← 返回</button>
       <span>
-        <span class="client-name">\${escHtml(c?.clientName || clientId)}</span>
+        <span class="client-name">\${escHtml(c?.clientName || clientId)}\${remoteIndicator}</span>
         <span class="status-badge \${c?.online ? 'status-online' : 'status-offline'}" style="margin-left:8px;">\${c?.online ? '● 在线' : '○ 离线'}</span>
       </span>
       <div style="display:flex;gap:8px;">
-        <button class="btn btn-sm" onclick="reloadClientConfig('\${clientId}')" title="发送 SIGUSR2 热重载">🔄 重载</button>
+        <button class="btn btn-sm" onclick="getPm2Status('\${clientId}')" title="查看 pm2 状态">📊 状态</button>
+        <button class="btn btn-sm btn-danger" onclick="restartClient('\${clientId}')" title="重启进程">🔄 重启</button>
+        <button class="btn btn-sm" onclick="reloadClientConfig('\${clientId}')" title="发送 SIGUSR2 热重载"> 重载</button>
       </div>
     </div>
     \${tabHtml}
     <div class="mt-16">\${contentHtml}</div>
+    <div id="pm2-status-section" style="display:none;margin-top:16px;"></div>
   \`;
+}
+
+async function getPm2Status(clientId: string) {
+  const section = document.getElementById('pm2-status-section');
+  if (!section) return;
+
+  try {
+    const data = await api(\`/api/clients/\${clientId}/pm2\`);
+    section.style.display = 'block';
+    section.innerHTML = \`
+      <div class="card">
+        <div class="card-title">📊 pm2 进程状态</div>
+        <div class="form-row">
+          <div class="form-group"><label>PID</label><div class="text-mono">\${data.pid || '-'}</div></div>
+          <div class="form-group"><label>状态</label><div>\${data.status || '-'}</div></div>
+          <div class="form-group"><label>内存</label><div class="text-mono">\${formatBytes(data.memory || 0)}</div></div>
+          <div class="form-group"><label>CPU</label><div class="text-mono">\${data.cpu || 0}%</div></div>
+          <div class="form-group"><label>重启次数</label><div class="text-mono">\${data.restarts || 0}</div></div>
+          <div class="form-group"><label>运行时间</label><div class="text-mono">\${formatUptime(data.uptime || 0)}</div></div>
+        </div>
+      </div>
+    \`;
+  } catch (e) {
+    section.style.display = 'block';
+    section.innerHTML = '<div class="card"><div class="text-danger">获取状态失败: ' + escHtml(e.message) + '</div></div>';
+  }
+}
+
+async function restartClient(clientId: string) {
+  if (!confirm('确定重启 ' + clientId + '？')) return;
+
+  try {
+    await api(\`/api/clients/\${clientId}/pm2/restart\`, { method: 'POST' });
+    toast('已发送重启命令', 'success');
+    setTimeout(() => loadClients(), 2000);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatUptime(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days > 0) return days + '天 ' + (hours % 24) + '小时';
+  if (hours > 0) return hours + '小时 ' + (minutes % 60) + '分钟';
+  if (minutes > 0) return minutes + '分钟';
+  return seconds + '秒';
 }
 
 function switchTab(tab) {
