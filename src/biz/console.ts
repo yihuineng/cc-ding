@@ -1583,6 +1583,7 @@ const COMMON_ENV_VARS = [
   { key: 'CLAUDE_CODE_ENABLE_BACKGROUND_TASKS', desc: '启用后台任务' },
   { key: 'CLAUDE_CODE_HOME', desc: 'Claude Code 家目录' },
   { key: 'CLAUDE_CODE_ENTRYPOINT', desc: 'Claude Code 入口点' },
+  { key: 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', desc: '自动压缩窗口大小' },
   { key: 'HTTP_PROXY', desc: 'HTTP 代理' },
   { key: 'HTTPS_PROXY', desc: 'HTTPS 代理' },
   { key: 'NO_PROXY', desc: '不走代理的地址' },
