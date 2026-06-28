@@ -8,8 +8,7 @@ import { spawnCommand, commandExists, isWindows } from './platform';
 import { getHomeDir } from './session';
 import { isEnvRef } from './secrets';
 import { setCorsHeaders, readBody } from './a2a/http-utils';
-import type { IConfig, IClaudeSetting, IRemoteClient, ISshConfig } from './types';
-import { sshReadFile, sshWriteFile, sshExec } from './ssh-utils';
+import type { IConfig, IClaudeSetting } from './types';
 
 // ==================== 类型定义 ====================
 
@@ -20,6 +19,16 @@ interface IAuthUser {
   firstLogin: boolean;
 }
 
+/** 远程 Console 配置 */
+interface IRemoteConsole {
+  /** Console 访问地址（如 http://192.168.1.100:8080） */
+  url: string;
+  /** API Token（用于认证） */
+  token: string;
+  /** 该 Console 管理的 client IDs */
+  clientIds: string[];
+}
+
 /** 全局 Console 配置 */
 interface IConsoleGlobalConfig {
   /** HTTP 监听端口，默认 8080 */
@@ -28,8 +37,8 @@ interface IConsoleGlobalConfig {
   host?: string;
   /** 认证用户列表 */
   authUsers?: IAuthUser[];
-  /** 远程客户端 SSH 配置 */
-  remoteClients?: IRemoteClient[];
+  /** 远程 Console 列表（用于跨机器管理） */
+  remoteConsoles?: IRemoteConsole[];
 }
 
 /** 系统状态信息 */
@@ -136,7 +145,7 @@ function getGlobalConfig(): IConsoleGlobalConfig {
         port: parsed.console?.port || parsed.consolePort || 8080,
         host: parsed.console?.host || parsed.consoleHost || '0.0.0.0',
         authUsers: parsed.console?.authUsers || [],
-        remoteClients: parsed.console?.remoteClients || [],
+        remoteConsoles: parsed.console?.remoteConsoles || [],
       };
     }
   } catch {
@@ -146,15 +155,37 @@ function getGlobalConfig(): IConsoleGlobalConfig {
     port: 8080,
     host: '0.0.0.0',
     authUsers: [{ account: 'admin', passwordHash: sha256('admin'), firstLogin: true }],
-    remoteClients: [],
+    remoteConsoles: [],
   };
 }
 
-/** 获取客户端的 SSH 配置（如果是远程客户端） */
-function getClientSshConfig(clientId: string): ISshConfig | null {
+/** 获取客户端所属的远程 Console 配置（如果是远程客户端） */
+function getClientRemoteConsole(clientId: string): IRemoteConsole | null {
   const globalCfg = getGlobalConfig();
-  const remoteClient = globalCfg.remoteClients?.find(rc => rc.clientId === clientId);
-  return remoteClient?.ssh || null;
+  return globalCfg.remoteConsoles?.find(rc => rc.clientIds.includes(clientId)) || null;
+}
+
+/** 代理请求到远程 Console */
+async function proxyToRemoteConsole(
+  remoteConsole: IRemoteConsole,
+  method: string,
+  apiPath: string,
+  body?: string,
+): Promise<{ status: number; data: any }> {
+  const url = `${remoteConsole.url.replace(/\/$/, '')}${apiPath}`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${remoteConsole.token}`,
+  };
+
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: body ? JSON.parse(body) : undefined,
+  });
+
+  const data = await res.json();
+  return { status: res.status, data };
 }
 
 /** 保存全局 Console 配置 */
@@ -472,15 +503,19 @@ async function handleGetClients(req: http.IncomingMessage, res: http.ServerRespo
 async function handleGetClientConfig(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
   if (!requireAuth(req, res)) return;
 
-  try {
-    const sshConfig = getClientSshConfig(clientId);
-    let configStr: string;
+  const remoteConsole = getClientRemoteConsole(clientId);
 
-    if (sshConfig) {
-      // 远程客户端：通过 SSH 读取
-      const homeDir = await sshExec(sshConfig, 'echo $HOME');
-      const configPath = `${homeDir.trim()}/.cc-ding/${clientId}/config.json`;
-      configStr = await sshReadFile(sshConfig, configPath);
+  try {
+    let config: IConfig;
+
+    if (remoteConsole) {
+      // 远程客户端：通过 API 代理获取
+      const { status, data } = await proxyToRemoteConsole(remoteConsole, 'GET', `/api/clients/${clientId}/config`);
+      if (status !== 200) {
+        jsonError(res, status, data.error || '远程配置读取失败');
+        return;
+      }
+      config = data.config;
     } else {
       // 本地客户端
       const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
@@ -488,10 +523,9 @@ async function handleGetClientConfig(req: http.IncomingMessage, res: http.Server
         jsonError(res, 404, '客户端配置不存在');
         return;
       }
-      configStr = fs.readFileSync(configPath, 'utf-8');
+      config = fileUtil.getJSON(configPath) as IConfig;
     }
 
-    const config = JSON.parse(configStr) as IConfig;
     // 脱敏处理
     const maskedConfig = JSON.parse(JSON.stringify(config));
     if (maskedConfig.clientSecret) maskedConfig.clientSecret = maskSecret(maskedConfig.clientSecret);
@@ -519,47 +553,45 @@ async function handleGetClientConfig(req: http.IncomingMessage, res: http.Server
 async function handlePatchClientConfig(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
   if (!requireAuth(req, res)) return;
 
-  const sshConfig = getClientSshConfig(clientId);
+  const remoteConsole = getClientRemoteConsole(clientId);
 
   try {
     const body = await readBody(req);
     const patches = JSON.parse(body || '{}');
-    let config: IConfig;
-    let configPath: string;
 
-    if (sshConfig) {
-      // 远程客户端：通过 SSH 读取和写入
-      const homeDir = await sshExec(sshConfig, 'echo $HOME');
-      configPath = `${homeDir.trim()}/.cc-ding/${clientId}/config.json`;
-      const configStr = await sshReadFile(sshConfig, configPath);
-      config = JSON.parse(configStr) as IConfig;
-    } else {
-      // 本地客户端
-      configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
-      if (!fs.existsSync(configPath)) {
-        jsonError(res, 404, '客户端配置不存在');
+    if (remoteConsole) {
+      // 远程客户端：通过 API 代理更新
+      const { status, data } = await proxyToRemoteConsole(
+        remoteConsole,
+        'PATCH',
+        `/api/clients/${clientId}/config`,
+        body,
+      );
+      if (status !== 200) {
+        jsonError(res, status, data.error || '远程配置更新失败');
         return;
       }
-      config = fileUtil.getJSON(configPath) as IConfig;
+      jsonResponse(res, 200, data);
+      return;
     }
+
+    // 本地客户端
+    const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      jsonError(res, 404, '客户端配置不存在');
+      return;
+    }
+
+    const config = fileUtil.getJSON(configPath) as IConfig;
 
     // 应用 patches
     for (const [ pathStr, value ] of Object.entries(patches)) {
       dotPathSet(config, pathStr, value);
     }
 
-    const configContent = JSON.stringify(config, null, 2);
-
-    if (sshConfig) {
-      // 远程客户端：通过 SSH 写入
-      // 先备份
-      await sshExec(sshConfig, `cp ${configPath} ${configPath}.bak`);
-      await sshWriteFile(sshConfig, configPath, configContent);
-    } else {
-      // 本地客户端：备份并原子写入
-      backupFile(configPath);
-      atomicWrite(configPath, configContent);
-    }
+    // 备份并原子写入
+    backupFile(configPath);
+    atomicWrite(configPath, JSON.stringify(config, null, 2));
 
     jsonResponse(res, 200, { message: '配置已更新', path: configPath });
   } catch (err) {
