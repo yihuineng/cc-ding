@@ -2199,13 +2199,26 @@ function renderClientList() {
     return;
   }
 
+  // 构建远程 client 映射
+  const remoteMap = new Map<string, string>();
+  const remoteConsoles = state.globalConfig.remoteConsoles || [];
+  for (const rc of remoteConsoles) {
+    for (const cid of rc.clientIds) {
+      remoteMap.set(cid, rc.url);
+    }
+  }
+
   let html = '<div class="card"><div class="flex-between"><div class="card-title" style="margin-bottom:0">客户端列表 (' + state.clients.length + ')</div><button class="btn btn-primary" onclick="showCreateClientModal()">➕ 新建 Client</button></div></div><div class="card-grid">';
   for (const c of state.clients) {
+    const remoteUrl = remoteMap.get(c.clientId);
+    const isRemote = !!remoteUrl;
+    const remoteIndicator = isRemote ? '<span class="text-muted" style="font-size:11px;margin-left:8px;" title="远程: ' + escHtml(remoteUrl) + '"> 远程</span>' : '';
+
     html += \`
       <div class="card client-card" onclick="selectClient('\${c.clientId}')">
         <div class="flex-between">
           <div>
-            <div class="client-name">\${escHtml(c.clientName || c.clientId)}</div>
+            <div class="client-name">\${escHtml(c.clientName || c.clientId)}\${remoteIndicator}</div>
             <div class="client-id">\${escHtml(c.clientId)}</div>
           </div>
           <span class="status-badge \${c.online ? 'status-online' : 'status-offline'}">\${c.online ? '● 在线' : '○ 离线'}</span>
