@@ -197,6 +197,7 @@ function saveGlobalConfig(config: IConsoleGlobalConfig): void {
   if (config.port !== undefined) globalCfg.console.port = config.port;
   if (config.host !== undefined) globalCfg.console.host = config.host;
   if (config.authUsers !== undefined) globalCfg.console.authUsers = config.authUsers;
+  if (config.remoteConsoles !== undefined) globalCfg.console.remoteConsoles = config.remoteConsoles;
   atomicWrite(GLOBAL_CONFIG_PATH, JSON.stringify(globalCfg, null, 2));
 }
 
@@ -1002,6 +1003,7 @@ async function handlePutGlobalConfig(req: http.IncomingMessage, res: http.Server
       port: data.port,
       host: data.host,
       authUsers: data.authUsers,
+      remoteConsoles: data.remoteConsoles,
     });
     jsonResponse(res, 200, { message: '全局配置已保存' });
   } catch (err) {
@@ -3069,6 +3071,26 @@ function renderGlobalSection() {
   section.style.display = 'block';
 
   const gc = state.globalConfig;
+  const remoteConsoles = gc.remoteConsoles || [];
+
+  let remoteHtml = '';
+  if (remoteConsoles.length === 0) {
+    remoteHtml = '<div class="text-muted" style="padding:16px 0;">暂无远程 Console</div>';
+  } else {
+    remoteHtml = '<table><thead><tr><th>地址</th><th>Client IDs</th><th>操作</th></tr></thead><tbody>';
+    for (let i = 0; i < remoteConsoles.length; i++) {
+      const rc = remoteConsoles[i];
+      remoteHtml += '<tr>' +
+        '<td class="text-mono">' + escHtml(rc.url) + '</td>' +
+        '<td class="text-mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">' + escHtml(rc.clientIds.join(', ')) + '</td>' +
+        '<td style="white-space:nowrap;">' +
+        '<button class="btn btn-sm" onclick="editRemoteConsole(' + i + ')">编辑</button> ' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteRemoteConsole(' + i + ')">删除</button>' +
+        '</td></tr>';
+    }
+    remoteHtml += '</tbody></table>';
+  }
+
   section.innerHTML = \`
     <div class="flex-between mb-8">
       <button class="btn btn-sm" onclick="showClientList()">← 返回</button>
@@ -3083,12 +3105,125 @@ function renderGlobalSection() {
       <div class="form-actions"><button class="btn btn-primary" onclick="saveGlobalConfig()">💾 保存</button></div>
     </div>
     <div class="card">
+      <div class="flex-between">
+        <div class="card-title" style="margin-bottom:0">远程 Console 管理</div>
+        <button class="btn btn-sm btn-primary" onclick="showAddRemoteConsole()">+ 添加</button>
+      </div>
+      <div class="divider"></div>
+      \${remoteHtml}
+    </div>
+    <div class="card">
       <div class="card-title">settings-tpl.json</div>
       <textarea id="settings-tpl-editor" rows="12" style="width:100%;">\${escHtml(state.settingsTpl)}</textarea>
       <div class="form-actions"><button class="btn btn-sm" onclick="loadSettingsTpl()">🔄 刷新</button><button class="btn btn-primary" onclick="saveSettingsTpl()">💾 保存</button></div>
     </div>
   \`;
   loadSettingsTpl();
+}
+
+function showAddRemoteConsole() {
+  showRemoteConsoleModal(null, -1);
+}
+
+function editRemoteConsole(index: number) {
+  const rc = (state.globalConfig.remoteConsoles || [])[index];
+  showRemoteConsoleModal(rc, index);
+}
+
+function showRemoteConsoleModal(rc: any, index: number) {
+  const isEdit = index >= 0;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'remote-console-modal';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+  overlay.innerHTML = \`
+    <div class="modal" style="max-width:600px;">
+      <div class="modal-title">\${isEdit ? '编辑远程 Console' : '添加远程 Console'}</div>
+      <div class="form-group">
+        <label>Console 地址 *</label>
+        <input type="text" id="rc-url" value="\${isEdit ? escHtml(rc.url) : 'http://'}" placeholder="http://192.168.1.100:8080">
+      </div>
+      <div class="form-group">
+        <label>API Token *</label>
+        <input type="text" id="rc-token" value="\${isEdit ? escHtml(rc.token) : ''}" placeholder="Bearer Token">
+      </div>
+      <div class="form-group">
+        <label>Client IDs (逗号分隔) *</label>
+        <input type="text" id="rc-clientIds" value="\${isEdit ? escHtml(rc.clientIds.join(', ')) : ''}" placeholder="client-a, client-b">
+      </div>
+      <div class="modal-actions">
+        <button class="btn" onclick="document.getElementById('remote-console-modal').remove()">取消</button>
+        <button class="btn btn-primary" onclick="saveRemoteConsole(\${index})">\${isEdit ? '保存' : '添加'}</button>
+      </div>
+    </div>
+  \`;
+  document.body.appendChild(overlay);
+}
+
+async function saveRemoteConsole(index: number) {
+  const url = document.getElementById('rc-url').value.trim();
+  const token = document.getElementById('rc-token').value.trim();
+  const clientIdsStr = document.getElementById('rc-clientIds').value.trim();
+
+  if (!url || !token || !clientIdsStr) {
+    toast('请填写所有必填字段', 'error');
+    return;
+  }
+
+  const clientIds = clientIdsStr.split(',').map(s => s.trim()).filter(Boolean);
+  const remoteConsole = { url, token, clientIds };
+
+  try {
+    const gc = state.globalConfig;
+    if (!gc.remoteConsoles) gc.remoteConsoles = [];
+
+    if (index >= 0) {
+      gc.remoteConsoles[index] = remoteConsole;
+    } else {
+      gc.remoteConsoles.push(remoteConsole);
+    }
+
+    await api('/api/global/config', {
+      method: 'PUT',
+      body: JSON.stringify({
+        port: gc.port,
+        host: gc.host,
+        remoteConsoles: gc.remoteConsoles,
+      }),
+    });
+
+    state.globalConfig = gc;
+    document.getElementById('remote-console-modal').remove();
+    toast(index >= 0 ? '远程 Console 已更新' : '远程 Console 已添加', 'success');
+    renderGlobalSection();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function deleteRemoteConsole(index: number) {
+  if (!confirm('确定删除此远程 Console？')) return;
+
+  try {
+    const gc = state.globalConfig;
+    gc.remoteConsoles.splice(index, 1);
+
+    await api('/api/global/config', {
+      method: 'PUT',
+      body: JSON.stringify({
+        port: gc.port,
+        host: gc.host,
+        remoteConsoles: gc.remoteConsoles,
+      }),
+    });
+
+    state.globalConfig = gc;
+    toast('远程 Console 已删除', 'success');
+    renderGlobalSection();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
 }
 
 function showClientList() {
@@ -3101,8 +3236,16 @@ function showClientList() {
 async function saveGlobalConfig() {
   const port = parseInt(document.getElementById('gc-port').value, 10);
   const host = document.getElementById('gc-host').value.trim();
+  const gc = state.globalConfig;
   try {
-    await api('/api/global/config', { method: 'PUT', body: JSON.stringify({ port, host }) });
+    await api('/api/global/config', {
+      method: 'PUT',
+      body: JSON.stringify({
+        port,
+        host,
+        remoteConsoles: gc.remoteConsoles || [],
+      }),
+    });
     toast('全局配置已保存', 'success');
   } catch (e) { toast(e.message, 'error'); }
 }
