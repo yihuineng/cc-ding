@@ -9,6 +9,9 @@ import { getHomeDir } from './session';
 import { isEnvRef } from './secrets';
 import { setCorsHeaders, readBody } from './a2a/http-utils';
 import type { IConfig, IClaudeSetting } from './types';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
 
 // ==================== 类型定义 ====================
 
@@ -19,6 +22,16 @@ interface IAuthUser {
   firstLogin: boolean;
 }
 
+/** 远程 Console 配置 */
+interface IRemoteConsole {
+  /** Console 访问地址（如 http://192.168.1.100:8080） */
+  url: string;
+  /** API Token（用于认证） */
+  token: string;
+  /** 该 Console 管理的 client IDs */
+  clientIds: string[];
+}
+
 /** 全局 Console 配置 */
 interface IConsoleGlobalConfig {
   /** HTTP 监听端口，默认 8080 */
@@ -27,6 +40,8 @@ interface IConsoleGlobalConfig {
   host?: string;
   /** 认证用户列表 */
   authUsers?: IAuthUser[];
+  /** 远程 Console 列表（用于跨机器管理） */
+  remoteConsoles?: IRemoteConsole[];
 }
 
 /** 系统状态信息 */
@@ -133,6 +148,7 @@ function getGlobalConfig(): IConsoleGlobalConfig {
         port: parsed.console?.port || parsed.consolePort || 8080,
         host: parsed.console?.host || parsed.consoleHost || '0.0.0.0',
         authUsers: parsed.console?.authUsers || [],
+        remoteConsoles: parsed.console?.remoteConsoles || [],
       };
     }
   } catch {
@@ -142,7 +158,37 @@ function getGlobalConfig(): IConsoleGlobalConfig {
     port: 8080,
     host: '0.0.0.0',
     authUsers: [{ account: 'admin', passwordHash: sha256('admin'), firstLogin: true }],
+    remoteConsoles: [],
   };
+}
+
+/** 获取客户端所属的远程 Console 配置（如果是远程客户端） */
+function getClientRemoteConsole(clientId: string): IRemoteConsole | null {
+  const globalCfg = getGlobalConfig();
+  return globalCfg.remoteConsoles?.find(rc => rc.clientIds.includes(clientId)) || null;
+}
+
+/** 代理请求到远程 Console */
+async function proxyToRemoteConsole(
+  remoteConsole: IRemoteConsole,
+  method: string,
+  apiPath: string,
+  body?: string,
+): Promise<{ status: number; data: any }> {
+  const url = `${remoteConsole.url.replace(/\/$/, '')}${apiPath}`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${remoteConsole.token}`,
+  };
+
+  const res = await fetch(url, {
+    method,
+    headers,
+    body: body ? JSON.parse(body) : undefined,
+  });
+
+  const data = await res.json();
+  return { status: res.status, data };
 }
 
 /** 保存全局 Console 配置 */
@@ -154,6 +200,7 @@ function saveGlobalConfig(config: IConsoleGlobalConfig): void {
   if (config.port !== undefined) globalCfg.console.port = config.port;
   if (config.host !== undefined) globalCfg.console.host = config.host;
   if (config.authUsers !== undefined) globalCfg.console.authUsers = config.authUsers;
+  if (config.remoteConsoles !== undefined) globalCfg.console.remoteConsoles = config.remoteConsoles;
   atomicWrite(GLOBAL_CONFIG_PATH, JSON.stringify(globalCfg, null, 2));
 }
 
@@ -460,14 +507,29 @@ async function handleGetClients(req: http.IncomingMessage, res: http.ServerRespo
 async function handleGetClientConfig(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
   if (!requireAuth(req, res)) return;
 
-  const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
-  if (!fs.existsSync(configPath)) {
-    jsonError(res, 404, '客户端配置不存在');
-    return;
-  }
+  const remoteConsole = getClientRemoteConsole(clientId);
 
   try {
-    const config = fileUtil.getJSON(configPath) as IConfig;
+    let config: IConfig;
+
+    if (remoteConsole) {
+      // 远程客户端：通过 API 代理获取
+      const { status, data } = await proxyToRemoteConsole(remoteConsole, 'GET', `/api/clients/${clientId}/config`);
+      if (status !== 200) {
+        jsonError(res, status, data.error || '远程配置读取失败');
+        return;
+      }
+      config = data.config;
+    } else {
+      // 本地客户端
+      const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
+      if (!fs.existsSync(configPath)) {
+        jsonError(res, 404, '客户端配置不存在');
+        return;
+      }
+      config = fileUtil.getJSON(configPath) as IConfig;
+    }
+
     // 脱敏处理
     const maskedConfig = JSON.parse(JSON.stringify(config));
     if (maskedConfig.clientSecret) maskedConfig.clientSecret = maskSecret(maskedConfig.clientSecret);
@@ -487,7 +549,7 @@ async function handleGetClientConfig(req: http.IncomingMessage, res: http.Server
     }
     jsonResponse(res, 200, { config: maskedConfig });
   } catch (err) {
-    jsonError(res, 500, '读取配置失败');
+    jsonError(res, 500, `读取配置失败: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -495,30 +557,91 @@ async function handleGetClientConfig(req: http.IncomingMessage, res: http.Server
 async function handlePatchClientConfig(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
   if (!requireAuth(req, res)) return;
 
-  const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
-  if (!fs.existsSync(configPath)) {
-    jsonError(res, 404, '客户端配置不存在');
-    return;
-  }
+  const remoteConsole = getClientRemoteConsole(clientId);
 
   try {
     const body = await readBody(req);
     const patches = JSON.parse(body || '{}');
-    // patches 格式: { "conversations.0.qaMode": true }
+
+    if (remoteConsole) {
+      // 远程客户端：通过 API 代理更新
+      const { status, data } = await proxyToRemoteConsole(
+        remoteConsole,
+        'PATCH',
+        `/api/clients/${clientId}/config`,
+        body,
+      );
+      if (status !== 200) {
+        jsonError(res, status, data.error || '远程配置更新失败');
+        return;
+      }
+      jsonResponse(res, 200, data);
+      return;
+    }
+
+    // 本地客户端
+    const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      jsonError(res, 404, '客户端配置不存在');
+      return;
+    }
+
     const config = fileUtil.getJSON(configPath) as IConfig;
 
+    // 应用 patches
     for (const [ pathStr, value ] of Object.entries(patches)) {
       dotPathSet(config, pathStr, value);
     }
 
-    // 备份
+    // 备份并原子写入
     backupFile(configPath);
-    // 原子写入
     atomicWrite(configPath, JSON.stringify(config, null, 2));
 
     jsonResponse(res, 200, { message: '配置已更新', path: configPath });
   } catch (err) {
-    jsonError(res, 400, '请求格式错误');
+    jsonError(res, 500, `更新配置失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** GET /api/clients/:id/pm2 — 获取 pm2 进程状态 */
+async function handleGetClientPm2(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  try {
+    const { stdout } = await execFileAsync('pm2', [ 'jlist' ], { encoding: 'utf-8' });
+    const processes = JSON.parse(stdout);
+    const processName = `cc-ding-${clientId}`;
+    const proc = processes.find((p: any) => p.name === processName);
+
+    if (!proc) {
+      jsonError(res, 404, `未找到 pm2 进程: ${processName}`);
+      return;
+    }
+
+    jsonResponse(res, 200, {
+      pid: proc.pid,
+      status: proc.pm2_env?.status || 'unknown',
+      uptime: proc.pm2_env?.pm_uptime ? Date.now() - proc.pm2_env.pm_uptime : 0,
+      memory: proc.monit?.memory || 0,
+      cpu: proc.monit?.cpu || 0,
+      restarts: proc.pm2_env?.restart_time || 0,
+    });
+  } catch (err) {
+    jsonError(res, 500, `获取 pm2 状态失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** POST /api/clients/:id/pm2/restart — 重启 pm2 进程 */
+async function handleRestartClientPm2(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  const processName = `cc-ding-${clientId}`;
+
+  try {
+    await execFileAsync('pm2', [ 'restart', processName ], { timeout: 30000 });
+    jsonResponse(res, 200, { message: `已重启 ${processName}` });
+  } catch (err) {
+    jsonError(res, 500, `重启失败: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -569,6 +692,7 @@ async function handleAddConversation(req: http.IncomingMessage, res: http.Server
     if (data.permissionMode) newConv.permissionMode = data.permissionMode;
     if (data.preBash) newConv.preBash = data.preBash;
     if (data.linkConversationId) newConv.linkConversationId = data.linkConversationId;
+    if (data.workDir) newConv.workDir = data.workDir;
     if (data.ensureAt) newConv.ensureAt = true;
     if (data.maxTurnTimeMins) newConv.maxTurnTimeMins = data.maxTurnTimeMins;
     if (data.taskCfg?.skill) newConv.taskCfg = { skill: data.taskCfg.skill };
@@ -613,7 +737,7 @@ async function handleUpdateConversation(req: http.IncomingMessage, res: http.Ser
       'whiteUserList', 'agent', 'model', 'useLocalOcr', 'atSender',
       'receiveReply', 'receiveReplyMode', 'ackReaction', 'qaMode',
       'freedomMode', 'streaming', 'permissionMode', 'preBash',
-      'linkConversationId', 'ensureAt', 'maxTurnTimeMins', 'taskCfg', 'qaCfg', 'envs',
+      'linkConversationId', 'workDir', 'ensureAt', 'maxTurnTimeMins', 'taskCfg', 'qaCfg', 'envs',
     ];
     for (const field of updatable) {
       if (data[field] !== undefined) {
@@ -924,6 +1048,7 @@ async function handlePutGlobalConfig(req: http.IncomingMessage, res: http.Server
       port: data.port,
       host: data.host,
       authUsers: data.authUsers,
+      remoteConsoles: data.remoteConsoles,
     });
     jsonResponse(res, 200, { message: '全局配置已保存' });
   } catch (err) {
@@ -1007,6 +1132,8 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   const clientConfigMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/config(?:\/raw)?$/);
   const clientConfigRawMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/config\/raw$/);
   const clientConfigReloadMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/config\/reload$/);
+  const clientPm2Match = pathname.match(/^\/api\/clients\/([^\/]+)\/pm2$/);
+  const clientPm2RestartMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/pm2\/restart$/);
   const clientApiKeysMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys(?:\/(\d+))?(?:\/reset)?$/);
   const clientApiKeyIndexMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys\/(\d+)$/);
   const clientApiKeyResetMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys\/reset$/);
@@ -1096,6 +1223,38 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // POST /api/clients/:id/config/reload
   if (clientConfigReloadMatch && req.method === 'POST') {
     await handleReloadConfig(req, res, clientConfigReloadMatch[1]);
+    return;
+  }
+
+  // GET /api/clients/:id/pm2
+  if (clientPm2Match && req.method === 'GET') {
+    const remoteConsole = getClientRemoteConsole(clientPm2Match[1]);
+    if (remoteConsole) {
+      const { status, data } = await proxyToRemoteConsole(remoteConsole, 'GET', `/api/clients/${clientPm2Match[1]}/pm2`);
+      if (status !== 200) {
+        jsonError(res, status, data.error || '获取远程 pm2 状态失败');
+        return;
+      }
+      jsonResponse(res, 200, data);
+    } else {
+      await handleGetClientPm2(req, res, clientPm2Match[1]);
+    }
+    return;
+  }
+
+  // POST /api/clients/:id/pm2/restart
+  if (clientPm2RestartMatch && req.method === 'POST') {
+    const remoteConsole = getClientRemoteConsole(clientPm2RestartMatch[1]);
+    if (remoteConsole) {
+      const { status, data } = await proxyToRemoteConsole(remoteConsole, 'POST', `/api/clients/${clientPm2RestartMatch[1]}/pm2/restart`);
+      if (status !== 200) {
+        jsonError(res, status, data.error || '远程重启失败');
+        return;
+      }
+      jsonResponse(res, 200, data);
+    } else {
+      await handleRestartClientPm2(req, res, clientPm2RestartMatch[1]);
+    }
     return;
   }
 
@@ -1401,148 +1560,494 @@ function generateConsoleHtml(): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>cc-ding Console</title>
 <link rel="icon" href="/favicon.ico" type="image/x-icon">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-/* ===== CSS Variables ===== */
+/* ===== CSS Variables - Industrial Terminal ===== */
 :root {
-  --bg: #0d1117;
-  --bg-secondary: #161b22;
-  --bg-tertiary: #21262d;
-  --border: #30363d;
-  --text: #c9d1d9;
-  --text-secondary: #8b949e;
-  --accent: #58a6ff;
-  --accent-hover: #79b8ff;
-  --green: #3fb950;
-  --red: #f85149;
-  --yellow: #d29922;
-  --orange: #db6d28;
-  --card-radius: 8px;
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --bg: #0a0e14;
+  --bg-secondary: #0f1419;
+  --bg-tertiary: #151b23;
+  --border: #1e2733;
+  --border-bright: #2d3d4f;
+  --text: #d4dce6;
+  --text-secondary: #6b7d93;
+  --text-dim: #3d4f63;
+  --accent: #00ff9d;
+  --accent-dim: #00cc7d;
+  --accent-glow: rgba(0, 255, 157, 0.15);
+  --amber: #ffb454;
+  --amber-dim: #cc9044;
+  --red: #ff4757;
+  --red-dim: #cc3945;
+  --yellow: #ffd93d;
+  --card-radius: 2px;
+  --font: 'IBM Plex Mono', 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  --mono: 'JetBrains Mono', 'IBM Plex Mono', 'SF Mono', monospace;
 }
+
 /* ===== Reset & Base ===== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.5; min-height: 100vh; }
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  background-image:
+    linear-gradient(var(--border) 1px, transparent 1px),
+    linear-gradient(90deg, var(--border) 1px, transparent 1px);
+  background-size: 40px 40px;
+  background-position: -1px -1px;
+  color: var(--text);
+  line-height: 1.6;
+  min-height: 100vh;
+  font-size: 13px;
+  font-feature-settings: 'liga' 1, 'calt' 1;
+}
+
+a { color: var(--accent); text-decoration: none; transition: text-shadow 0.2s; }
+a:hover { text-decoration: underline; text-shadow: 0 0 8px var(--accent-glow); }
 button { cursor: pointer; font-family: var(--font); }
-input, textarea, select { font-family: var(--font); background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; }
-input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
-textarea { font-family: var(--mono); font-size: 13px; resize: vertical; }
+input, textarea, select {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--card-radius);
+  padding: 8px 12px;
+  font-size: 13px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-glow), inset 0 0 8px var(--accent-glow);
+}
+textarea { font-family: var(--mono); font-size: 12px; resize: vertical; line-height: 1.5; }
+::placeholder { color: var(--text-dim); }
 
 /* ===== Layout ===== */
-.container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-.header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--bg-secondary); position: sticky; top: 0; z-index: 100; }
-.header h1 { font-size: 18px; font-weight: 600; }
-.header-actions { display: flex; gap: 8px; align-items: center; }
-.user-info { color: var(--text-secondary); font-size: 13px; margin-right: 8px; }
+.container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border-bright);
+  background: var(--bg-secondary);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  backdrop-filter: blur(8px);
+}
+.header::before {
+  content: '>';
+  color: var(--accent);
+  margin-right: 12px;
+  font-weight: bold;
+  animation: blink 1s step-end infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+.header h1 {
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text);
+}
+.header-actions { display: flex; gap: 12px; align-items: center; }
+.user-info { color: var(--text-secondary); font-size: 12px; margin-right: 12px; font-family: var(--mono); }
 
 /* ===== Buttons ===== */
-.btn { display: inline-flex; align-items: center; gap: 4px; padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-tertiary); color: var(--text); font-size: 13px; transition: all 0.15s; }
-.btn:hover { background: var(--border); }
-.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-.btn-primary:hover { background: var(--accent-hover); }
-.btn-danger { background: var(--red); color: #fff; border-color: var(--red); }
-.btn-danger:hover { opacity: 0.85; }
-.btn-sm { padding: 3px 8px; font-size: 12px; }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--card-radius);
+  background: var(--bg-tertiary);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  transition: all 0.15s;
+}
+.btn:hover {
+  background: var(--border-bright);
+  border-color: var(--text-dim);
+}
+.btn-primary {
+  background: transparent;
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+.btn-primary:hover {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+.btn-danger {
+  background: transparent;
+  color: var(--red);
+  border-color: var(--red-dim);
+}
+.btn-danger:hover {
+  background: rgba(255, 71, 87, 0.1);
+  border-color: var(--red);
+  box-shadow: 0 0 12px rgba(255, 71, 87, 0.2);
+}
+.btn-sm { padding: 4px 10px; font-size: 11px; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ===== Cards ===== */
-.card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--card-radius); padding: 16px; margin-bottom: 16px; }
-.card-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
-.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+.card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  padding: 20px;
+  margin-bottom: 16px;
+  position: relative;
+}
+.card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.card:hover::before { opacity: 0.6; }
+
+.card-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
 
 /* ===== Client Cards ===== */
-.client-card { cursor: pointer; transition: border-color 0.2s; }
-.client-card:hover { border-color: var(--accent); }
-.client-card .card-title { margin-bottom: 8px; }
-.client-name { font-size: 16px; font-weight: 600; }
-.client-id { font-size: 12px; color: var(--text-secondary); font-family: var(--mono); }
-.status-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; }
-.status-online { background: rgba(63,185,80,0.15); color: var(--green); }
-.status-offline { background: rgba(248,81,73,0.15); color: var(--red); }
-.client-meta { display: flex; gap: 16px; margin-top: 8px; font-size: 13px; color: var(--text-secondary); }
-.client-meta span { display: flex; align-items: center; gap: 4px; }
+.client-card { cursor: pointer; transition: all 0.2s; }
+.client-card:hover {
+  border-color: var(--accent-dim);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--accent-glow);
+}
+.client-card:hover::before { opacity: 1; }
+.client-card .card-title { margin-bottom: 8px; border-bottom: none; padding-bottom: 0; }
+.client-name { font-size: 15px; font-weight: 600; color: var(--text); }
+.client-id { font-size: 11px; color: var(--text-dim); font-family: var(--mono); margin-top: 2px; }
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.status-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  animation: pulse 2s ease-in-out infinite;
+}
+.status-online {
+  background: rgba(0, 255, 157, 0.1);
+  color: var(--accent);
+  border: 1px solid rgba(0, 255, 157, 0.3);
+}
+.status-online::before {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+.status-offline {
+  background: rgba(255, 71, 87, 0.1);
+  color: var(--red);
+  border: 1px solid rgba(255, 71, 87, 0.3);
+}
+.status-offline::before {
+  background: var(--red);
+  animation: none;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.client-meta {
+  display: flex;
+  gap: 20px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--mono);
+}
+.client-meta span { display: flex; align-items: center; gap: 6px; }
 
 /* ===== Tabs ===== */
-.tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 16px; overflow-x: auto; }
-.tab { padding: 10px 16px; font-size: 13px; color: var(--text-secondary); border: none; background: none; cursor: pointer; white-space: nowrap; border-bottom: 2px solid transparent; transition: all 0.15s; }
-.tab:hover { color: var(--text); }
-.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+  overflow-x: auto;
+  gap: 4px;
+}
+.tab {
+  padding: 10px 18px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  border: none;
+  background: none;
+  cursor: pointer;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+}
+.tab:hover { color: var(--text); background: var(--bg-tertiary); }
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  text-shadow: 0 0 8px var(--accent-glow);
+}
 
 /* ===== Table ===== */
 .table-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border); }
-th { font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; font-family: var(--mono); }
+th, td { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+th {
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 10px;
+}
 tr:hover td { background: var(--bg-tertiary); }
+td { color: var(--text-secondary); }
 
 /* ===== Forms ===== */
-.form-group { margin-bottom: 12px; }
-.form-group label { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
-.form-row { display: flex; gap: 8px; align-items: end; }
+.form-group { margin-bottom: 16px; }
+.form-group label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.form-row { display: flex; gap: 12px; align-items: end; }
 .form-row .form-group { flex: 1; }
-.form-actions { display: flex; gap: 8px; margin-top: 12px; }
+.form-actions { display: flex; gap: 12px; margin-top: 16px; }
 
 /* ===== Login ===== */
 .login-container { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-.login-card { width: 100%; max-width: 380px; }
-.login-card .card-title { text-align: center; font-size: 20px; margin-bottom: 20px; }
-.login-card .form-group { margin-bottom: 16px; }
-.login-card input { width: 100%; padding: 10px 12px; font-size: 14px; }
-.login-card .btn { width: 100%; padding: 10px; font-size: 14px; justify-content: center; }
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  border: 1px solid var(--border-bright);
+  position: relative;
+}
+.login-card::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  background: linear-gradient(135deg, var(--accent-glow), transparent, var(--accent-glow));
+  border-radius: var(--card-radius);
+  pointer-events: none;
+  opacity: 0.5;
+}
+.login-card .card-title {
+  text-align: center;
+  font-size: 12px;
+  margin-bottom: 24px;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.login-card .form-group { margin-bottom: 20px; }
+.login-card input { width: 100%; padding: 12px 14px; font-size: 14px; }
+.login-card .btn { width: 100%; padding: 12px; font-size: 13px; justify-content: center; }
 
 /* ===== Toast ===== */
-.toast-container { position: fixed; top: 80px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
-.toast { padding: 10px 16px; border-radius: 6px; font-size: 13px; min-width: 250px; animation: slideIn 0.2s ease-out; border: 1px solid var(--border); }
-.toast-success { background: rgba(63,185,80,0.15); border-color: var(--green); color: var(--green); }
-.toast-error { background: rgba(248,81,73,0.15); border-color: var(--red); color: var(--red); }
-.toast-info { background: rgba(88,166,255,0.15); border-color: var(--accent); color: var(--accent); }
+.toast-container { position: fixed; top: 80px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+.toast {
+  padding: 12px 18px;
+  border-radius: var(--card-radius);
+  font-size: 12px;
+  font-family: var(--mono);
+  min-width: 280px;
+  animation: slideIn 0.3s ease-out;
+  border: 1px solid;
+  position: relative;
+  overflow: hidden;
+}
+.toast::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 3px;
+  height: 100%;
+}
+.toast-success { background: rgba(0, 255, 157, 0.08); border-color: var(--accent-dim); color: var(--accent); }
+.toast-success::before { background: var(--accent); }
+.toast-error { background: rgba(255, 71, 87, 0.08); border-color: var(--red-dim); color: var(--red); }
+.toast-error::before { background: var(--red); }
+.toast-info { background: rgba(255, 180, 84, 0.08); border-color: var(--amber-dim); color: var(--amber); }
+.toast-info::before { background: var(--amber); }
 @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
 /* ===== Modal ===== */
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.modal { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--card-radius); padding: 20px; width: 90%; max-width: 600px; max-height: 80vh; overflow-y: auto; }
-.modal-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
-.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-bright);
+  border-radius: var(--card-radius);
+  padding: 24px;
+  width: 90%;
+  max-width: 600px;
+  max-height: 80vh;
+  overflow-y: auto;
+  position: relative;
+}
+.modal::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+}
+.modal-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text);
+  margin-bottom: 20px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px; }
 
 /* ===== Status Page ===== */
-.status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
-.status-item { text-align: center; padding: 16px; }
-.status-item .value { font-size: 28px; font-weight: 700; color: var(--accent); }
-.status-item .label { font-size: 13px; color: var(--text-secondary); margin-top: 4px; }
+.status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; }
+.status-item {
+  text-align: center;
+  padding: 24px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--card-radius);
+  background: var(--bg-tertiary);
+}
+.status-item .value {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--accent);
+  font-family: var(--mono);
+  text-shadow: 0 0 20px var(--accent-glow);
+}
+.status-item .label {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 8px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
 
 /* ===== Env Vars ===== */
-.env-list { font-family: var(--mono); font-size: 13px; }
-.env-item { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
+.env-list { font-family: var(--mono); font-size: 12px; }
+.env-item { display: flex; gap: 12px; align-items: center; padding: 6px 0; }
 .env-key { color: var(--accent); min-width: 200px; }
 .env-val { color: var(--text-secondary); }
 
 /* ===== Misc ===== */
-.empty-state { text-align: center; padding: 40px 20px; color: var(--text-secondary); }
-.empty-state .icon { font-size: 48px; margin-bottom: 12px; }
-.divider { height: 1px; background: var(--border); margin: 16px 0; }
+.empty-state { text-align: center; padding: 60px 24px; color: var(--text-dim); }
+.empty-state .icon { font-size: 56px; margin-bottom: 16px; opacity: 0.5; }
+.divider { height: 1px; background: var(--border); margin: 20px 0; }
 .text-mono { font-family: var(--mono); font-size: 12px; }
 .text-muted { color: var(--text-secondary); }
-.text-success { color: var(--green); }
+.text-success { color: var(--accent); }
 .text-danger { color: var(--red); }
 .flex-between { display: flex; justify-content: space-between; align-items: center; }
 .gap-8 { gap: 8px; }
 .mt-8 { margin-top: 8px; }
 .mt-16 { margin-top: 16px; }
 .mb-8 { margin-bottom: 8px; }
-.switch { position: relative; width: 36px; height: 20px; display: inline-block; }
+
+.switch { position: relative; width: 40px; height: 22px; display: inline-block; }
 .switch input { opacity: 0; width: 0; height: 0; }
-.switch .slider { position: absolute; inset: 0; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 20px; cursor: pointer; transition: 0.2s; }
-.switch .slider::before { content: ''; position: absolute; width: 14px; height: 14px; left: 2px; top: 2px; background: var(--text-secondary); border-radius: 50%; transition: 0.2s; }
-.switch input:checked + .slider { background: var(--accent); border-color: var(--accent); }
-.switch input:checked + .slider::before { transform: translateX(16px); background: #fff; }
+.switch .slider {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-bright);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: 0.2s;
+}
+.switch .slider::before {
+  content: '';
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  left: 3px;
+  top: 3px;
+  background: var(--text-dim);
+  border-radius: 2px;
+  transition: 0.2s;
+}
+.switch input:checked + .slider {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+}
+.switch input:checked + .slider::before {
+  transform: translateX(18px);
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+
+/* ===== Selection ===== */
+::selection { background: var(--accent-glow); color: var(--accent); }
 
 @media (max-width: 768px) {
-  .container { padding: 12px; }
+  .container { padding: 16px; }
   .card-grid { grid-template-columns: 1fr; }
   .form-row { flex-direction: column; }
-  .header { flex-wrap: wrap; gap: 8px; }
+  .header { flex-wrap: wrap; gap: 12px; padding: 12px 16px; }
 }
 </style>
 </head>
@@ -1563,12 +2068,33 @@ const state = {
   activeTab: 'config',
   rawConfig: '',
   apiKeys: [],
+  apiKeysResetTime: '',
   files: {},
   envVars: [],
   globalConfig: {},
   status: null,
   settingsTpl: '',
 };
+
+// 常用环境变量提示（用于添加时的 autocomplete）
+const COMMON_ENV_VARS = [
+  { key: 'ANTHROPIC_API_KEY', desc: 'Anthropic API Key' },
+  { key: 'ANTHROPIC_BASE_URL', desc: 'Anthropic API Base URL' },
+  { key: 'ANTHROPIC_MODEL', desc: '默认模型' },
+  { key: 'CLAUDE_SMALL_FAST_MODEL', desc: '小模型（轻量任务）' },
+  { key: 'CLAUDE_CODE_MAX_TURNS', desc: 'Claude Code 最大轮次' },
+  { key: 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', desc: '禁用非必要流量' },
+  { key: 'CLAUDE_CODE_ENABLE_BACKGROUND_TASKS', desc: '启用后台任务' },
+  { key: 'CLAUDE_CODE_HOME', desc: 'Claude Code 家目录' },
+  { key: 'CLAUDE_CODE_ENTRYPOINT', desc: 'Claude Code 入口点' },
+  { key: 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', desc: '自动压缩窗口大小' },
+  { key: 'HTTP_PROXY', desc: 'HTTP 代理' },
+  { key: 'HTTPS_PROXY', desc: 'HTTPS 代理' },
+  { key: 'NO_PROXY', desc: '不走代理的地址' },
+  { key: 'PATH', desc: '可执行文件路径' },
+  { key: 'NODE_PATH', desc: 'Node.js 模块路径' },
+  { key: 'TZ', desc: '时区（如 Asia/Shanghai）' },
+];
 
 // ===== API Client =====
 const API_BASE = window.location.origin;
@@ -1751,13 +2277,26 @@ function renderClientList() {
     return;
   }
 
+  // 构建远程 client 映射
+  const remoteMap = new Map<string, string>();
+  const remoteConsoles = state.globalConfig.remoteConsoles || [];
+  for (const rc of remoteConsoles) {
+    for (const cid of rc.clientIds) {
+      remoteMap.set(cid, rc.url);
+    }
+  }
+
   let html = '<div class="card"><div class="flex-between"><div class="card-title" style="margin-bottom:0">客户端列表 (' + state.clients.length + ')</div><button class="btn btn-primary" onclick="showCreateClientModal()">➕ 新建 Client</button></div></div><div class="card-grid">';
   for (const c of state.clients) {
+    const remoteUrl = remoteMap.get(c.clientId);
+    const isRemote = !!remoteUrl;
+    const remoteIndicator = isRemote ? '<span class="text-muted" style="font-size:11px;margin-left:8px;" title="远程: ' + escHtml(remoteUrl) + '"> 远程</span>' : '';
+
     html += \`
       <div class="card client-card" onclick="selectClient('\${c.clientId}')">
         <div class="flex-between">
           <div>
-            <div class="client-name">\${escHtml(c.clientName || c.clientId)}</div>
+            <div class="client-name">\${escHtml(c.clientName || c.clientId)}\${remoteIndicator}</div>
             <div class="client-id">\${escHtml(c.clientId)}</div>
           </div>
           <span class="status-badge \${c.online ? 'status-online' : 'status-offline'}">\${c.online ? '● 在线' : '○ 离线'}</span>
@@ -1851,8 +2390,10 @@ async function loadClientApiKeys(clientId) {
   try {
     const data = await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys');
     state.apiKeys = data.apiKeys || [];
+    state.apiKeysResetTime = data.resetTime || '';
   } catch (e) {
     state.apiKeys = [];
+    state.apiKeysResetTime = '';
   }
 }
 
@@ -1887,20 +2428,86 @@ function renderClientDetail(clientId) {
   else if (state.activeTab === 'env') contentHtml = renderEnvTab(clientId);
   else if (state.activeTab === 'raw') contentHtml = renderRawTab(clientId);
 
+  // 构建远程标识
+  const remoteConsoles = state.globalConfig.remoteConsoles || [];
+  const remoteConsole = remoteConsoles.find(rc => rc.clientIds.includes(clientId));
+  const remoteIndicator = remoteConsole ? '<span class="text-muted" style="font-size:11px;margin-left:8px;" title="远程: ' + escHtml(remoteConsole.url) + '"> 远程</span>' : '';
+
   detail.innerHTML = \`
     <div class="flex-between mb-8">
       <button class="btn btn-sm" onclick="backToList()">← 返回</button>
       <span>
-        <span class="client-name">\${escHtml(c?.clientName || clientId)}</span>
+        <span class="client-name">\${escHtml(c?.clientName || clientId)}\${remoteIndicator}</span>
         <span class="status-badge \${c?.online ? 'status-online' : 'status-offline'}" style="margin-left:8px;">\${c?.online ? '● 在线' : '○ 离线'}</span>
       </span>
       <div style="display:flex;gap:8px;">
-        <button class="btn btn-sm" onclick="reloadClientConfig('\${clientId}')" title="发送 SIGUSR2 热重载">🔄 重载</button>
+        <button class="btn btn-sm" onclick="getPm2Status('\${clientId}')" title="查看 pm2 状态">📊 状态</button>
+        <button class="btn btn-sm btn-danger" onclick="restartClient('\${clientId}')" title="重启进程">🔄 重启</button>
+        <button class="btn btn-sm" onclick="reloadClientConfig('\${clientId}')" title="发送 SIGUSR2 热重载"> 重载</button>
       </div>
     </div>
     \${tabHtml}
     <div class="mt-16">\${contentHtml}</div>
+    <div id="pm2-status-section" style="display:none;margin-top:16px;"></div>
   \`;
+}
+
+async function getPm2Status(clientId: string) {
+  const section = document.getElementById('pm2-status-section');
+  if (!section) return;
+
+  try {
+    const data = await api(\`/api/clients/\${clientId}/pm2\`);
+    section.style.display = 'block';
+    section.innerHTML = \`
+      <div class="card">
+        <div class="card-title">📊 pm2 进程状态</div>
+        <div class="form-row">
+          <div class="form-group"><label>PID</label><div class="text-mono">\${data.pid || '-'}</div></div>
+          <div class="form-group"><label>状态</label><div>\${data.status || '-'}</div></div>
+          <div class="form-group"><label>内存</label><div class="text-mono">\${formatBytes(data.memory || 0)}</div></div>
+          <div class="form-group"><label>CPU</label><div class="text-mono">\${data.cpu || 0}%</div></div>
+          <div class="form-group"><label>重启次数</label><div class="text-mono">\${data.restarts || 0}</div></div>
+          <div class="form-group"><label>运行时间</label><div class="text-mono">\${formatUptime(data.uptime || 0)}</div></div>
+        </div>
+      </div>
+    \`;
+  } catch (e) {
+    section.style.display = 'block';
+    section.innerHTML = '<div class="card"><div class="text-danger">获取状态失败: ' + escHtml(e.message) + '</div></div>';
+  }
+}
+
+async function restartClient(clientId: string) {
+  if (!confirm('确定重启 ' + clientId + '？')) return;
+
+  try {
+    await api(\`/api/clients/\${clientId}/pm2/restart\`, { method: 'POST' });
+    toast('已发送重启命令', 'success');
+    setTimeout(() => loadClients(), 2000);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatUptime(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days > 0) return days + '天 ' + (hours % 24) + '小时';
+  if (hours > 0) return hours + '小时 ' + (minutes % 60) + '分钟';
+  if (minutes > 0) return minutes + '分钟';
+  return seconds + '秒';
 }
 
 function switchTab(tab) {
@@ -1964,17 +2571,6 @@ function renderConfigTab(clientId) {
     '<div class="form-group"><label>AI Card 模板变量名</label><input type="text" id="cfg-cardTemplateKey" value="' + escHtml(cfg.cardTemplateKey || 'content') + '"></div>' +
     '</div></div>';
 
-  // === 环境变量编辑器 ===
-  const envs = cfg.envs || {};
-  html += '<div class="card"><div class="card-title">全局环境变量 (envs)</div><div id="envs-editor">';
-  for (const ek of Object.keys(envs)) {
-    html += '<div class="form-row" style="margin-bottom:4px;">' +
-      '<input type="text" class="env-key-input" value="' + escHtml(ek) + '" style="flex:1;">' +
-      '<input type="text" class="env-val-input" value="' + escHtml(envs[ek]) + '" style="flex:2;">' +
-      '<button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">×</button></div>';
-  }
-  html += '</div><button class="btn btn-sm mt-8" onclick="addEnvRow()">+ 添加环境变量</button></div>';
-
   // === A2A 配置 ===
   const a2a = cfg.a2aCfg || {};
   html += '<div class="card"><div class="card-title">A2A 配置</div>' +
@@ -2014,7 +2610,10 @@ function renderConvTab(clientId) {
   for (let i = 0; i < convs.length; i++) {
     const conv = convs[i];
     html += '<tr>' +
-      '<td>' + escHtml(conv.conversationTitle || conv.conversationId) + '<br><span class="text-mono text-muted">' + escHtml(conv.conversationId) + '</span></td>' +
+      '<td>' + escHtml(conv.conversationTitle || conv.conversationId) +
+        (conv.workDir ? ' <span title="自定义工作目录: ' + escHtml(conv.workDir) + '">📁</span>' : '') +
+        (conv.linkConversationId ? ' <span title="关联会话: ' + escHtml(conv.linkConversationId) + '">🔗</span>' : '') +
+        '<br><span class="text-mono text-muted">' + escHtml(conv.conversationId) + '</span></td>' +
       '<td>' + (conv.conversationType === '2' ? '群聊' : '单聊') + '</td>' +
       '<td>' + (conv.qaMode ? '<span class="text-success">开</span>' : '<span class="text-muted">关</span>') + '</td>' +
       '<td>' + (conv.streaming ? '<span class="text-success">开</span>' : '<span class="text-muted">关</span>') + '</td>' +
@@ -2048,32 +2647,152 @@ function renderConvTab(clientId) {
 // ===== Render: Keys Tab =====
 function renderKeysTab(clientId) {
   const keys = state.apiKeys;
-  if (keys.length === 0) return '<div class="empty-state"><div class="icon">🔑</div><p>未配置 API Key</p></div>';
+  const resetTime = state.apiKeysResetTime || '';
+  const validCount = keys.filter(function(k) { return k.isValid; }).length;
+  const invalidCount = keys.length - validCount;
 
-  let html = '<div class="card"><div class="flex-between"><div class="card-title" style="margin-bottom:0;">API Key 池</div><button class="btn btn-sm btn-primary" onclick="showAddKeyModal()">+ 添加</button></div><div class="divider"></div>';
-  html += '<table><thead><tr><th>#</th><th>状态</th><th>Key</th><th>模型</th><th>Base URL</th><th>备注</th><th>操作</th></tr></thead><tbody>';
-  for (const key of keys) {
-    html += '<tr>';
-    html += '<td>' + key.index + '</td>';
-    html += '<td><span class="status-badge ' + (key.isValid ? 'status-online' : 'status-offline') + '">' + (key.isValid ? '有效' : '无效') + '</span></td>';
-    html += '<td class="text-mono">' + escHtml(key.apiKey || '-') + '</td>';
-    html += '<td class="text-mono">' + escHtml(key.model || '-') + '</td>';
-    html += '<td class="text-mono" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(key.baseUrl || '-') + '</td>';
-    html += '<td>' + escHtml(key.memo || '-') + '</td>';
-    html += '<td style="white-space:nowrap;"><button class="btn btn-sm" onclick="toggleKey(' + SQ + clientId + SQ + ',' + key.index + ')">切换</button> <button class="btn btn-sm" onclick="editKey(' + SQ + clientId + SQ + ',' + key.index + ')">编辑</button> <button class="btn btn-sm btn-danger" onclick="deleteKey(' + SQ + clientId + SQ + ',' + key.index + ')">删除</button></td>';
-    html += '</tr>';
-  }
-  html += '</tbody></table>';
+  let html = '<div class="card"><div class="flex-between"><div class="card-title" style="margin-bottom:0;">API Key 池</div>';
+  html += '<div style="display:flex;gap:8px;align-items:center;">';
+  html += '<button class="btn btn-sm" onclick="deleteAllInvalidKeys(' + SQ + clientId + SQ + ')"' + (invalidCount === 0 ? ' disabled' : '') + '>清除无效 Key (' + invalidCount + ')</button>';
+  html += '<button class="btn btn-sm" onclick="showApiKeyModal(' + SQ + clientId + SQ + ', -1)">+ 添加</button>';
+  html += '</div></div>';
   html += '<div class="divider"></div>';
-  html += '<div class="flex-between"><span class="text-muted text-mono">重置时间: ' + (keys[0]?.resetTime || '-') + '</span><button class="btn btn-sm" onclick="resetAllKeys(' + SQ + clientId + SQ + ')">一键重置所有 Key</button></div>';
+
+  if (keys.length === 0) {
+    html += '<div class="empty-state" style="padding:24px 0;"><div class="icon">🔑</div><p>未配置 API Key</p></div>';
+  } else {
+    html += '<table><thead><tr><th>#</th><th>状态</th><th>Key</th><th>模型</th><th>小模型</th><th>Base URL</th><th>备注</th><th>操作</th></tr></thead><tbody>';
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var badgeClass = key.isValid ? 'status-online' : 'status-offline';
+      var badgeText = key.isValid ? '有效' : '无效';
+      var toggleText = key.isValid ? '禁用' : '启用';
+      html += '<tr>';
+      html += '<td>' + i + '</td>';
+      html += '<td><span class="status-badge ' + badgeClass + '">' + badgeText + '</span></td>';
+      html += '<td class="text-mono" title="' + escHtml(key.apiKey || '') + '">' + escHtml(key.apiKey || '-') + '</td>';
+      html += '<td class="text-mono">' + escHtml(key.model || '-') + '</td>';
+      html += '<td class="text-mono">' + escHtml(key.smallModel || '-') + '</td>';
+      html += '<td class="text-mono" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHtml(key.baseUrl || '') + '">' + escHtml(key.baseUrl || '-') + '</td>';
+      html += '<td>' + escHtml(key.memo || '-') + '</td>';
+      html += '<td style="white-space:nowrap;">';
+      html += '<button class="btn btn-sm" onclick="toggleApiKey(' + SQ + clientId + SQ + ',' + i + ')">' + toggleText + '</button> ';
+      html += '<button class="btn btn-sm" onclick="showApiKeyModal(' + SQ + clientId + SQ + ',' + i + ')">编辑</button> ';
+      html += '<button class="btn btn-sm btn-danger" onclick="deleteKey(' + SQ + clientId + SQ + ',' + i + ')">删除</button>';
+      html += '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+  }
+
+  html += '<div class="divider"></div>';
+  html += '<div class="flex-between"><span class="text-muted text-mono">上次重置: ' + (resetTime || '-') + ' · 有效 ' + validCount + '/' + keys.length + '</span>';
+  html += '<button class="btn btn-sm" onclick="resetAllKeys(' + SQ + clientId + SQ + ')"' + (keys.length === 0 ? ' disabled' : '') + '>一键重置所有 Key</button></div>';
   html += '</div>';
   return html;
 }
 
-async function toggleKey(clientId, index) {
+// ===== Shared Modal Helper =====
+function showModal(id, title, bodyHtml, focusId) {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = id;
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = '<div class="modal">' +
+    '<div class="modal-title">' + title + '</div>' +
+    bodyHtml + '</div>';
+  document.body.appendChild(overlay);
+  if (focusId) document.getElementById(focusId).focus();
+  return overlay;
+}
+
+// ===== Shared Env Patch Helper =====
+async function patchEnvs(clientId, envs) {
+  await api('/api/clients/' + encodeURIComponent(clientId) + '/config', {
+    method: 'PATCH',
+    body: JSON.stringify({ envs: envs }),
+  });
+  await loadClientConfig(clientId);
+  renderClientDetail(clientId);
+}
+
+// ===== Shared Global Config Persist Helper =====
+async function persistGlobalConfig() {
+  const gc = state.globalConfig;
+  await api('/api/global/config', {
+    method: 'PUT',
+    body: JSON.stringify({ port: gc.port, host: gc.host, remoteConsoles: gc.remoteConsoles || [] }),
+  });
+  state.globalConfig = gc;
+  renderGlobalSection();
+}
+
+function showApiKeyModal(clientId, index) {
+  var isEdit = index >= 0;
+  var key = isEdit ? (state.apiKeys[index] || {}) : {};
+
+  var bodyHtml = '<div class="form-row">' +
+    '<div class="form-group" style="flex:2;"><label>API Key' + (isEdit ? ' (留空保持不变)' : ' *') + '</label><input type="text" id="ak-apiKey" value="' + escHtml(isEdit ? key.apiKey || '' : '') + '" placeholder="sk-ant-... 或 $ENV:VAR_NAME"></div>' +
+    '<div class="form-group" style="flex:1;"><label>状态</label><select id="ak-isValid"><option value="true"' + (!isEdit || key.isValid ? ' selected' : '') + '>有效</option><option value="false"' + (isEdit && !key.isValid ? ' selected' : '') + '>无效</option></select></div>' +
+    '</div>' +
+    '<div class="form-group"><label>Base URL *</label><input type="text" id="ak-baseUrl" value="' + escHtml(key.baseUrl || 'https://api.anthropic.com') + '" placeholder="https://api.anthropic.com"></div>' +
+    '<div class="form-row">' +
+    '<div class="form-group"><label>模型 *</label><input type="text" id="ak-model" value="' + escHtml(key.model || 'claude-3-opus-latest') + '"></div>' +
+    '<div class="form-group"><label>小模型 (可选)</label><input type="text" id="ak-smallModel" value="' + escHtml(key.smallModel || '') + '" placeholder="claude-haiku-4-5-20251001"></div>' +
+    '</div>' +
+    '<div class="form-group"><label>备注</label><input type="text" id="ak-memo" value="' + escHtml(key.memo || '') + '" placeholder="标签/说明"></div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="document.getElementById(' + SQ + 'apikey-modal' + SQ + ').remove()">取消</button>' +
+    '<button class="btn btn-primary" onclick="doSaveApiKey(' + SQ + clientId + SQ + ',' + index + ')">' + (isEdit ? '保存' : '添加') + '</button>' +
+    '</div>';
+  showModal('apikey-modal', isEdit ? '编辑 API Key' : '添加 API Key', bodyHtml, 'ak-apiKey');
+}
+
+async function doSaveApiKey(clientId, index) {
+  var isEdit = index >= 0;
+  var apiKey = document.getElementById('ak-apiKey').value.trim();
+  var baseUrl = document.getElementById('ak-baseUrl').value.trim();
+  var model = document.getElementById('ak-model').value.trim();
+  if (!isEdit && !apiKey) { toast('请填写 API Key', 'error'); return; }
+  if (!baseUrl) { toast('请填写 Base URL', 'error'); return; }
+  if (!model) { toast('请填写模型', 'error'); return; }
+  var smallModel = document.getElementById('ak-smallModel').value.trim() || undefined;
+  var memo = document.getElementById('ak-memo').value.trim() || undefined;
+  var isValid = document.getElementById('ak-isValid').value === 'true';
+
+  var payload = { baseUrl: baseUrl, model: model, smallModel: smallModel, memo: memo, isValid: isValid };
+  // 编辑时：apiKey 为掩码值则跳过，避免把掩码存回配置
+  if (isEdit) {
+    var origKey = (state.apiKeys[index] || {}).apiKey || '';
+    if (apiKey && apiKey !== origKey && apiKey.indexOf('****') === -1) {
+      payload.apiKey = apiKey;
+    }
+  } else {
+    payload.apiKey = apiKey;
+  }
   try {
-    await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index + '/cfuseTokenValid', { method: 'PATCH', body: JSON.stringify({}) });
-    toast('社区版不支持 cfuse 切换', 'info');
+    if (isEdit) {
+      await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index, { method: 'PUT', body: JSON.stringify(payload) });
+      toast('已更新', 'success');
+    } else {
+      await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys', { method: 'POST', body: JSON.stringify(payload) });
+      toast('已添加', 'success');
+    }
+    document.getElementById('apikey-modal').remove();
+    await loadClientApiKeys(clientId);
+    var c = state.selectedClient; if (c) renderClientDetail(c);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function toggleApiKey(clientId, index) {
+  var key = state.apiKeys[index];
+  if (!key) return;
+  try {
+    await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index, {
+      method: 'PUT', body: JSON.stringify({ isValid: !key.isValid })
+    });
+    await loadClientApiKeys(clientId);
+    var c = state.selectedClient; if (c) renderClientDetail(c);
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -2082,50 +2801,8 @@ async function resetAllKeys(clientId) {
   try {
     await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/reset', { method: 'POST' });
     toast('已重置', 'success');
-    loadClientApiKeys(clientId).then(() => { const c = state.selectedClient; if (c) renderClientDetail(c); });
-  } catch (e) { toast(e.message, 'error'); }
-}
-
-function showAddKeyModal() {
-  // 简化处理：弹出 prompt
-  const baseUrl = prompt('Base URL:', 'https://api.anthropic.com');
-  if (!baseUrl) return;
-  const apiKey = prompt('API Key:', '');
-  if (!apiKey) return;
-  const model = prompt('Model:', 'claude-3-opus-latest');
-  const memo = prompt('备注:', '') || '';
-  addKey(state.selectedClient, { baseUrl, apiKey, model, memo });
-}
-
-async function addKey(clientId, data) {
-  try {
-    await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys', { method: 'POST', body: JSON.stringify(data) });
-    toast('API Key 已添加', 'success');
-    loadClientApiKeys(clientId).then(() => { const c = state.selectedClient; if (c) renderClientDetail(c); });
-  } catch (e) { toast(e.message, 'error'); }
-}
-
-async function editKey(clientId, index) {
-  const key = state.apiKeys[index];
-  if (!key) return;
-  // 显示掩码后的 key，允许用户选择是否修改
-  const newApiKey = prompt('API Key (留空保持不变):', key.apiKey);
-  if (newApiKey === null) return;
-  const baseUrl = prompt('Base URL:', key.baseUrl);
-  if (baseUrl === null) return;
-  const model = prompt('Model:', key.model);
-  if (model === null) return;
-  const memo = prompt('备注:', key.memo || '');
-  if (memo === null) return;
-  const payload = { baseUrl, model, memo };
-  // 仅当用户输入了新 key 值时才更新
-  if (newApiKey !== key.apiKey && newApiKey.trim() !== '') {
-    payload.apiKey = newApiKey.trim();
-  }
-  try {
-    await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index, { method: 'PUT', body: JSON.stringify(payload) });
-    toast('已更新', 'success');
-    loadClientApiKeys(clientId).then(() => { const c = state.selectedClient; if (c) renderClientDetail(c); });
+    await loadClientApiKeys(clientId);
+    var c = state.selectedClient; if (c) renderClientDetail(c);
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -2134,7 +2811,25 @@ async function deleteKey(clientId, index) {
   try {
     await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + index, { method: 'DELETE' });
     toast('已删除', 'success');
-    loadClientApiKeys(clientId).then(() => { const c = state.selectedClient; if (c) renderClientDetail(c); });
+    await loadClientApiKeys(clientId);
+    var c = state.selectedClient; if (c) renderClientDetail(c);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteAllInvalidKeys(clientId) {
+  var invalidIndices = [];
+  for (var i = state.apiKeys.length - 1; i >= 0; i--) {
+    if (!state.apiKeys[i].isValid) invalidIndices.push(i);
+  }
+  if (invalidIndices.length === 0) { toast('没有无效的 Key', 'info'); return; }
+  if (!confirm('确定删除所有 ' + invalidIndices.length + ' 个无效 Key？')) return;
+  try {
+    for (var j = 0; j < invalidIndices.length; j++) {
+      await api('/api/clients/' + encodeURIComponent(clientId) + '/apikeys/' + invalidIndices[j], { method: 'DELETE' });
+    }
+    toast('已删除 ' + invalidIndices.length + ' 个无效 Key', 'success');
+    await loadClientApiKeys(clientId);
+    var c = state.selectedClient; if (c) renderClientDetail(c);
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -2180,16 +2875,6 @@ async function saveClientConfig(clientId) {
   v = document.getElementById('cfg-dingSecret').value.trim();
   if (v && v.indexOf('****') !== 0) patches['dingSecret'] = v;
 
-  // Envs
-  var envs = {};
-  var envRows = document.querySelectorAll('#envs-editor .form-row');
-  for (var i = 0; i < envRows.length; i++) {
-    var ek = envRows[i].querySelector('.env-key-input').value.trim();
-    var ev = envRows[i].querySelector('.env-val-input').value;
-    if (ek) envs[ek] = ev;
-  }
-  patches['envs'] = envs;
-
   // a2aCfg
   var a2aCfg = {};
   var hubUrl = document.getElementById('a2a-hubUrl').value.trim();
@@ -2211,17 +2896,6 @@ async function saveClientConfig(clientId) {
     await loadClientConfig(clientId);
     renderClientDetail(clientId);
   } catch (e) { toast(e.message, 'error'); }
-}
-
-function addEnvRow() {
-  var editor = document.getElementById('envs-editor');
-  var row = document.createElement('div');
-  row.className = 'form-row';
-  row.style.marginBottom = '4px';
-  row.innerHTML = '<input type="text" class="env-key-input" placeholder="KEY" style="flex:1;">' +
-    '<input type="text" class="env-val-input" placeholder="value" style="flex:2;">' +
-    '<button class="btn btn-sm btn-danger" onclick="this.parentElement.remove()">×</button>';
-  editor.appendChild(row);
 }
 
 // ===== Conversation Modal =====
@@ -2260,6 +2934,7 @@ function showConversationModal(conv, clientId, title) {
     '<div class="form-group"><label>白名单 (逗号分隔)</label><input type="text" id="cm-whiteList" value="' + escHtml((c.whiteUserList || []).join(',')) + '"></div>' +
     '<div class="form-group"><label>关联会话ID</label><input type="text" id="cm-linkConv" value="' + escHtml(c.linkConversationId || '') + '"></div>' +
     '</div>' +
+    '<div class="form-group"><label>自定义工作目录 (绝对路径)</label><input type="text" id="cm-workDir" value="' + escHtml(c.workDir || '') + '" placeholder="留空使用默认目录"></div>' +
     '<div class="form-row">' +
     '<div class="form-group"><label>Agent</label><input type="text" id="cm-agent" value="' + escHtml(c.agent || '') + '"></div>' +
     '<div class="form-group"><label>前置命令 (preBash)</label><input type="text" id="cm-preBash" value="' + escHtml(c.preBash || '') + '"></div>' +
@@ -2301,6 +2976,7 @@ async function doSaveConversation(clientId, isEdit) {
     model: document.getElementById('cm-model').value.trim() || undefined,
     whiteUserList: document.getElementById('cm-whiteList').value.trim(),
     linkConversationId: document.getElementById('cm-linkConv').value.trim() || undefined,
+    workDir: document.getElementById('cm-workDir').value.trim() || undefined,
     agent: document.getElementById('cm-agent').value.trim() || undefined,
     preBash: document.getElementById('cm-preBash').value.trim() || undefined,
     permissionMode: document.getElementById('cm-permMode').value || undefined,
@@ -2410,65 +3086,95 @@ function renderEnvTab(clientId) {
   }
   scanEnvRefs(cfg);
 
-  // 常用 Claude Code 环境变量
-  const commonEnvVars = [
-    'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL',
-    'CLAUDE_SMALL_FAST_MODEL', 'CLAUDE_CODE_ENABLE_BACKGROUND_TASKS',
-    'CLAUDE_CODE_HOME', 'PATH',
-  ];
-  const allVars = new Set([...commonEnvVars, ...envRefs]);
+  const existingEnvs = cfg.envs || {};
+  const envKeys = Object.keys(existingEnvs).sort();
 
   let html = '<div class="card">' +
-    '<div class="flex-between"><div class="card-title" style="margin-bottom:0">环境变量</div>' +
-    '<button class="btn btn-primary btn-sm" onclick="saveEnvConfig(' + SQ + clientId + SQ + ')">💾 保存配置中的环境变量</button></div>' +
+    '<div class="flex-between"><div class="card-title" style="margin-bottom:0">环境变量 (' + envKeys.length + ')</div>' +
+    '<button class="btn btn-primary btn-sm" onclick="showAddEnvModal(' + SQ + clientId + SQ + ')">+ 添加</button></div>' +
     '<div class="divider"></div>' +
-    '<p class="text-muted mb-8" style="font-size:13px;">配置中使用 $ENV:VAR 语法引用环境变量，下方可设置值（仅显示引用和已配置的）</p>';
+    '<p class="text-muted mb-8" style="font-size:13px;">配置中使用 $ENV:VAR 语法引用环境变量。🔗 表示被引用</p>';
 
-  html += '<div id="env-tab-vars">';
-  const existingEnvs = cfg.envs || {};
-  for (const v of [...allVars].sort()) {
-    const currentVal = existingEnvs[v] || '';
-    const isUsed = envRefs.has(v);
-    const hasConfig = existingEnvs.hasOwnProperty(v);
-    html += '<div class="form-row" style="margin-bottom:6px;align-items:center;">' +
-      '<div style="flex:1;min-width:200px;"><span class="text-mono">' + (isUsed ? '🔗 ' : '') + escHtml(v) + '</span>' +
-      '<br><span class="text-muted" style="font-size:11px;">' + (hasConfig ? '✅ 已配置' : (isUsed ? '⚠️ 引用但未配置' : '💡 常见变量')) + '</span></div>' +
-      '<input type="text" class="env-tab-val" data-key="' + escHtml(v) + '" value="' + escHtml(currentVal) + '" placeholder="设置值" style="flex:2;">' +
-      '</div>';
+  if (envKeys.length === 0) {
+    html += '<div class="empty-state" style="padding:24px 0;"><div class="icon">🌿</div><p>未配置环境变量</p></div>';
+  } else {
+    html += '<table><thead><tr><th>变量名</th><th>状态</th><th>值</th><th>操作</th></tr></thead><tbody>';
+    for (const key of envKeys) {
+      const val = existingEnvs[key];
+      const isUsed = envRefs.has(key);
+      html += '<tr>';
+      html += '<td class="text-mono">' + escHtml(key) + '</td>';
+      html += '<td>' + (isUsed ? '<span class="status-badge status-online">被引用</span>' : '<span class="text-muted">未引用</span>') + '</td>';
+      html += '<td class="text-mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHtml(val) + '">' + escHtml(val) + '</td>';
+      html += '<td style="white-space:nowrap;">';
+      html += '<button class="btn btn-sm" onclick="showEditEnvModal(' + SQ + clientId + SQ + ',' + SQ + key + SQ + ')">编辑</button> ';
+      html += '<button class="btn btn-sm btn-danger" onclick="deleteEnv(' + SQ + clientId + SQ + ',' + SQ + key + SQ + ')">删除</button>';
+      html += '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
   }
-  html += '</div></div>';
+  html += '</div>';
   return html;
 }
 
-async function saveEnvConfig(clientId) {
-  const cfg = state.clientConfig;
-  if (!cfg) return;
-  const patches = {};
+function showAddEnvModal(clientId) {
+  var datalistHtml = '<datalist id="env-key-suggestions">';
+  for (var i = 0; i < COMMON_ENV_VARS.length; i++) {
+    datalistHtml += '<option value="' + COMMON_ENV_VARS[i].key + '" label="' + COMMON_ENV_VARS[i].desc + '"></option>';
+  }
+  datalistHtml += '</datalist>';
 
-  // 收集 env tab 中的 key-value
-  const envs = {};
-  const inputs = document.querySelectorAll('.env-tab-val');
-  for (let i = 0; i < inputs.length; i++) {
-    const key = inputs[i].getAttribute('data-key');
-    const val = inputs[i].value;
-    if (key && val) envs[key] = val;
-  }
-  // 合并现有的 envs
-  if (cfg.envs) {
-    Object.assign(envs, cfg.envs);
-  }
-  if (Object.keys(envs).length > 0) {
-    patches['envs'] = envs;
-  }
+  var bodyHtml = '<div class="form-group"><label>变量名 *</label><input type="text" id="env-key" list="env-key-suggestions" placeholder="输入或选择常用变量">' + datalistHtml + '</div>' +
+    '<div class="form-group"><label>值 *</label><input type="text" id="env-val" placeholder="变量值"></div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="document.getElementById(' + SQ + 'env-modal' + SQ + ').remove()">取消</button>' +
+    '<button class="btn btn-primary" onclick="doSaveEnv(' + SQ + clientId + SQ + ', null)">添加</button>' +
+    '</div>';
+  showModal('env-modal', '添加环境变量', bodyHtml, 'env-key');
+}
+
+function showEditEnvModal(clientId, key) {
+  var cfg = state.clientConfig;
+  if (!cfg || !cfg.envs || !cfg.envs.hasOwnProperty(key)) return;
+
+  var bodyHtml = '<div class="form-group"><label>变量名</label><input type="text" id="env-key" value="' + escHtml(key) + '" readonly></div>' +
+    '<div class="form-group"><label>值 *</label><input type="text" id="env-val" value="' + escHtml(cfg.envs[key]) + '"></div>' +
+    '<div class="modal-actions">' +
+    '<button class="btn" onclick="document.getElementById(' + SQ + 'env-modal' + SQ + ').remove()">取消</button>' +
+    '<button class="btn btn-primary" onclick="doSaveEnv(' + SQ + clientId + SQ + ',' + SQ + key + SQ + ')">保存</button>' +
+    '</div>';
+  showModal('env-modal', '编辑环境变量', bodyHtml, 'env-val');
+}
+
+async function doSaveEnv(clientId, origKey) {
+  var isEdit = origKey !== null;
+  var key = document.getElementById('env-key').value.trim();
+  var val = document.getElementById('env-val').value;
+  if (!key) { toast('请填写变量名', 'error'); return; }
+
+  var cfg = state.clientConfig;
+  var envs = Object.assign({}, cfg.envs || {});
+
+  if (!isEdit && envs.hasOwnProperty(key)) { toast('变量名已存在', 'error'); return; }
+  envs[key] = val;
 
   try {
-    await api('/api/clients/' + encodeURIComponent(clientId) + '/config', {
-      method: 'PATCH',
-      body: JSON.stringify(patches),
-    });
-    toast('环境变量已保存', 'success');
-    await loadClientConfig(clientId);
-    renderClientDetail(clientId);
+    await patchEnvs(clientId, envs);
+    toast(isEdit ? '已更新' : '已添加', 'success');
+    document.getElementById('env-modal').remove();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function deleteEnv(clientId, key) {
+  if (!confirm('确定删除环境变量 ' + key + '？')) return;
+  var cfg = state.clientConfig;
+  var envs = Object.assign({}, cfg.envs || {});
+  delete envs[key];
+
+  try {
+    await patchEnvs(clientId, envs);
+    toast('已删除', 'success');
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -2518,6 +3224,26 @@ function renderGlobalSection() {
   section.style.display = 'block';
 
   const gc = state.globalConfig;
+  const remoteConsoles = gc.remoteConsoles || [];
+
+  let remoteHtml = '';
+  if (remoteConsoles.length === 0) {
+    remoteHtml = '<div class="text-muted" style="padding:16px 0;">暂无远程 Console</div>';
+  } else {
+    remoteHtml = '<table><thead><tr><th>地址</th><th>Client IDs</th><th>操作</th></tr></thead><tbody>';
+    for (let i = 0; i < remoteConsoles.length; i++) {
+      const rc = remoteConsoles[i];
+      remoteHtml += '<tr>' +
+        '<td class="text-mono">' + escHtml(rc.url) + '</td>' +
+        '<td class="text-mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">' + escHtml(rc.clientIds.join(', ')) + '</td>' +
+        '<td style="white-space:nowrap;">' +
+        '<button class="btn btn-sm" onclick="editRemoteConsole(' + i + ')">编辑</button> ' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteRemoteConsole(' + i + ')">删除</button>' +
+        '</td></tr>';
+    }
+    remoteHtml += '</tbody></table>';
+  }
+
   section.innerHTML = \`
     <div class="flex-between mb-8">
       <button class="btn btn-sm" onclick="showClientList()">← 返回</button>
@@ -2532,12 +3258,97 @@ function renderGlobalSection() {
       <div class="form-actions"><button class="btn btn-primary" onclick="saveGlobalConfig()">💾 保存</button></div>
     </div>
     <div class="card">
+      <div class="flex-between">
+        <div class="card-title" style="margin-bottom:0">远程 Console 管理</div>
+        <button class="btn btn-sm btn-primary" onclick="showAddRemoteConsole()">+ 添加</button>
+      </div>
+      <div class="divider"></div>
+      \${remoteHtml}
+    </div>
+    <div class="card">
       <div class="card-title">settings-tpl.json</div>
       <textarea id="settings-tpl-editor" rows="12" style="width:100%;">\${escHtml(state.settingsTpl)}</textarea>
       <div class="form-actions"><button class="btn btn-sm" onclick="loadSettingsTpl()">🔄 刷新</button><button class="btn btn-primary" onclick="saveSettingsTpl()">💾 保存</button></div>
     </div>
   \`;
   loadSettingsTpl();
+}
+
+function showAddRemoteConsole() {
+  showRemoteConsoleModal(null, -1);
+}
+
+function editRemoteConsole(index: number) {
+  const rc = (state.globalConfig.remoteConsoles || [])[index];
+  showRemoteConsoleModal(rc, index);
+}
+
+function showRemoteConsoleModal(rc: any, index: number) {
+  const isEdit = index >= 0;
+  const bodyHtml = \`
+      <div class="form-group">
+        <label>Console 地址 *</label>
+        <input type="text" id="rc-url" value="\${isEdit ? escHtml(rc.url) : 'http://'}" placeholder="http://192.168.1.100:8080">
+      </div>
+      <div class="form-group">
+        <label>API Token *</label>
+        <input type="text" id="rc-token" value="\${isEdit ? escHtml(rc.token) : ''}" placeholder="Bearer Token">
+      </div>
+      <div class="form-group">
+        <label>Client IDs (逗号分隔) *</label>
+        <input type="text" id="rc-clientIds" value="\${isEdit ? escHtml(rc.clientIds.join(', ')) : ''}" placeholder="client-a, client-b">
+      </div>
+      <div class="modal-actions">
+        <button class="btn" onclick="document.getElementById('remote-console-modal').remove()">取消</button>
+        <button class="btn btn-primary" onclick="saveRemoteConsole(\${index})">\${isEdit ? '保存' : '添加'}</button>
+      </div>
+  \`;
+  showModal('remote-console-modal', isEdit ? '编辑远程 Console' : '添加远程 Console', bodyHtml, 'rc-url');
+}
+
+async function saveRemoteConsole(index: number) {
+  const url = document.getElementById('rc-url').value.trim();
+  const token = document.getElementById('rc-token').value.trim();
+  const clientIdsStr = document.getElementById('rc-clientIds').value.trim();
+
+  if (!url || !token || !clientIdsStr) {
+    toast('请填写所有必填字段', 'error');
+    return;
+  }
+
+  const clientIds = clientIdsStr.split(',').map(s => s.trim()).filter(Boolean);
+  const remoteConsole = { url, token, clientIds };
+
+  try {
+    const gc = state.globalConfig;
+    if (!gc.remoteConsoles) gc.remoteConsoles = [];
+
+    if (index >= 0) {
+      gc.remoteConsoles[index] = remoteConsole;
+    } else {
+      gc.remoteConsoles.push(remoteConsole);
+    }
+
+    await persistGlobalConfig();
+    document.getElementById('remote-console-modal').remove();
+    toast(index >= 0 ? '远程 Console 已更新' : '远程 Console 已添加', 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function deleteRemoteConsole(index: number) {
+  if (!confirm('确定删除此远程 Console？')) return;
+
+  try {
+    const gc = state.globalConfig;
+    gc.remoteConsoles.splice(index, 1);
+
+    await persistGlobalConfig();
+    toast('远程 Console 已删除', 'success');
+  } catch (e) {
+    toast(e.message, 'error');
+  }
 }
 
 function showClientList() {
@@ -2550,8 +3361,11 @@ function showClientList() {
 async function saveGlobalConfig() {
   const port = parseInt(document.getElementById('gc-port').value, 10);
   const host = document.getElementById('gc-host').value.trim();
+  const gc = state.globalConfig;
+  gc.port = port;
+  gc.host = host;
   try {
-    await api('/api/global/config', { method: 'PUT', body: JSON.stringify({ port, host }) });
+    await persistGlobalConfig();
     toast('全局配置已保存', 'success');
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -2609,7 +3423,7 @@ function renderStatusSection() {
         <div class="status-item"><div class="value">\${escHtml(s.nodeVersion)}</div><div class="label">Node.js 版本</div></div>
         <div class="status-item"><div class="value">\${escHtml(s.platform)}</div><div class="label">平台</div></div>
         <div class="status-item"><div class="value">\${s.clients}</div><div class="label">客户端总数</div></div>
-        <div class="status-item"><div class="value" style="color:var(--green);">\${s.onlineClients}</div><div class="label">在线客户端</div></div>
+        <div class="status-item"><div class="value" style="color:var(--accent);">\${s.onlineClients}</div><div class="label">在线客户端</div></div>
         <div class="status-item"><div class="value">\${Math.round(s.uptime)}s</div><div class="label">运行时间</div></div>
       </div>
     </div>

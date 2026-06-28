@@ -647,7 +647,7 @@ export async function sendGroupImageMessage(
         robotCode: self.clientId,
         openConversationId: conversationId,
         msgKey: 'sampleImageMsg',
-        msgParam: JSON.stringify({ mediaId }),
+        msgParam: JSON.stringify({ photoURL: mediaId }),
       },
       contentType: 'json',
       headers: { 'x-acs-dingtalk-access-token': accessToken },

@@ -1,6 +1,28 @@
 # Changelog
 
-## 1.0.1 (2026-06-13)
+## 1.2.1 (2026-06-28)
+
+### 新功能
+
+#### Console 跨机器管理
+- 新增远程 Console 配置（`remoteConsoles`），支持跨机器管理 clients
+- 全局配置页面新增「远程 Console 管理」，支持添加/编辑/删除
+- 客户端列表显示远程标识（来源机器地址）
+- 配置查看/更新支持远程代理（`GET/PATCH /api/clients/:id/config`）
+- pm2 状态查看/重启支持远程代理（`GET/POST /api/clients/:id/pm2`）
+
+### 修复
+- `/destroy` 命令不再删除 `linkConversationId` 共享工作目录
+- API Key 池无可用 Key 时回退到本地 Claude 配置（不再阻断流程）
+- `sendGroupImageMessage` 的 `msgParam` 格式修复（`{ photoURL }` 代替 `{ mediaId }`）
+- Console 环境变量 tab 与配置 tab 不再重叠（移除配置 tab 的 envs-editor）
+- Console 环境变量添加支持常用变量自动提示（`CLAUDE_CODE_*` 等）
+
+### 优化
+- `/reboot` 命令不再发送"正在重启中"消息，重启完成后自动发送完成通知
+- Console 前端 Industrial Terminal 美学重构（IBM Plex Mono + JetBrains Mono）
+
+## 1.2.0 (2026-06-13)
 
 ### 优化
 - 所有 `/xxx` 命令回复不再 @ 发送人，减少钉钉群内无关提醒

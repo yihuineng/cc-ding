@@ -879,15 +879,16 @@ export async function executeClaudeQuery(
     // 使用 API Key 模式
     currentSetting = pickValidApiKey(self);
     if (!currentSetting) {
-      // 无可用配额
+      // 无可用 API Key，回退到未配置 API Key 的默认逻辑（使用本地 Claude 配置）
+      console.log(`[${timestamp()}] API Key 池无可用 Key，回退到默认模式（本地 Claude 配置）`);
+      // 发送通知（不阻断流程）
       const atUserId = senderStaffId || session.startStaffId;
       await sendDingMessage(self, {
         conversationId: getReplyConversationId(session),
         sessionWebhook: getReplyWebhook(session),
         atUserId,
-        content: '⚠️ 当前无可用配额（无可用 API Key），请明天再试或联系管理员',
+        content: '⚠️ API Key 池无可用配额，本次使用本地 Claude 配置运行',
       });
-      return;
     }
   }
 

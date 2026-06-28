@@ -34,7 +34,7 @@ import {
   getConversationDir, getSessionsDir, getTasksDir,
   getSessionDir, getSessionId, formatSessionInfo, readSessionLogTail,
   findHistorySession, findLatestSession, updateSessionFile, appendSessionLog,
-  getActiveSessionsFile, saveActiveSession, loadActiveSessions,
+  getActiveSessionsFile, saveActiveSession, loadActiveSessions, IRestoredSession,
   endSession, switchToSession, startNewSession, handleSessionMessage,
   findActiveSession, cleanCache, destroyConversation,
   ensureAgent, sendAckConfirmation, recallAckReaction,
@@ -278,7 +278,7 @@ export class DingClaude {
   appendSessionLog = appendSessionLog;
   getActiveSessionsFile = (conversationId: string) => getActiveSessionsFile(this, conversationId);
   saveActiveSession = (conversationId: string) => saveActiveSession(this, conversationId);
-  loadActiveSessions = () => loadActiveSessions(this);
+  loadActiveSessions = () => loadActiveSessions(this) as IRestoredSession[];
 
   // session - lifecycle
   endSession = (conversationId: string, sessionWebhook: string) => endSession(this, conversationId, sessionWebhook);
@@ -1267,7 +1267,7 @@ export class DingClaude {
           : conversationConfig;
 
         // 如果传入了任何字段，执行更新
-        const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
+        const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId || cfgOpts.workDir ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
         cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
         cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model || cfgOpts.agent || cfgOpts.enableMsgToUser !== undefined || cfgOpts.ensureAt !== undefined || cfgOpts.receiveReplyMode !== undefined || cfgOpts.ackReaction !== undefined ||
@@ -1279,6 +1279,7 @@ export class DingClaude {
           if (conversationType && !isTargetOther) existingConv.conversationType = conversationType;
           if (cfgOpts.dingToken) existingConv.dingToken = cfgOpts.dingToken;
           if (cfgOpts.linkConversationId) existingConv.linkConversationId = cfgOpts.linkConversationId;
+          if (cfgOpts.workDir) existingConv.workDir = cfgOpts.workDir;
           if (cfgOpts.atSender !== undefined) existingConv.atSender = cfgOpts.atSender;
           if (cfgOpts.receiveReply !== undefined) existingConv.receiveReply = cfgOpts.receiveReply;
           if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
@@ -1321,6 +1322,7 @@ export class DingClaude {
           };
           if (cfgOpts.dingToken) newConv.dingToken = cfgOpts.dingToken;
           if (cfgOpts.linkConversationId) newConv.linkConversationId = cfgOpts.linkConversationId;
+          if (cfgOpts.workDir) newConv.workDir = cfgOpts.workDir;
           if (cfgOpts.atSender !== undefined) newConv.atSender = cfgOpts.atSender;
           if (cfgOpts.receiveReply !== undefined) newConv.receiveReply = cfgOpts.receiveReply;
           if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
@@ -1544,7 +1546,7 @@ export class DingClaude {
           }
 
           const clients = JSON.parse(pm2List)
-            .filter((p: any) => /^cc-ding-[a-zA-Z0-9]+$/.test(p.name))
+            .filter((p: any) => /^cc-ding-[a-zA-Z0-9]+$/.test(p.name) && p.name !== 'cc-ding-console')
             .map((p: any) => p.name);
 
           if (clients.length === 0) {
@@ -1557,14 +1559,8 @@ export class DingClaude {
           }
 
           const installCmd = rebootCmd.update ? `npm install -g cc-ding${tag}` : null;
-          const clientNames = clients.join(', ');
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: installCmd
-              ? `✅ 更新并重启 ${clients.length} 个 client，正在执行 ${installCmd}...`
-              : `✅ 重启 ${clients.length} 个 client：${clientNames}`,
-            msgType: 'markdown',
-          });
+
+          // 不发送"正在重启"消息，重启完成后由 notifyPendingReboot() 发送完成通知
 
           const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
           fs.writeFileSync(rebootFlagFile, JSON.stringify({
@@ -1595,13 +1591,7 @@ export class DingClaude {
             ? `npm install -g cc-ding${tag}`
             : null;
 
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: cmd
-              ? `✅ 更新并重启，正在执行 ${cmd}...`
-              : '✅ cc-ding 正在重启中...',
-            msgType: 'markdown',
-          });
+          // 不发送"正在重启"消息，重启完成后由 notifyPendingReboot() 发送完成通知
 
           const rebootFlagFile = path.join(this.getClientDir(), '.reboot_pending');
           fs.writeFileSync(rebootFlagFile, JSON.stringify({
@@ -1722,8 +1712,17 @@ export class DingClaude {
         }, 60_000);
         this.pendingDestroyConfirmations.set(targetConvId, timer);
 
+        const willDeleteDir = !conv.workDir && !conv.linkConversationId;
+        const workDirMsg = conv.workDir
+          ? '- 工作目录(用户自定义路径，不删除)'
+          : conv.linkConversationId
+            ? '- 工作目录(共享目录，关联群仍在使用，不删除)'
+            : '- 会话工作目录及所有会话记录';
+        const destroyTitle = willDeleteDir
+          ? '⚠️ 即将注销群机器人并删除工作目录！此操作不可恢复。'
+          : '⚠️ 即将注销群机器人并清理数据！此操作不可恢复。';
         const dataScope: string[] = [
-          '- 会话工作目录及所有会话记录',
+          workDirMsg,
           '- 定时任务配置 (cron.json)',
           '- Todo 数据 (todo.json)',
           '- 快捷菜单数据 (menu.json)',
@@ -1734,7 +1733,7 @@ export class DingClaude {
         await this.sendDingMessage({
           conversationId, sessionWebhook,
           content: [
-            '⚠️ 即将注销群机器人并删除工作目录！此操作不可恢复。',
+            destroyTitle,
             '',
             '数据清理范围:',
             ...dataScope,
@@ -2994,6 +2993,28 @@ export class DingClaude {
   }
 
   /**
+   * 启动时通知用户：上次进程异常退出导致会话中断
+   */
+  private async notifyInterruptedSessions(restored: IRestoredSession[]): Promise<void> {
+    if (!restored.length) return;
+
+    await Promise.allSettled(restored.map(async (rs) => {
+      if (!rs.sessionWebhook || !rs.senderStaffId) return;
+      const atUserId = rs.senderStaffId.includes('-')
+        ? rs.senderStaffId
+        : (await queryDingUser(this, rs.senderStaffId))?.userid || rs.senderStaffId;
+      const queuedInfo = rs.hasQueuedMessages ? '，排队中的消息会继续处理' : '';
+      const content = `⚠️ 上次处理中时进程异常退出，您的会话在 ${rs.startTime} 被中断${queuedInfo}。\n如需继续，请直接发送新消息。`;
+      await sendDingMessage(this, {
+        conversationId: rs.conversationId,
+        sessionWebhook: rs.sessionWebhook,
+        content,
+        atUserId: atUserId !== rs.senderStaffId ? atUserId : undefined,
+      });
+    }));
+  }
+
+  /**
    * 启动时检查是否有重启后待通知的消息
    */
   private async notifyPendingReboot(): Promise<void> {
@@ -3313,7 +3334,11 @@ export class DingClaude {
       scheduleApiKeyCfgDailyReset(this);
     }
 
-    this.loadActiveSessions();
+    const restoredSessions = this.loadActiveSessions();
+    // 通知异常中断的会话用户（不阻塞启动）
+    this.notifyInterruptedSessions(restoredSessions).catch(err =>
+      console.error('通知中断会话失败', err),
+    );
 
     // 启动时注入一次群信息上下文到各群的 .claude/CLAUDE.md，后续仅在配置变更时才更新
     injectStartupContexts(this);

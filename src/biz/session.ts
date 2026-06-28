@@ -442,6 +442,9 @@ export function getConversationConfig(self: DingClaude, conversationId: string):
 // ==================== 路径工具 ====================
 
 export function getConversationDir(self: DingClaude, conversationId: string): string {
+  const convCfg = getConversationConfig(self, conversationId);
+  // 用户自定义工作目录优先
+  if (convCfg?.workDir) return convCfg.workDir;
   const hashedId = hashConversationId(self, conversationId);
   return path.join(getClientDir(self), hashedId);
 }
@@ -610,6 +613,7 @@ export function saveActiveSession(self: DingClaude, conversationId: string): voi
       session: activeSession.session,
       lastSenderStaffId: activeSession.lastSenderStaffId,
       conversationConfig: activeSession.conversationConfig,
+      messageQueue: activeSession.messageQueue?.length ? activeSession.messageQueue : undefined,
     };
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify(persistData, null, 2), 'utf-8');
@@ -619,7 +623,18 @@ export function saveActiveSession(self: DingClaude, conversationId: string): voi
   }
 }
 
-export function loadActiveSessions(self: DingClaude): void {
+/** 恢复的会话信息（用于异常中断通知） */
+export interface IRestoredSession {
+  conversationId: string;
+  sessionWebhook: string;
+  senderStaffId: string;
+  senderNick: string;
+  startTime: string;
+  hasQueuedMessages: boolean;
+}
+
+export function loadActiveSessions(self: DingClaude): IRestoredSession[] {
+  const restored: IRestoredSession[] = [];
   for (const conv of self.config.conversations) {
     const filePath = getActiveSessionsFile(self, conv.conversationId);
     if (!fs.existsSync(filePath)) continue;
@@ -658,14 +673,29 @@ export function loadActiveSessions(self: DingClaude): void {
         session,
         lastSenderStaffId: data.lastSenderStaffId || session.startStaffId,
         isProcessing: false,
-        messageQueue: [],
+        messageQueue: data.messageQueue || [],
         conversationConfig: data.conversationConfig,
       });
+      // 记录恢复的会话信息（用于异常中断通知）
+      restored.push({
+        conversationId: conv.conversationId,
+        sessionWebhook: data.session.sessionWebhook || '',
+        senderStaffId: data.lastSenderStaffId || session.startStaffId,
+        senderNick: session.startNickName || '',
+        startTime: session.startTimeStr,
+        hasQueuedMessages: !!(data.messageQueue?.length),
+      });
+      // 恢复后有排队消息，启动处理
+      if (data.messageQueue?.length) {
+        console.log(`恢复 ${data.messageQueue.length} 条排队消息: 群=${conv.conversationId}`);
+        setTimeout(() => processMessageQueue(self, conv.conversationId), 0);
+      }
       console.log(`恢复活跃会话: 群=${conv.conversationId}, 会话ID=${getSessionId(session)}`);
     } catch (err) {
       console.error(`加载活跃会话失败: ${filePath}`, err);
     }
   }
+  return restored;
 }
 
 // ==================== 会话生命周期 ====================
@@ -1044,6 +1074,8 @@ export async function handleSessionMessage(self: DingClaude, opts: {
       };
       if (!activeSession.messageQueue) activeSession.messageQueue = [];
       activeSession.messageQueue.push(queueEntry);
+      // 持久化队列
+      saveActiveSession(self, found!.key);
       // 更新排队水印
       if (msgCreateAt) userMessageWatermark.markQueued(conversationId, msgCreateAt);
       const queuePos = activeSession.messageQueue.length;
@@ -1353,18 +1385,23 @@ export async function destroyConversation(self: DingClaude, conversationId: stri
     steps.push({ label: '清理延时任务', ok: false, detail: err instanceof Error ? err.message : String(err) });
   }
 
-  // 6. 清理会话工作目录（关联群不删除关联目录）
+  // 6. 清理会话工作目录
   try {
-    const convDir = getConversationDir(self, conversationId);
-    if (fs.existsSync(convDir)) {
-      fs.rmSync(convDir, { recursive: true, force: true });
-      steps.push({ label: '删除工作目录', ok: true });
+    if (convCfg?.workDir) {
+      // 用户自定义工作目录，绝对路径，不删除
+      steps.push({ label: '工作目录', ok: true, detail: `保留 (workDir=${convCfg.workDir}, 用户自定义)` });
+    } else if (hasLinkConv) {
+      // 有 linkConversationId 时，getConversationDir 返回的是共享目录(md5(linkConversationId))，
+      // 其他关联群可能仍在使用，不删除
+      steps.push({ label: '工作目录', ok: true, detail: `保留 (linkConversationId=${convCfg!.linkConversationId}, 共享目录)` });
     } else {
-      steps.push({ label: '删除工作目录', ok: true, detail: '目录不存在' });
-    }
-    // 如果有 linkConversationId，不删除关联目录
-    if (hasLinkConv) {
-      steps.push({ label: '关联目录', ok: true, detail: `保留 (linkConversationId=${convCfg!.linkConversationId})` });
+      const convDir = getConversationDir(self, conversationId);
+      if (fs.existsSync(convDir)) {
+        fs.rmSync(convDir, { recursive: true, force: true });
+        steps.push({ label: '删除工作目录', ok: true });
+      } else {
+        steps.push({ label: '删除工作目录', ok: true, detail: '目录不存在' });
+      }
     }
   } catch (err) {
     steps.push({ label: '删除工作目录', ok: false, detail: err instanceof Error ? err.message : String(err) });
