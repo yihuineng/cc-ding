@@ -9,7 +9,9 @@ import { getHomeDir } from './session';
 import { isEnvRef } from './secrets';
 import { setCorsHeaders, readBody } from './a2a/http-utils';
 import type { IConfig, IClaudeSetting } from './types';
-import { execSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
 
 // ==================== 类型定义 ====================
 
@@ -606,8 +608,8 @@ async function handleGetClientPm2(req: http.IncomingMessage, res: http.ServerRes
   if (!requireAuth(req, res)) return;
 
   try {
-    const pm2List = execSync('pm2 jlist', { encoding: 'utf-8' });
-    const processes = JSON.parse(pm2List);
+    const { stdout } = await execFileAsync('pm2', [ 'jlist' ], { encoding: 'utf-8' });
+    const processes = JSON.parse(stdout);
     const processName = `cc-ding-${clientId}`;
     const proc = processes.find((p: any) => p.name === processName);
 
@@ -636,7 +638,7 @@ async function handleRestartClientPm2(req: http.IncomingMessage, res: http.Serve
   const processName = `cc-ding-${clientId}`;
 
   try {
-    execSync(`pm2 restart "${processName}"`, { timeout: 30000 });
+    await execFileAsync('pm2', [ 'restart', processName ], { timeout: 30000 });
     jsonResponse(res, 200, { message: `已重启 ${processName}` });
   } catch (err) {
     jsonError(res, 500, `重启失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -1130,7 +1132,7 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   const clientConfigMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/config(?:\/raw)?$/);
   const clientConfigRawMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/config\/raw$/);
   const clientConfigReloadMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/config\/reload$/);
-  const clientPm2Match = pathname.match(/^\/api\/clients\/([^\/]+)\/pm2(?:\/restart)?$/);
+  const clientPm2Match = pathname.match(/^\/api\/clients\/([^\/]+)\/pm2$/);
   const clientPm2RestartMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/pm2\/restart$/);
   const clientApiKeysMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys(?:\/(\d+))?(?:\/reset)?$/);
   const clientApiKeyIndexMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys\/(\d+)$/);
@@ -1225,7 +1227,7 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   }
 
   // GET /api/clients/:id/pm2
-  if (clientPm2Match && req.method === 'GET' && !clientPm2RestartMatch) {
+  if (clientPm2Match && req.method === 'GET') {
     const remoteConsole = getClientRemoteConsole(clientPm2Match[1]);
     if (remoteConsole) {
       const { status, data } = await proxyToRemoteConsole(remoteConsole, 'GET', `/api/clients/${clientPm2Match[1]}/pm2`);
@@ -1577,7 +1579,6 @@ function generateConsoleHtml(): string {
   --accent-glow: rgba(0, 255, 157, 0.15);
   --amber: #ffb454;
   --amber-dim: #cc9044;
-  --green: #00ff9d;
   --red: #ff4757;
   --red-dim: #cc3945;
   --yellow: #ffd93d;
@@ -1768,12 +1769,12 @@ textarea { font-family: var(--mono); font-size: 12px; resize: vertical; line-hei
 }
 .status-online {
   background: rgba(0, 255, 157, 0.1);
-  color: var(--green);
+  color: var(--accent);
   border: 1px solid rgba(0, 255, 157, 0.3);
 }
 .status-online::before {
-  background: var(--green);
-  box-shadow: 0 0 6px var(--green);
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
 }
 .status-offline {
   background: rgba(255, 71, 87, 0.1);
@@ -1993,7 +1994,7 @@ td { color: var(--text-secondary); }
 .divider { height: 1px; background: var(--border); margin: 20px 0; }
 .text-mono { font-family: var(--mono); font-size: 12px; }
 .text-muted { color: var(--text-secondary); }
-.text-success { color: var(--green); }
+.text-success { color: var(--accent); }
 .text-danger { color: var(--red); }
 .flex-between { display: flex; justify-content: space-between; align-items: center; }
 .gap-8 { gap: 8px; }
@@ -2691,17 +2692,46 @@ function renderKeysTab(clientId) {
   return html;
 }
 
+// ===== Shared Modal Helper =====
+function showModal(id, title, bodyHtml, focusId) {
+  var overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = id;
+  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = '<div class="modal">' +
+    '<div class="modal-title">' + title + '</div>' +
+    bodyHtml + '</div>';
+  document.body.appendChild(overlay);
+  if (focusId) document.getElementById(focusId).focus();
+  return overlay;
+}
+
+// ===== Shared Env Patch Helper =====
+async function patchEnvs(clientId, envs) {
+  await api('/api/clients/' + encodeURIComponent(clientId) + '/config', {
+    method: 'PATCH',
+    body: JSON.stringify({ envs: envs }),
+  });
+  await loadClientConfig(clientId);
+  renderClientDetail(clientId);
+}
+
+// ===== Shared Global Config Persist Helper =====
+async function persistGlobalConfig() {
+  const gc = state.globalConfig;
+  await api('/api/global/config', {
+    method: 'PUT',
+    body: JSON.stringify({ port: gc.port, host: gc.host, remoteConsoles: gc.remoteConsoles || [] }),
+  });
+  state.globalConfig = gc;
+  renderGlobalSection();
+}
+
 function showApiKeyModal(clientId, index) {
   var isEdit = index >= 0;
   var key = isEdit ? (state.apiKeys[index] || {}) : {};
-  var overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.id = 'apikey-modal';
-  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
 
-  overlay.innerHTML = '<div class="modal" style="max-width:680px;">' +
-    '<div class="modal-title">' + (isEdit ? '编辑 API Key' : '添加 API Key') + '</div>' +
-    '<div class="form-row">' +
+  var bodyHtml = '<div class="form-row">' +
     '<div class="form-group" style="flex:2;"><label>API Key' + (isEdit ? ' (留空保持不变)' : ' *') + '</label><input type="text" id="ak-apiKey" value="' + escHtml(isEdit ? key.apiKey || '' : '') + '" placeholder="sk-ant-... 或 $ENV:VAR_NAME"></div>' +
     '<div class="form-group" style="flex:1;"><label>状态</label><select id="ak-isValid"><option value="true"' + (!isEdit || key.isValid ? ' selected' : '') + '>有效</option><option value="false"' + (isEdit && !key.isValid ? ' selected' : '') + '>无效</option></select></div>' +
     '</div>' +
@@ -2714,9 +2744,8 @@ function showApiKeyModal(clientId, index) {
     '<div class="modal-actions">' +
     '<button class="btn" onclick="document.getElementById(' + SQ + 'apikey-modal' + SQ + ').remove()">取消</button>' +
     '<button class="btn btn-primary" onclick="doSaveApiKey(' + SQ + clientId + SQ + ',' + index + ')">' + (isEdit ? '保存' : '添加') + '</button>' +
-    '</div></div>';
-  document.body.appendChild(overlay);
-  document.getElementById('ak-apiKey').focus();
+    '</div>';
+  showModal('apikey-modal', isEdit ? '编辑 API Key' : '添加 API Key', bodyHtml, 'ak-apiKey');
 }
 
 async function doSaveApiKey(clientId, index) {
@@ -3090,50 +3119,32 @@ function renderEnvTab(clientId) {
 }
 
 function showAddEnvModal(clientId) {
-  var overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.id = 'env-modal';
-  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
-
-  // 构建 datalist 选项
   var datalistHtml = '<datalist id="env-key-suggestions">';
   for (var i = 0; i < COMMON_ENV_VARS.length; i++) {
     datalistHtml += '<option value="' + COMMON_ENV_VARS[i].key + '" label="' + COMMON_ENV_VARS[i].desc + '"></option>';
   }
   datalistHtml += '</datalist>';
 
-  overlay.innerHTML = '<div class="modal" style="max-width:500px;">' +
-    '<div class="modal-title">添加环境变量</div>' +
-    '<div class="form-group"><label>变量名 *</label><input type="text" id="env-key" list="env-key-suggestions" placeholder="输入或选择常用变量">' + datalistHtml + '</div>' +
+  var bodyHtml = '<div class="form-group"><label>变量名 *</label><input type="text" id="env-key" list="env-key-suggestions" placeholder="输入或选择常用变量">' + datalistHtml + '</div>' +
     '<div class="form-group"><label>值 *</label><input type="text" id="env-val" placeholder="变量值"></div>' +
     '<div class="modal-actions">' +
     '<button class="btn" onclick="document.getElementById(' + SQ + 'env-modal' + SQ + ').remove()">取消</button>' +
     '<button class="btn btn-primary" onclick="doSaveEnv(' + SQ + clientId + SQ + ', null)">添加</button>' +
-    '</div></div>';
-  document.body.appendChild(overlay);
-  document.getElementById('env-key').focus();
+    '</div>';
+  showModal('env-modal', '添加环境变量', bodyHtml, 'env-key');
 }
 
 function showEditEnvModal(clientId, key) {
   var cfg = state.clientConfig;
   if (!cfg || !cfg.envs || !cfg.envs.hasOwnProperty(key)) return;
-  var val = cfg.envs[key];
 
-  var overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.id = 'env-modal';
-  overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
-
-  overlay.innerHTML = '<div class="modal" style="max-width:500px;">' +
-    '<div class="modal-title">编辑环境变量</div>' +
-    '<div class="form-group"><label>变量名</label><input type="text" id="env-key" value="' + escHtml(key) + '" readonly></div>' +
-    '<div class="form-group"><label>值 *</label><input type="text" id="env-val" value="' + escHtml(val) + '"></div>' +
+  var bodyHtml = '<div class="form-group"><label>变量名</label><input type="text" id="env-key" value="' + escHtml(key) + '" readonly></div>' +
+    '<div class="form-group"><label>值 *</label><input type="text" id="env-val" value="' + escHtml(cfg.envs[key]) + '"></div>' +
     '<div class="modal-actions">' +
     '<button class="btn" onclick="document.getElementById(' + SQ + 'env-modal' + SQ + ').remove()">取消</button>' +
     '<button class="btn btn-primary" onclick="doSaveEnv(' + SQ + clientId + SQ + ',' + SQ + key + SQ + ')">保存</button>' +
-    '</div></div>';
-  document.body.appendChild(overlay);
-  document.getElementById('env-val').focus();
+    '</div>';
+  showModal('env-modal', '编辑环境变量', bodyHtml, 'env-val');
 }
 
 async function doSaveEnv(clientId, origKey) {
@@ -3145,22 +3156,13 @@ async function doSaveEnv(clientId, origKey) {
   var cfg = state.clientConfig;
   var envs = Object.assign({}, cfg.envs || {});
 
-  if (isEdit) {
-    envs[key] = val;
-  } else {
-    if (envs.hasOwnProperty(key)) { toast('变量名已存在', 'error'); return; }
-    envs[key] = val;
-  }
+  if (!isEdit && envs.hasOwnProperty(key)) { toast('变量名已存在', 'error'); return; }
+  envs[key] = val;
 
   try {
-    await api('/api/clients/' + encodeURIComponent(clientId) + '/config', {
-      method: 'PATCH',
-      body: JSON.stringify({ envs: envs }),
-    });
+    await patchEnvs(clientId, envs);
     toast(isEdit ? '已更新' : '已添加', 'success');
     document.getElementById('env-modal').remove();
-    await loadClientConfig(clientId);
-    renderClientDetail(clientId);
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -3171,13 +3173,8 @@ async function deleteEnv(clientId, key) {
   delete envs[key];
 
   try {
-    await api('/api/clients/' + encodeURIComponent(clientId) + '/config', {
-      method: 'PATCH',
-      body: JSON.stringify({ envs: envs }),
-    });
+    await patchEnvs(clientId, envs);
     toast('已删除', 'success');
-    await loadClientConfig(clientId);
-    renderClientDetail(clientId);
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -3288,14 +3285,7 @@ function editRemoteConsole(index: number) {
 
 function showRemoteConsoleModal(rc: any, index: number) {
   const isEdit = index >= 0;
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
-  overlay.id = 'remote-console-modal';
-  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
-
-  overlay.innerHTML = \`
-    <div class="modal" style="max-width:600px;">
-      <div class="modal-title">\${isEdit ? '编辑远程 Console' : '添加远程 Console'}</div>
+  const bodyHtml = \`
       <div class="form-group">
         <label>Console 地址 *</label>
         <input type="text" id="rc-url" value="\${isEdit ? escHtml(rc.url) : 'http://'}" placeholder="http://192.168.1.100:8080">
@@ -3312,9 +3302,8 @@ function showRemoteConsoleModal(rc: any, index: number) {
         <button class="btn" onclick="document.getElementById('remote-console-modal').remove()">取消</button>
         <button class="btn btn-primary" onclick="saveRemoteConsole(\${index})">\${isEdit ? '保存' : '添加'}</button>
       </div>
-    </div>
   \`;
-  document.body.appendChild(overlay);
+  showModal('remote-console-modal', isEdit ? '编辑远程 Console' : '添加远程 Console', bodyHtml, 'rc-url');
 }
 
 async function saveRemoteConsole(index: number) {
@@ -3340,19 +3329,9 @@ async function saveRemoteConsole(index: number) {
       gc.remoteConsoles.push(remoteConsole);
     }
 
-    await api('/api/global/config', {
-      method: 'PUT',
-      body: JSON.stringify({
-        port: gc.port,
-        host: gc.host,
-        remoteConsoles: gc.remoteConsoles,
-      }),
-    });
-
-    state.globalConfig = gc;
+    await persistGlobalConfig();
     document.getElementById('remote-console-modal').remove();
     toast(index >= 0 ? '远程 Console 已更新' : '远程 Console 已添加', 'success');
-    renderGlobalSection();
   } catch (e) {
     toast(e.message, 'error');
   }
@@ -3365,18 +3344,8 @@ async function deleteRemoteConsole(index: number) {
     const gc = state.globalConfig;
     gc.remoteConsoles.splice(index, 1);
 
-    await api('/api/global/config', {
-      method: 'PUT',
-      body: JSON.stringify({
-        port: gc.port,
-        host: gc.host,
-        remoteConsoles: gc.remoteConsoles,
-      }),
-    });
-
-    state.globalConfig = gc;
+    await persistGlobalConfig();
     toast('远程 Console 已删除', 'success');
-    renderGlobalSection();
   } catch (e) {
     toast(e.message, 'error');
   }
@@ -3393,15 +3362,10 @@ async function saveGlobalConfig() {
   const port = parseInt(document.getElementById('gc-port').value, 10);
   const host = document.getElementById('gc-host').value.trim();
   const gc = state.globalConfig;
+  gc.port = port;
+  gc.host = host;
   try {
-    await api('/api/global/config', {
-      method: 'PUT',
-      body: JSON.stringify({
-        port,
-        host,
-        remoteConsoles: gc.remoteConsoles || [],
-      }),
-    });
+    await persistGlobalConfig();
     toast('全局配置已保存', 'success');
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -3459,7 +3423,7 @@ function renderStatusSection() {
         <div class="status-item"><div class="value">\${escHtml(s.nodeVersion)}</div><div class="label">Node.js 版本</div></div>
         <div class="status-item"><div class="value">\${escHtml(s.platform)}</div><div class="label">平台</div></div>
         <div class="status-item"><div class="value">\${s.clients}</div><div class="label">客户端总数</div></div>
-        <div class="status-item"><div class="value" style="color:var(--green);">\${s.onlineClients}</div><div class="label">在线客户端</div></div>
+        <div class="status-item"><div class="value" style="color:var(--accent);">\${s.onlineClients}</div><div class="label">在线客户端</div></div>
         <div class="status-item"><div class="value">\${Math.round(s.uptime)}s</div><div class="label">运行时间</div></div>
       </div>
     </div>

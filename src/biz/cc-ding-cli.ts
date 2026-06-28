@@ -1712,20 +1712,15 @@ export class DingClaude {
         }, 60_000);
         this.pendingDestroyConfirmations.set(targetConvId, timer);
 
-        const hasWorkDir = !!conv.workDir;
-        const hasLinkConv = !!conv.linkConversationId;
-        let workDirMsg: string;
-        let destroyTitle: string;
-        if (hasWorkDir) {
-          workDirMsg = '- 工作目录(用户自定义路径，不删除)';
-          destroyTitle = '⚠️ 即将注销群机器人并清理数据！此操作不可恢复。';
-        } else if (hasLinkConv) {
-          workDirMsg = '- 工作目录(共享目录，关联群仍在使用，不删除)';
-          destroyTitle = '⚠️ 即将注销群机器人并清理数据！此操作不可恢复。';
-        } else {
-          workDirMsg = '- 会话工作目录及所有会话记录';
-          destroyTitle = '⚠️ 即将注销群机器人并删除工作目录！此操作不可恢复。';
-        }
+        const willDeleteDir = !conv.workDir && !conv.linkConversationId;
+        const workDirMsg = conv.workDir
+          ? '- 工作目录(用户自定义路径，不删除)'
+          : conv.linkConversationId
+            ? '- 工作目录(共享目录，关联群仍在使用，不删除)'
+            : '- 会话工作目录及所有会话记录';
+        const destroyTitle = willDeleteDir
+          ? '⚠️ 即将注销群机器人并删除工作目录！此操作不可恢复。'
+          : '⚠️ 即将注销群机器人并清理数据！此操作不可恢复。';
         const dataScope: string[] = [
           workDirMsg,
           '- 定时任务配置 (cron.json)',
@@ -3003,24 +2998,20 @@ export class DingClaude {
   private async notifyInterruptedSessions(restored: IRestoredSession[]): Promise<void> {
     if (!restored.length) return;
 
-    for (const rs of restored) {
-      if (!rs.sessionWebhook || !rs.senderStaffId) continue;
+    await Promise.allSettled(restored.map(async (rs) => {
+      if (!rs.sessionWebhook || !rs.senderStaffId) return;
       const atUserId = rs.senderStaffId.includes('-')
         ? rs.senderStaffId
         : (await queryDingUser(this, rs.senderStaffId))?.userid || rs.senderStaffId;
       const queuedInfo = rs.hasQueuedMessages ? '，排队中的消息会继续处理' : '';
       const content = `⚠️ 上次处理中时进程异常退出，您的会话在 ${rs.startTime} 被中断${queuedInfo}。\n如需继续，请直接发送新消息。`;
-      try {
-        await sendDingMessage(this, {
-          conversationId: rs.conversationId,
-          sessionWebhook: rs.sessionWebhook,
-          content,
-          atUserId: atUserId !== rs.senderStaffId ? atUserId : undefined,
-        });
-      } catch (err) {
-        console.error(`通知中断会话失败: 群=${rs.conversationId}`, err);
-      }
-    }
+      await sendDingMessage(this, {
+        conversationId: rs.conversationId,
+        sessionWebhook: rs.sessionWebhook,
+        content,
+        atUserId: atUserId !== rs.senderStaffId ? atUserId : undefined,
+      });
+    }));
   }
 
   /**
@@ -3344,8 +3335,10 @@ export class DingClaude {
     }
 
     const restoredSessions = this.loadActiveSessions();
-    // 通知异常中断的会话用户
-    await this.notifyInterruptedSessions(restoredSessions);
+    // 通知异常中断的会话用户（不阻塞启动）
+    this.notifyInterruptedSessions(restoredSessions).catch(err =>
+      console.error('通知中断会话失败', err),
+    );
 
     // 启动时注入一次群信息上下文到各群的 .claude/CLAUDE.md，后续仅在配置变更时才更新
     injectStartupContexts(this);
