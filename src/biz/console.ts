@@ -1572,6 +1572,25 @@ const state = {
   settingsTpl: '',
 };
 
+// 常用环境变量提示（用于添加时的 autocomplete）
+const COMMON_ENV_VARS = [
+  { key: 'ANTHROPIC_API_KEY', desc: 'Anthropic API Key' },
+  { key: 'ANTHROPIC_BASE_URL', desc: 'Anthropic API Base URL' },
+  { key: 'ANTHROPIC_MODEL', desc: '默认模型' },
+  { key: 'CLAUDE_SMALL_FAST_MODEL', desc: '小模型（轻量任务）' },
+  { key: 'CLAUDE_CODE_MAX_TURNS', desc: 'Claude Code 最大轮次' },
+  { key: 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', desc: '禁用非必要流量' },
+  { key: 'CLAUDE_CODE_ENABLE_BACKGROUND_TASKS', desc: '启用后台任务' },
+  { key: 'CLAUDE_CODE_HOME', desc: 'Claude Code 家目录' },
+  { key: 'CLAUDE_CODE_ENTRYPOINT', desc: 'Claude Code 入口点' },
+  { key: 'HTTP_PROXY', desc: 'HTTP 代理' },
+  { key: 'HTTPS_PROXY', desc: 'HTTPS 代理' },
+  { key: 'NO_PROXY', desc: '不走代理的地址' },
+  { key: 'PATH', desc: '可执行文件路径' },
+  { key: 'NODE_PATH', desc: 'Node.js 模块路径' },
+  { key: 'TZ', desc: '时区（如 Asia/Shanghai）' },
+];
+
 // ===== API Client =====
 const API_BASE = window.location.origin;
 
@@ -2493,9 +2512,16 @@ function showAddEnvModal(clientId) {
   overlay.id = 'env-modal';
   overlay.onclick = function(e) { if (e.target === overlay) overlay.remove(); };
 
+  // 构建 datalist 选项
+  var datalistHtml = '<datalist id="env-key-suggestions">';
+  for (var i = 0; i < COMMON_ENV_VARS.length; i++) {
+    datalistHtml += '<option value="' + COMMON_ENV_VARS[i].key + '" label="' + COMMON_ENV_VARS[i].desc + '"></option>';
+  }
+  datalistHtml += '</datalist>';
+
   overlay.innerHTML = '<div class="modal" style="max-width:500px;">' +
     '<div class="modal-title">添加环境变量</div>' +
-    '<div class="form-group"><label>变量名 *</label><input type="text" id="env-key" placeholder="MY_VAR_NAME"></div>' +
+    '<div class="form-group"><label>变量名 *</label><input type="text" id="env-key" list="env-key-suggestions" placeholder="输入或选择常用变量">' + datalistHtml + '</div>' +
     '<div class="form-group"><label>值 *</label><input type="text" id="env-val" placeholder="变量值"></div>' +
     '<div class="modal-actions">' +
     '<button class="btn" onclick="document.getElementById(' + SQ + 'env-modal' + SQ + ').remove()">取消</button>' +
