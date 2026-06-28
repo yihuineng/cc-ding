@@ -1267,7 +1267,7 @@ export class DingClaude {
           : conversationConfig;
 
         // 如果传入了任何字段，执行更新
-        const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId ||
+        const hasUpdates = !!(cfgOpts.dingToken || cfgOpts.linkConversationId || cfgOpts.workDir ||
         (cfgOpts.whiteUserList && cfgOpts.whiteUserList.length > 0) || cfgOpts.conversationTitle ||
         cfgOpts.atSender !== undefined || cfgOpts.receiveReply !== undefined || cfgOpts.preBash !== undefined ||
         cfgOpts.permissionMode !== undefined || cfgOpts.streaming !== undefined || cfgOpts.cardTemplateId || cfgOpts.model || cfgOpts.agent || cfgOpts.enableMsgToUser !== undefined || cfgOpts.ensureAt !== undefined || cfgOpts.receiveReplyMode !== undefined || cfgOpts.ackReaction !== undefined ||
@@ -1279,6 +1279,7 @@ export class DingClaude {
           if (conversationType && !isTargetOther) existingConv.conversationType = conversationType;
           if (cfgOpts.dingToken) existingConv.dingToken = cfgOpts.dingToken;
           if (cfgOpts.linkConversationId) existingConv.linkConversationId = cfgOpts.linkConversationId;
+          if (cfgOpts.workDir) existingConv.workDir = cfgOpts.workDir;
           if (cfgOpts.atSender !== undefined) existingConv.atSender = cfgOpts.atSender;
           if (cfgOpts.receiveReply !== undefined) existingConv.receiveReply = cfgOpts.receiveReply;
           if (cfgOpts.preBash !== undefined) existingConv.preBash = cfgOpts.preBash;
@@ -1321,6 +1322,7 @@ export class DingClaude {
           };
           if (cfgOpts.dingToken) newConv.dingToken = cfgOpts.dingToken;
           if (cfgOpts.linkConversationId) newConv.linkConversationId = cfgOpts.linkConversationId;
+          if (cfgOpts.workDir) newConv.workDir = cfgOpts.workDir;
           if (cfgOpts.atSender !== undefined) newConv.atSender = cfgOpts.atSender;
           if (cfgOpts.receiveReply !== undefined) newConv.receiveReply = cfgOpts.receiveReply;
           if (cfgOpts.preBash !== undefined) newConv.preBash = cfgOpts.preBash;
@@ -1722,8 +1724,22 @@ export class DingClaude {
         }, 60_000);
         this.pendingDestroyConfirmations.set(targetConvId, timer);
 
+        const hasWorkDir = !!conv.workDir;
+        const hasLinkConv = !!conv.linkConversationId;
+        let workDirMsg: string;
+        let destroyTitle: string;
+        if (hasWorkDir) {
+          workDirMsg = '- 工作目录(用户自定义路径，不删除)';
+          destroyTitle = '⚠️ 即将注销群机器人并清理数据！此操作不可恢复。';
+        } else if (hasLinkConv) {
+          workDirMsg = '- 工作目录(共享目录，关联群仍在使用，不删除)';
+          destroyTitle = '⚠️ 即将注销群机器人并清理数据！此操作不可恢复。';
+        } else {
+          workDirMsg = '- 会话工作目录及所有会话记录';
+          destroyTitle = '⚠️ 即将注销群机器人并删除工作目录！此操作不可恢复。';
+        }
         const dataScope: string[] = [
-          '- 会话工作目录及所有会话记录',
+          workDirMsg,
           '- 定时任务配置 (cron.json)',
           '- Todo 数据 (todo.json)',
           '- 快捷菜单数据 (menu.json)',
@@ -1734,7 +1750,7 @@ export class DingClaude {
         await this.sendDingMessage({
           conversationId, sessionWebhook,
           content: [
-            '⚠️ 即将注销群机器人并删除工作目录！此操作不可恢复。',
+            destroyTitle,
             '',
             '数据清理范围:',
             ...dataScope,

@@ -619,6 +619,8 @@ export function parseResetApiKeyCfgCommand(text: string): boolean {
 export interface ICfgOptions {
   dingToken?: string;
   linkConversationId?: string;
+  /** 自定义工作目录（绝对路径），优先级高于默认 conversationId/linkConversationId 目录 */
+  workDir?: string;
   whiteUserList?: string[];
   conversationTitle?: string;
   conversationId?: string;
@@ -671,6 +673,8 @@ export function parseCfgCommand(text: string): ICfgOptions | null {
       result.dingToken = tokens[++i];
     } else if (token === '--linkConversationId' && tokens[i + 1]) {
       result.linkConversationId = tokens[++i];
+    } else if (token === '--workDir' && tokens[i + 1]) {
+      result.workDir = tokens[++i];
     } else if (token === '--conversationId' && tokens[i + 1]) {
       result.conversationId = tokens[++i];
     } else if (token === '--whiteUserList' && tokens[i + 1]) {

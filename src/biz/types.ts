@@ -72,6 +72,8 @@ export interface IConversation {
   conversationId: string;
   conversationType: string; // 1 为单聊 2 为群聊
   linkConversationId?: string; // 关联会话ID, 指定时共用该id的工作目录(多个群机器人记忆共享场景, 同时也需要注意并发控制避免文件操作冲突)
+  /** 自定义工作目录（绝对路径），优先级高于默认 conversationId/linkConversationId 目录 */
+  workDir?: string;
   conversationTitle?: string;
   dingToken?: string; // 机器人单聊时, 不存在
   /** 单聊目标用户手机号或工号（通过 user-map.json 缓存解析为 userId） */

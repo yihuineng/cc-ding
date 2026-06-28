@@ -442,6 +442,9 @@ export function getConversationConfig(self: DingClaude, conversationId: string):
 // ==================== 路径工具 ====================
 
 export function getConversationDir(self: DingClaude, conversationId: string): string {
+  const convCfg = getConversationConfig(self, conversationId);
+  // 用户自定义工作目录优先
+  if (convCfg?.workDir) return convCfg.workDir;
   const hashedId = hashConversationId(self, conversationId);
   return path.join(getClientDir(self), hashedId);
 }
@@ -1382,18 +1385,23 @@ export async function destroyConversation(self: DingClaude, conversationId: stri
     steps.push({ label: '清理延时任务', ok: false, detail: err instanceof Error ? err.message : String(err) });
   }
 
-  // 6. 清理会话工作目录（关联群不删除关联目录）
+  // 6. 清理会话工作目录
   try {
-    const convDir = getConversationDir(self, conversationId);
-    if (fs.existsSync(convDir)) {
-      fs.rmSync(convDir, { recursive: true, force: true });
-      steps.push({ label: '删除工作目录', ok: true });
+    if (convCfg?.workDir) {
+      // 用户自定义工作目录，绝对路径，不删除
+      steps.push({ label: '工作目录', ok: true, detail: `保留 (workDir=${convCfg.workDir}, 用户自定义)` });
+    } else if (hasLinkConv) {
+      // 有 linkConversationId 时，getConversationDir 返回的是共享目录(md5(linkConversationId))，
+      // 其他关联群可能仍在使用，不删除
+      steps.push({ label: '工作目录', ok: true, detail: `保留 (linkConversationId=${convCfg!.linkConversationId}, 共享目录)` });
     } else {
-      steps.push({ label: '删除工作目录', ok: true, detail: '目录不存在' });
-    }
-    // 如果有 linkConversationId，不删除关联目录
-    if (hasLinkConv) {
-      steps.push({ label: '关联目录', ok: true, detail: `保留 (linkConversationId=${convCfg!.linkConversationId})` });
+      const convDir = getConversationDir(self, conversationId);
+      if (fs.existsSync(convDir)) {
+        fs.rmSync(convDir, { recursive: true, force: true });
+        steps.push({ label: '删除工作目录', ok: true });
+      } else {
+        steps.push({ label: '删除工作目录', ok: true, detail: '目录不存在' });
+      }
     }
   } catch (err) {
     steps.push({ label: '删除工作目录', ok: false, detail: err instanceof Error ? err.message : String(err) });
