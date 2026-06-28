@@ -34,7 +34,7 @@ import {
   getConversationDir, getSessionsDir, getTasksDir,
   getSessionDir, getSessionId, formatSessionInfo, readSessionLogTail,
   findHistorySession, findLatestSession, updateSessionFile, appendSessionLog,
-  getActiveSessionsFile, saveActiveSession, loadActiveSessions,
+  getActiveSessionsFile, saveActiveSession, loadActiveSessions, IRestoredSession,
   endSession, switchToSession, startNewSession, handleSessionMessage,
   findActiveSession, cleanCache, destroyConversation,
   ensureAgent, sendAckConfirmation, recallAckReaction,
@@ -278,7 +278,7 @@ export class DingClaude {
   appendSessionLog = appendSessionLog;
   getActiveSessionsFile = (conversationId: string) => getActiveSessionsFile(this, conversationId);
   saveActiveSession = (conversationId: string) => saveActiveSession(this, conversationId);
-  loadActiveSessions = () => loadActiveSessions(this);
+  loadActiveSessions = () => loadActiveSessions(this) as IRestoredSession[];
 
   // session - lifecycle
   endSession = (conversationId: string, sessionWebhook: string) => endSession(this, conversationId, sessionWebhook);
@@ -2994,6 +2994,32 @@ export class DingClaude {
   }
 
   /**
+   * 启动时通知用户：上次进程异常退出导致会话中断
+   */
+  private async notifyInterruptedSessions(restored: IRestoredSession[]): Promise<void> {
+    if (!restored.length) return;
+
+    for (const rs of restored) {
+      if (!rs.sessionWebhook || !rs.senderStaffId) continue;
+      const atUserId = rs.senderStaffId.includes('-')
+        ? rs.senderStaffId
+        : (await queryDingUser(this, rs.senderStaffId))?.userid || rs.senderStaffId;
+      const queuedInfo = rs.hasQueuedMessages ? '，排队中的消息会继续处理' : '';
+      const content = `⚠️ 上次处理中时进程异常退出，您的会话在 ${rs.startTime} 被中断${queuedInfo}。\n如需继续，请直接发送新消息。`;
+      try {
+        await sendDingMessage(this, {
+          conversationId: rs.conversationId,
+          sessionWebhook: rs.sessionWebhook,
+          content,
+          atUserId: atUserId !== rs.senderStaffId ? atUserId : undefined,
+        });
+      } catch (err) {
+        console.error(`通知中断会话失败: 群=${rs.conversationId}`, err);
+      }
+    }
+  }
+
+  /**
    * 启动时检查是否有重启后待通知的消息
    */
   private async notifyPendingReboot(): Promise<void> {
@@ -3313,7 +3339,9 @@ export class DingClaude {
       scheduleApiKeyCfgDailyReset(this);
     }
 
-    this.loadActiveSessions();
+    const restoredSessions = this.loadActiveSessions();
+    // 通知异常中断的会话用户
+    await this.notifyInterruptedSessions(restoredSessions);
 
     // 启动时注入一次群信息上下文到各群的 .claude/CLAUDE.md，后续仅在配置变更时才更新
     injectStartupContexts(this);

@@ -187,6 +187,8 @@ export interface IActiveSessionPersist {
   session: ISession;
   lastSenderStaffId: string;
   conversationConfig: IConfig['conversations'][0];
+  /** 持久化的排队消息（重启后恢复） */
+  messageQueue?: IMessageQueueItem[];
 }
 
 // 待审批的授权申请
