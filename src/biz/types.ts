@@ -345,3 +345,16 @@ export interface IDingUserDetail {
   senior?: boolean;
   userId?: string; // 兼容字段
 }
+
+// SSH 远程管理配置
+export interface ISshConfig {
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+}
+
+export interface IRemoteClient {
+  clientId: string;
+  ssh: ISshConfig;
+}
