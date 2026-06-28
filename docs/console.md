@@ -94,3 +94,73 @@ cc-ding console --no-browser  # 不打开浏览器
 | `active.json` | 活跃会话记录 |
 
 编辑时自动备份原文件（`.bak`），使用原子写入（先写 `.tmp` 再 rename）。
+
+### pm2 进程管理
+
+| 功能 | 说明 |
+|------|------|
+| 查看状态 | 显示 PID、状态、内存、CPU、重启次数、运行时间 |
+| 重启进程 | 确认后立即重启 cc-ding client 进程 |
+
+### 远程 Console 管理（v1.2.1+）
+
+支持通过 HTTP API 跨机器管理 cc-ding clients，无需 SSH。
+
+#### 架构
+
+```
+主 Console (http://localhost:8080)
+    ↓ HTTP API (Bearer Token)
+从 Console (http://192.168.1.100:8080)
+    ↓ 管理本地 clients
+~/.cc-ding/<clientId>/config.json
+```
+
+#### 配置
+
+在 `~/.cc-ding/config.json` 中添加 `remoteConsoles`：
+
+```json
+{
+  "console": {
+    "port": 8080,
+    "host": "0.0.0.0",
+    "authUsers": [...],
+    "remoteConsoles": [
+      {
+        "url": "http://192.168.1.100:8080",
+        "token": "从 Console 的 Bearer Token",
+        "clientIds": ["client-a", "client-b"]
+      }
+    ]
+  }
+}
+```
+
+#### 使用步骤
+
+1. **从机器**：启动 cc-ding console，登录获取 Bearer Token
+   ```bash
+   cc-ding console
+   # 登录 admin/admin → 获取 token
+   ```
+
+2. **主机器**：Console → 全局配置 → 远程 Console 管理 → 添加
+   - 填入从机器 console 地址
+   - 填入 Bearer Token
+   - 填入管理的 client IDs（逗号分隔）
+
+3. **管理远程 clients**：
+   - 客户端列表显示远程标识（鼠标悬停显示来源地址）
+   - 点击远程 client 可查看/编辑配置
+   - 点击「📊 状态」查看远程 pm2 状态
+   - 点击「🔄 重启」远程重启进程
+
+#### 支持的远程操作
+
+| API | 说明 |
+|-----|------|
+| `GET /api/clients/:id/config` | 查看配置（脱敏） |
+| `PATCH /api/clients/:id/config` | 更新配置 |
+| `GET /api/clients/:id/pm2` | 查看 pm2 状态 |
+| `POST /api/clients/:id/pm2/restart` | 重启进程 |
