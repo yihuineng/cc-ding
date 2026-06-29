@@ -645,6 +645,84 @@ async function handleRestartClientPm2(req: http.IncomingMessage, res: http.Serve
   }
 }
 
+/** POST /api/clients/:id/start — 启动 client 进程（非 pm2） */
+async function handleStartClient(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  // 检查是否已在线
+  const { online, pid: existingPid } = checkClientOnline(clientId);
+  if (online) {
+    jsonError(res, 409, `客户端已在线 (PID: ${existingPid})`);
+    return;
+  }
+
+  // 检查配置是否存在
+  const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
+  if (!fs.existsSync(configPath)) {
+    jsonError(res, 404, '客户端配置不存在');
+    return;
+  }
+
+  // 查找 cc-ding 可执行文件路径
+  let ccDingCmd = 'cc-ding';
+  let ccDingArgs = [ 'run', '-ci', clientId ];
+
+  // 优先使用全局安装的 cc-ding，否则使用当前包的 dist
+  if (!commandExists('cc-ding')) {
+    const scriptPath = path.join(__dirname, '..', '..', 'dist', 'bin', 'cc-ding.js');
+    if (fs.existsSync(scriptPath)) {
+      ccDingCmd = process.execPath; // node
+      ccDingArgs = [ scriptPath, 'run', '-ci', clientId ];
+    } else {
+      jsonError(res, 500, '找不到 cc-ding 可执行文件');
+      return;
+    }
+  }
+
+  const clientDir = path.join(getHomeDir(), '.cc-ding', clientId);
+  const logPath = path.join(clientDir, 'cc-ding.log');
+  const logFd = fs.openSync(logPath, 'a');
+
+  try {
+    const child = spawnCommand(ccDingCmd, ccDingArgs, {
+      detached: true,
+      stdio: [ 'ignore', logFd, logFd ],
+      cwd: clientDir,
+      env: { ...process.env },
+    });
+    child.unref();
+    // 给进程一点时间启动
+    await new Promise(r => setTimeout(r, 500));
+    const { online: nowOnline, pid: newPid } = checkClientOnline(clientId);
+    jsonResponse(res, 200, {
+      message: nowOnline ? '客户端已启动' : '启动命令已发送，进程可能仍在初始化',
+      pid: newPid || child.pid,
+      logPath,
+    });
+  } catch (err) {
+    try { fs.closeSync(logFd); } catch { /* ignore */ }
+    jsonError(res, 500, `启动失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** POST /api/clients/:id/stop — 停止 client 进程 */
+async function handleStopClient(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  const { online, pid } = checkClientOnline(clientId);
+  if (!online || !pid) {
+    jsonError(res, 409, '客户端未在线');
+    return;
+  }
+
+  try {
+    process.kill(pid, 'SIGTERM');
+    jsonResponse(res, 200, { message: `已发送停止信号 (PID: ${pid})` });
+  } catch (err) {
+    jsonError(res, 500, `停止失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 /** POST /api/clients/:id/conversations — 添加会话 */
 async function handleAddConversation(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
   if (!requireAuth(req, res)) return;
@@ -1134,6 +1212,8 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   const clientConfigReloadMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/config\/reload$/);
   const clientPm2Match = pathname.match(/^\/api\/clients\/([^\/]+)\/pm2$/);
   const clientPm2RestartMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/pm2\/restart$/);
+  const clientStartMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/start$/);
+  const clientStopMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/stop$/);
   const clientApiKeysMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys(?:\/(\d+))?(?:\/reset)?$/);
   const clientApiKeyIndexMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys\/(\d+)$/);
   const clientApiKeyResetMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys\/reset$/);
@@ -1254,6 +1334,38 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
       jsonResponse(res, 200, data);
     } else {
       await handleRestartClientPm2(req, res, clientPm2RestartMatch[1]);
+    }
+    return;
+  }
+
+  // POST /api/clients/:id/start
+  if (clientStartMatch && req.method === 'POST') {
+    const remoteConsole = getClientRemoteConsole(clientStartMatch[1]);
+    if (remoteConsole) {
+      const { status, data } = await proxyToRemoteConsole(remoteConsole, 'POST', `/api/clients/${clientStartMatch[1]}/start`);
+      if (status !== 200) {
+        jsonError(res, status, data.error || '远程启动失败');
+        return;
+      }
+      jsonResponse(res, 200, data);
+    } else {
+      await handleStartClient(req, res, clientStartMatch[1]);
+    }
+    return;
+  }
+
+  // POST /api/clients/:id/stop
+  if (clientStopMatch && req.method === 'POST') {
+    const remoteConsole = getClientRemoteConsole(clientStopMatch[1]);
+    if (remoteConsole) {
+      const { status, data } = await proxyToRemoteConsole(remoteConsole, 'POST', `/api/clients/${clientStopMatch[1]}/stop`);
+      if (status !== 200) {
+        jsonError(res, status, data.error || '远程停止失败');
+        return;
+      }
+      jsonResponse(res, 200, data);
+    } else {
+      await handleStopClient(req, res, clientStopMatch[1]);
     }
     return;
   }
@@ -2291,6 +2403,9 @@ function renderClientList() {
     const remoteUrl = remoteMap.get(c.clientId);
     const isRemote = !!remoteUrl;
     const remoteIndicator = isRemote ? '<span class="text-muted" style="font-size:11px;margin-left:8px;" title="远程: ' + escHtml(remoteUrl) + '"> 远程</span>' : '';
+    const actionBtn = c.online
+      ? '<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();stopClient(\\x27' + c.clientId + '\\x27)" title="停止" style="margin-left:8px;">⏹</button>'
+      : '<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();startClient(\\x27' + c.clientId + '\\x27)" title="启动" style="margin-left:8px;">▶</button>';
 
     html += \`
       <div class="card client-card" onclick="selectClient('\${c.clientId}')">
@@ -2299,7 +2414,10 @@ function renderClientList() {
             <div class="client-name">\${escHtml(c.clientName || c.clientId)}\${remoteIndicator}</div>
             <div class="client-id">\${escHtml(c.clientId)}</div>
           </div>
-          <span class="status-badge \${c.online ? 'status-online' : 'status-offline'}">\${c.online ? '● 在线' : '○ 离线'}</span>
+          <div style="display:flex;align-items:center;">
+            <span class="status-badge \${c.online ? 'status-online' : 'status-offline'}">\${c.online ? '● 在线' : '○ 离线'}</span>
+            \${actionBtn}
+          </div>
         </div>
         <div class="client-meta">
           \${c.pid != null ? '<span>🆔 PID: ' + c.pid + '</span>' : ''}
@@ -2433,6 +2551,11 @@ function renderClientDetail(clientId) {
   const remoteConsole = remoteConsoles.find(rc => rc.clientIds.includes(clientId));
   const remoteIndicator = remoteConsole ? '<span class="text-muted" style="font-size:11px;margin-left:8px;" title="远程: ' + escHtml(remoteConsole.url) + '"> 远程</span>' : '';
 
+  // 启停按钮（根据在线状态切换）
+  const startStopBtnHtml = c?.online
+    ? '<button class="btn btn-sm btn-danger" onclick="stopClient(\\x27' + clientId + '\\x27)" title="停止进程">⏹ 停止</button>'
+    : '<button class="btn btn-sm btn-primary" onclick="startClient(\\x27' + clientId + '\\x27)" title="启动进程">▶ 启动</button>';
+
   detail.innerHTML = \`
     <div class="flex-between mb-8">
       <button class="btn btn-sm" onclick="backToList()">← 返回</button>
@@ -2441,6 +2564,7 @@ function renderClientDetail(clientId) {
         <span class="status-badge \${c?.online ? 'status-online' : 'status-offline'}" style="margin-left:8px;">\${c?.online ? '● 在线' : '○ 离线'}</span>
       </span>
       <div style="display:flex;gap:8px;">
+        \${startStopBtnHtml}
         <button class="btn btn-sm" onclick="getPm2Status('\${clientId}')" title="查看 pm2 状态">📊 状态</button>
         <button class="btn btn-sm btn-danger" onclick="restartClient('\${clientId}')" title="重启进程">🔄 重启</button>
         <button class="btn btn-sm" onclick="reloadClientConfig('\${clientId}')" title="发送 SIGUSR2 热重载"> 重载</button>
@@ -2485,6 +2609,40 @@ async function restartClient(clientId) {
     await api(\`/api/clients/\${clientId}/pm2/restart\`, { method: 'POST' });
     toast('已发送重启命令', 'success');
     setTimeout(() => loadClients(), 2000);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function startClient(clientId) {
+  if (!confirm('确定启动 ' + clientId + '？')) return;
+
+  try {
+    const data = await api(\`/api/clients/\${clientId}/start\`, { method: 'POST' });
+    toast(data.message || '启动命令已发送', 'success');
+    setTimeout(async () => {
+      await loadClients();
+      if (state.selectedClient === clientId) {
+        selectClient(clientId);
+      }
+    }, 1500);
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+async function stopClient(clientId) {
+  if (!confirm('确定停止 ' + clientId + '？')) return;
+
+  try {
+    const data = await api(\`/api/clients/\${clientId}/stop\`, { method: 'POST' });
+    toast(data.message || '已发送停止信号', 'success');
+    setTimeout(async () => {
+      await loadClients();
+      if (state.selectedClient === clientId) {
+        selectClient(clientId);
+      }
+    }, 1500);
   } catch (e) {
     toast(e.message, 'error');
   }
