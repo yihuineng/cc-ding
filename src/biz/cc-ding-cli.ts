@@ -1113,7 +1113,8 @@ export class DingClaude {
     }
 
     // 提取引用消息（命令消息忽略引用）
-    if (!prompt.startsWith('/') && msgtype === 'text' && textContent) {
+    // 支持 text / richText / picture / file 等所有消息类型的引用
+    if (!prompt.startsWith('/') && !prompt.includes('── 引用消息')) {
       const conversationDir = this.getConversationDir(conversationId);
       const useLocalOcr = conversationConfig?.useLocalOcr !== false;
       const quoteInfo = extractQuoteInfo(rawData);

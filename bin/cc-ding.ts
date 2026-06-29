@@ -9,6 +9,7 @@ import { acquirePidLock } from '../src/biz/lock';
 import { printDoctorResults, runDoctor } from '../src/biz/doctor';
 import { sendNotify } from '../src/biz/notify';
 import { writeSendSignal, type ISendSignal } from '../src/biz/send-queue';
+import { runTask } from '../src/biz/task-runner';
 import fs from 'fs';
 
 loadEnv();
@@ -294,6 +295,70 @@ program
       await server.stop();
       process.exit(0);
     });
+  });
+
+// ── task: 后台任务包装器，完成后主动通知到群 ──
+program
+  .command('task')
+  .description(`
+    包装长时间运行的命令，完成后通过钉钉 API 主动通知到指定会话。
+    适用于 docker build、npm install 等耗时操作。
+
+    示例:
+      # 前台运行（阻塞，实时输出，完成后通知）
+      cc-ding task -ci <clientId> -c <convId> -t docker-build -- docker build -t foo .
+
+      # 后台运行（立即返回，完成后通知）
+      cc-ding task -ci <clientId> -c <convId> --bg -t my-task -- npm run build
+  `)
+  .requiredOption('-ci, --clientId <value>', 'clientId')
+  .requiredOption('-c, --conversationId <value>', '通知目标会话 ID')
+  .option('-t, --taskId <value>', '任务 ID（展示用）')
+  .option('-l, --logFile <path>', '日志文件路径')
+  .option('--cwd <path>', '工作目录')
+  .option('--timeout <seconds>', '超时时间（秒）', parseInt)
+  .option('--bg', '后台模式：立即返回，命令在后台运行', false)
+  .option('--no-notify', '不发送完成通知（仅运行命令）')
+  .allowUnknownOption(true)
+  .action(async (opts) => {
+    // 从原始 argv 提取 -- 后的命令（保留完整命令字符串，包括特殊字符）
+    // 注意：后台子进程通过 process.argv 直接传入参数，因此此处逻辑对父子进程都适用
+    const dashDashIdx = process.argv.indexOf('--');
+    let commandArgs: string[];
+    if (dashDashIdx >= 0) {
+      commandArgs = process.argv.slice(dashDashIdx + 1);
+    } else {
+      // 无 -- 分隔符，取 task 子命令后的所有参数
+      const taskIdx = process.argv.indexOf('task');
+      commandArgs = taskIdx >= 0 ? process.argv.slice(taskIdx + 1) : [];
+    }
+    const commandDisplay = commandArgs.join(' ');
+
+    if (!commandArgs.length) {
+      console.error('❌ 请指定要执行的命令');
+      console.error('   用法: cc-ding task -ci <clientId> -c <convId> [--bg] -- <命令>');
+      process.exit(1);
+    }
+
+    const result = await runTask({
+      commandArgs,
+      commandDisplay,
+      clientId: opts.clientId,
+      conversationId: opts.conversationId,
+      taskId: opts.taskId,
+      logFile: opts.logFile,
+      cwd: opts.cwd,
+      timeout: opts.timeout,
+      bg: opts.bg,
+      notify: opts.notify,
+    });
+
+    if (opts.bg) {
+      // 后台模式：父进程始终正常退出
+      process.exit(0);
+    }
+    // 前台模式：根据命令结果设置退出码
+    process.exit(result.success ? 0 : 1);
   });
 
 program.parse(process.argv);

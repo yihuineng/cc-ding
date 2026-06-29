@@ -659,6 +659,22 @@ function buildContextContent(self: DingClaude, conversationId: string): string {
     lines.push('当用户请求需要其他 Agent 的专长处理时，可以直接调用上述命令。');
   }
 
+  // ── cc-ding task 后台任务说明 ──
+  lines.push('## cc-ding 后台任务');
+  lines.push('当需要执行**预计超过 30 秒**的命令时（如 docker build、npm install、大规模文件处理等），');
+  lines.push('应该使用 `cc-ding task` 包装命令。任务完成/失败后会**主动推送结果**到当前钉钉会话，无需用户询问。');
+  lines.push('');
+  lines.push('```');
+  lines.push(`# 后台运行（推荐，立即返回，完成后通知到群）`);
+  lines.push(`cc-ding task -ci ${self.clientId} -c ${conversationId} --bg -t <任务名> -- <命令>`);
+  lines.push('');
+  lines.push(`# 前台运行（阻塞等待，完成后通知到群）`);
+  lines.push(`cc-ding task -ci ${self.clientId} -c ${conversationId} -t <任务名> -- <命令>`);
+  lines.push('```');
+  lines.push('');
+  lines.push('参数说明：`-ci` clientId，`-c` 通知目标会话ID，`-t` 任务标识，`--bg` 后台模式，`-- <命令>` 要执行的命令。');
+  lines.push('**重要**：在钉钉会话中执行耗时命令时，优先使用 `--bg` 后台模式，避免阻塞当前会话。');
+
   lines.push(END_MARK);
 
   return lines.filter(Boolean).join('\n') + '\n';
@@ -714,6 +730,16 @@ function buildCodexContext(self: DingClaude, conversationId: string): string {
     lines.push('```');
     lines.push('当用户请求需要其他 Agent 的专长处理时，可以直接调用上述命令。');
   }
+
+  // cc-ding task 后台任务说明
+  lines.push('');
+  lines.push('## cc-ding 后台任务');
+  lines.push('当需要执行预计超过 30 秒的命令时（如 docker build、npm install 等），使用 `cc-ding task` 包装。');
+  lines.push('任务完成/失败后会主动推送结果到当前钉钉会话。');
+  lines.push('```');
+  lines.push(`# 后台运行（推荐）`);
+  lines.push(`cc-ding task -ci ${self.clientId} -c ${conversationId} --bg -t <任务名> -- <命令>`);
+  lines.push('```');
 
   return lines.join('\n') + '\n';
 }

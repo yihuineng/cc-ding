@@ -1,0 +1,54 @@
+# ─────────────────────────────────────────────────────
+# Docker 构建上下文排除文件
+# 减小构建体积，加速镜像构建
+# ─────────────────────────────────────────────────────
+
+# 依赖目录（容器内重新安装）
+node_modules
+
+# 版本控制
+.git
+.gitignore
+
+# 开发环境文件
+.env
+.env.*
+*.log
+npm-debug.log*
+
+# 编辑器 / IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# macOS 文件
+.DS_Store
+
+# 测试目录
+test
+coverage
+.nyc_output
+
+# 文档
+docs
+CHANGELOG.md
+LICENSE
+README.md
+
+# CI / CD
+.github
+.husky
+
+# Playwright CLI 日志
+.playwright-cli
+.sessions
+
+# 社区参考项目
+refs
+
+# 项目级 Claude 配置
+.claude
+
+# 镜像构建产物
+dist
