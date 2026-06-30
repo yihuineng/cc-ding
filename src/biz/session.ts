@@ -920,6 +920,29 @@ export async function startNewSession(self: DingClaude, opts: {
       await recallAckReaction(self, conversationId, msgId, conversationConfig);
     }
   }
+
+  // goonPending: /goon 命令或 Watchdog 超时触发的强制重启，发送"继续"恢复执行
+  const activeSessionForGoon = self.activeSessions.get(conversationId);
+  if (activeSessionForGoon?.goonPending) {
+    activeSessionForGoon.goonPending = false;
+    activeSessionForGoon.interrupted = false;
+    activeSessionForGoon.isProcessing = true;
+    saveActiveSession(self, conversationId);
+    try {
+      ensureAgent(activeSessionForGoon);
+      const agent = activeSessionForGoon.agent!;
+      await agent.executeQuery(self, activeSessionForGoon.session, {
+        message: '继续',
+        senderNick: activeSessionForGoon.session.startNickName,
+        senderStaffId: activeSessionForGoon.lastSenderStaffId,
+      });
+    } catch (err) {
+      console.error('goonPending 恢复执行失败:', err);
+    } finally {
+      activeSessionForGoon.isProcessing = false;
+    }
+  }
+
   // 检查并处理排队消息（含 /new 后的 drain）
   const finalSession = self.activeSessions.get(conversationId);
   if (finalSession && finalSession.messageQueue.length > 0) {
