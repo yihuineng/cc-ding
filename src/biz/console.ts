@@ -44,6 +44,16 @@ interface IConsoleGlobalConfig {
   remoteConsoles?: IRemoteConsole[];
 }
 
+/** 全局配置文件（~/.cc-ding/config.json） */
+interface IGlobalConfigFile {
+  /** Console 配置 */
+  console?: IConsoleGlobalConfig;
+  /** 更新包 URL（/reboot --update 时优先从此 URL 下载安装包） */
+  updatePkgUrl?: string;
+  /** 其他根级别字段 */
+  [key: string]: unknown;
+}
+
 /** 系统状态信息 */
 interface ISystemStatus {
   ccDingVersion: string;
@@ -132,7 +142,7 @@ function dotPathSet(obj: any, pathStr: string, value: any): void {
 }
 
 /** 获取全局 Console 配置 */
-function getGlobalConfig(): IConsoleGlobalConfig {
+function getGlobalConfig(): IGlobalConfigFile {
   try {
     if (fs.existsSync(GLOBAL_CONFIG_PATH)) {
       const content = fs.readFileSync(GLOBAL_CONFIG_PATH, 'utf-8');
@@ -145,27 +155,32 @@ function getGlobalConfig(): IConsoleGlobalConfig {
         atomicWrite(GLOBAL_CONFIG_PATH, JSON.stringify(parsed, null, 2));
       }
       return {
-        port: parsed.console?.port || parsed.consolePort || 8080,
-        host: parsed.console?.host || parsed.consoleHost || '0.0.0.0',
-        authUsers: parsed.console?.authUsers || [],
-        remoteConsoles: parsed.console?.remoteConsoles || [],
+        console: {
+          port: parsed.console?.port || parsed.consolePort || 8080,
+          host: parsed.console?.host || parsed.consoleHost || '0.0.0.0',
+          authUsers: parsed.console?.authUsers || [],
+          remoteConsoles: parsed.console?.remoteConsoles || [],
+        },
+        updatePkgUrl: parsed.updatePkgUrl,
       };
     }
   } catch {
     // ignore parse errors
   }
   return {
-    port: 8080,
-    host: '0.0.0.0',
-    authUsers: [{ account: 'admin', passwordHash: sha256('admin'), firstLogin: true }],
-    remoteConsoles: [],
+    console: {
+      port: 8080,
+      host: '0.0.0.0',
+      authUsers: [{ account: 'admin', passwordHash: sha256('admin'), firstLogin: true }],
+      remoteConsoles: [],
+    },
   };
 }
 
 /** 获取客户端所属的远程 Console 配置（如果是远程客户端） */
 function getClientRemoteConsole(clientId: string): IRemoteConsole | null {
   const globalCfg = getGlobalConfig();
-  return globalCfg.remoteConsoles?.find(rc => rc.clientIds.includes(clientId)) || null;
+  return globalCfg.console?.remoteConsoles?.find(rc => rc.clientIds.includes(clientId)) || null;
 }
 
 /** 代理请求到远程 Console */
@@ -225,18 +240,20 @@ function verifyToken(authHeader: string | undefined): string | null {
 /** 获取所有认证用户 */
 function getAllAuthUsers(): IAuthUser[] {
   const globalCfg = getGlobalConfig();
-  return globalCfg.authUsers || [];
+  return globalCfg.console?.authUsers || [];
 }
 
 /** 更新认证用户密码 */
 function updateAuthPassword(account: string, newPassword: string): boolean {
   const globalCfg = getGlobalConfig();
-  const users = globalCfg.authUsers || [];
+  const users = globalCfg.console?.authUsers || [];
   const user = users.find(u => u.account === account);
   if (!user) return false;
   user.passwordHash = sha256(newPassword);
   user.firstLogin = false;
-  saveGlobalConfig(globalCfg);
+  if (globalCfg.console) {
+    saveGlobalConfig(globalCfg.console);
+  }
   return true;
 }
 
@@ -1167,6 +1184,30 @@ async function handlePutSettingsTpl(req: http.IncomingMessage, res: http.ServerR
   }
 }
 
+/** PUT /api/global/update-pkg-url */
+async function handlePutUpdatePkgUrl(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  try {
+    const body = await readBody(req);
+    const data = JSON.parse(body || '{}');
+    const globalCfg = fs.existsSync(GLOBAL_CONFIG_PATH)
+      ? fileUtil.getJSON(GLOBAL_CONFIG_PATH) as any
+      : {};
+
+    if (data.updatePkgUrl) {
+      globalCfg.updatePkgUrl = data.updatePkgUrl;
+    } else {
+      delete globalCfg.updatePkgUrl;
+    }
+
+    atomicWrite(GLOBAL_CONFIG_PATH, JSON.stringify(globalCfg, null, 2));
+    jsonResponse(res, 200, { message: '更新包 URL 已保存' });
+  } catch (err) {
+    jsonError(res, 400, '请求格式错误');
+  }
+}
+
 /** GET /api/status */
 async function handleGetStatus(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   if (!requireAuth(req, res)) return;
@@ -1261,6 +1302,12 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // PUT /api/global/settings-tpl
   if (pathname === '/api/global/settings-tpl' && req.method === 'PUT') {
     await handlePutSettingsTpl(req, res);
+    return;
+  }
+
+  // PUT /api/global/update-pkg-url
+  if (pathname === '/api/global/update-pkg-url' && req.method === 'PUT') {
+    await handlePutUpdatePkgUrl(req, res);
     return;
   }
 
@@ -1489,8 +1536,8 @@ export class ConsoleServer {
 
   constructor(options: IConsoleServerOptions = {}) {
     const globalCfg = getGlobalConfig();
-    this.port = options.port ?? globalCfg.port ?? 8080;
-    this.host = options.host ?? globalCfg.host ?? '0.0.0.0';
+    this.port = options.port ?? globalCfg.console?.port ?? 8080;
+    this.host = options.host ?? globalCfg.console?.host ?? '0.0.0.0';
     this.autoOpen = options.autoOpen ?? false;
     this.noBrowser = options.noBrowser ?? false;
   }
@@ -1638,11 +1685,11 @@ export function getConsoleUrl(port?: number, host?: string): string {
 
 /** 解析客户端端口（用于 SIGUSR2 后自动更新端口信息） */
 export function getConsolePort(): number {
-  return getGlobalConfig().port ?? 8080;
+  return getGlobalConfig().console?.port ?? 8080;
 }
 
 export function getConsoleHost(): string {
-  return getGlobalConfig().host ?? '0.0.0.0';
+  return getGlobalConfig().console?.host ?? '0.0.0.0';
 }
 
 /** 检查主机是否为本机（用于 /open console 命令的安全检查） */
@@ -3416,6 +3463,13 @@ function renderGlobalSection() {
       <div class="form-actions"><button class="btn btn-primary" onclick="saveGlobalConfig()">💾 保存</button></div>
     </div>
     <div class="card">
+      <div class="card-title">全局更新配置</div>
+      <div class="form-row">
+        <div class="form-group" style="grid-column:1/-1;"><label>更新包 URL</label><input type="text" id="gc-updatePkgUrl" value="\${escHtml(state.globalConfig.updatePkgUrl || '')}" placeholder="http://.../cc-ding-latest.tgz"></div>
+      </div>
+      <div class="form-actions"><button class="btn btn-primary" onclick="saveUpdatePkgUrl()">💾 保存</button></div>
+    </div>
+    <div class="card">
       <div class="flex-between">
         <div class="card-title" style="margin-bottom:0">远程 Console 管理</div>
         <button class="btn btn-sm btn-primary" onclick="showAddRemoteConsole()">+ 添加</button>
@@ -3524,7 +3578,19 @@ async function saveGlobalConfig() {
   gc.host = host;
   try {
     await persistGlobalConfig();
-    toast('全局配置已保存', 'success');
+    toast('Console 配置已保存', 'success');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function saveUpdatePkgUrl() {
+  const updatePkgUrl = document.getElementById('gc-updatePkgUrl').value.trim();
+  try {
+    await api('/api/global/update-pkg-url', {
+      method: 'PUT',
+      body: JSON.stringify({ updatePkgUrl: updatePkgUrl || null }),
+    });
+    state.globalConfig.updatePkgUrl = updatePkgUrl || undefined;
+    toast('更新包 URL 已保存', 'success');
   } catch (e) { toast(e.message, 'error'); }
 }
 

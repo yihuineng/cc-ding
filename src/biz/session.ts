@@ -132,6 +132,31 @@ export function getClientConfig(self: DingClaude): IConfig {
   return cfg;
 }
 
+/** 全局配置接口 */
+interface IGlobalConfig {
+  console?: {
+    port?: number;
+    host?: string;
+    [key: string]: unknown;
+  };
+  /** 更新包 URL（/reboot --update 时优先从此 URL 下载安装包） */
+  updatePkgUrl?: string;
+  [key: string]: unknown;
+}
+
+/** 获取全局配置（~/.cc-ding/config.json） */
+export function getGlobalConfig(): IGlobalConfig {
+  const globalCfgFile = path.join(getHomeDir(), '.cc-ding', 'config.json');
+  if (!fs.existsSync(globalCfgFile)) {
+    return {};
+  }
+  try {
+    return fileUtil.getJSON(globalCfgFile) as IGlobalConfig;
+  } catch {
+    return {};
+  }
+}
+
 /**
  * 重新从磁盘读取并验证 config.json，用于 /cfg --reload
  * 失败时抛出 Error，不更新内存中的 config

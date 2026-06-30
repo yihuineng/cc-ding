@@ -41,6 +41,7 @@ import {
   timestamp,
   resolveAllPhonesInConfig, resolveUserId, resolveToUserId, userIdToPhone, isMobile,
   resolveUserIdName,
+  getGlobalConfig,
 } from './session';
 import {
   countTodoTask, getOneTodoTask, finishTask,
@@ -1486,13 +1487,14 @@ export class DingClaude {
       route('/reboot', () => parseRebootCommand(prompt), async rebootCmd => {
         if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
-        // 生成安装命令：优先使用 updatePkgUrl，失败时回退到 npm
+        // 生成安装命令：优先使用全局配置的 updatePkgUrl，失败时回退到 npm
         const buildInstallCmd = (): string | null => {
           if (!rebootCmd.update) return null;
-          const updatePkgUrl = this.config.updatePkgUrl;
+          const globalCfg = getGlobalConfig();
+          const updatePkgUrl = globalCfg.updatePkgUrl;
           if (updatePkgUrl) {
-            // 先下载再安装，避免 npm 解析链接异常
-            return `(curl -sL -o /tmp/cc-ding-latest.tgz "${updatePkgUrl}" && npm install -g /tmp/cc-ding-latest.tgz || npm install -g cc-ding${tag})`;
+            // 先下载再安装，安装完成后删除临时文件，失败时回退到 npm 官方源
+            return `(curl -sL -o /tmp/cc-ding-latest.tgz "${updatePkgUrl}" && npm install -g /tmp/cc-ding-latest.tgz && rm -f /tmp/cc-ding-latest.tgz) || npm install -g cc-ding${tag}`;
           }
           return `npm install -g cc-ding${tag}`;
         };
@@ -1528,15 +1530,28 @@ export class DingClaude {
             return;
           }
 
-          // 直接执行重启，不写 flag 文件（console 不发送通知）
-          console.log(`[${timestamp()}] 执行 pm2 restart cc-ding-console`);
-          childExec('pm2 restart "cc-ding-console"', { timeout: 60_000 }, (err) => {
+          // 生成更新命令（如果需要更新）
+          let updateCmd = '';
+          if (rebootCmd.update) {
+            const globalCfg = getGlobalConfig();
+            const updatePkgUrl = globalCfg.updatePkgUrl;
+            if (updatePkgUrl) {
+              // 先下载再安装，安装完成后删除临时文件，失败时回退到 npm 官方源
+              updateCmd = `(curl -sL -o /tmp/cc-ding-latest.tgz "${updatePkgUrl}" && npm install -g /tmp/cc-ding-latest.tgz && rm -f /tmp/cc-ding-latest.tgz) || npm install -g cc-ding${tag} && `;
+            } else {
+              updateCmd = `npm install -g cc-ding${tag} && `;
+            }
+          }
+
+          // 执行更新（如果需要）和重启
+          console.log(`[${timestamp()}] 执行 ${updateCmd}pm2 restart cc-ding-console`);
+          childExec(`${updateCmd}pm2 restart "cc-ding-console"`, { timeout: 300_000 }, (err) => {
             if (err) console.error(`[${timestamp()}] pm2 restart console 失败:`, err);
           });
 
           await this.sendDingMessage({
             conversationId, sessionWebhook,
-            content: '✅ Console 已重启完成',
+            content: rebootCmd.update ? '✅ Console 更新并重启完成' : '✅ Console 已重启完成',
             msgType: 'markdown',
           });
           return;

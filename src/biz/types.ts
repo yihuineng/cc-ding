@@ -66,8 +66,6 @@ export interface IConfig {
       defaultSkill?: string;
     }>;
   };
-  /** 自定义更新包 URL（配置后 /reboot --update 优先从此 URL 安装，失败时回退到 npm 官方源） */
-  updatePkgUrl?: string;
 }
 
 export interface IConversation {
