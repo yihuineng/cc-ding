@@ -1,7 +1,6 @@
 #!/bin/bash
 # cc-ding Docker 容器入口脚本
-# 默认启动 cc-ding console（Web 管理界面）
-# 也可通过 docker run <image> <command> 覆盖执行其他命令
+# 每次启动时安装最新版 cc-ding，然后通过 pm2 同时启动 console + a2a-server
 
 set -e
 
@@ -26,28 +25,81 @@ if ! command -v claude &>/dev/null; then
 fi
 echo "✅ Claude Code $(claude --version 2>/dev/null || echo '已安装')"
 
-# 检查 cc-ding 命令
-if ! command -v cc-ding &>/dev/null; then
-  echo "❌ cc-ding 命令未找到，请重新构建镜像"
-  exit 1
-fi
-echo "✅ cc-ding $(cc-ding --version 2>/dev/null || echo '已安装')"
-
 # 确保数据目录存在
 mkdir -p /root/.cc-ding
+
+# ─────────────────────────────────────────────────────
+# 安装最新版 cc-ding
+# ─────────────────────────────────────────────────────
+
+echo ""
+echo "📦 安装最新版 cc-ding..."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+npm install -g cc-ding@latest
+CC_DING_VER=$(cc-ding --version 2>/dev/null || echo 'unknown')
+echo "✅ cc-ding $CC_DING_VER"
 
 # ─────────────────────────────────────────────────────
 # 启动服务
 # ─────────────────────────────────────────────────────
 
-# 默认命令: 启动 Console Web 管理界面
-# 可通过 docker run <image> <cmd> 覆盖
-set -- cc-ding console "$@"
+# 如果用户传入了自定义命令，直接执行（覆盖默认行为）
+if [ $# -gt 0 ]; then
+  # 跳过 -- 分隔符
+  [ "$1" = "--" ] && shift
+  if [ $# -gt 0 ]; then
+    echo ""
+    echo "🚀 执行自定义命令: $*"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    exec "$@"
+  fi
+fi
+
+# 清理残留的 pm2 进程
+pm2 kill 2>/dev/null || true
 
 echo ""
-echo "🚀 启动: $*"
+echo "🚀 启动 cc-ding 服务..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# exec 替换当前进程为 cc-ding console，使其成为 PID 1
-# 容器停止时 SIGTERM 会直接发给 cc-ding，支持优雅退出
-exec "$@"
+# 1. Console 服务（必启动）
+pm2 start "cc-ding console" \
+  --name "cc-ding-console" \
+  --log "/root/.cc-ding/logs/console.log" \
+  --merge-logs \
+  --time
+
+# 2. A2A Hub 服务（可选，通过环境变量启用）
+if [ -n "$CC_DING_A2A_API_KEY" ]; then
+  A2A_PORT="${CC_DING_A2A_PORT:-3000}"
+  A2A_TIMEOUT="${CC_DING_A2A_TIMEOUT:-60}"
+  echo "🔗 A2A Hub 已启用 (port=$A2A_PORT, timeout=${A2A_TIMEOUT}s)"
+  pm2 start "cc-ding a2a-server --apiKey $CC_DING_A2A_API_KEY --port $A2A_PORT --timeout $A2A_TIMEOUT" \
+    --name "cc-ding-a2a" \
+    --log "/root/.cc-ding/logs/a2a.log" \
+    --merge-logs \
+    --time
+else
+  echo "⚠️  A2A Hub 未启用（设置 CC_DING_A2A_API_KEY 环境变量可启用）"
+fi
+
+# 确保日志目录存在
+mkdir -p /root/.cc-ding/logs
+
+echo ""
+echo "📊 pm2 服务状态:"
+pm2 status
+
+echo ""
+echo "📌 服务端口:"
+echo "  Console: http://0.0.0.0:8080"
+if [ -n "$CC_DING_A2A_API_KEY" ]; then
+  echo "  A2A Hub: http://0.0.0.0:${CC_DING_A2A_PORT:-3000}"
+fi
+echo ""
+echo "💡 查看日志: docker exec <container> pm2 logs"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# 使用 pm2 logs 保持前台运行并输出日志
+# SIGTERM/SIGINT 会被 pm2 捕获并转发给子进程，支持优雅退出
+exec pm2 logs --raw
