@@ -399,10 +399,11 @@ function runClaudeOnce(
             try { self.appendSessionLog(sessionDir, 'assistant', fullResponse); } catch { /* 日志写入失败不阻断消息发送 */ }
 
             // 流式卡片 finalize，成功后跳过普通消息，否则回退
+            // 回退条件：finalize 失败 / 卡片异常 / 权限不足 / 卡片内容被截断（超长）
             if (streamingCard && !streamingCard.permissionDenied) {
               hasSentResponse = true;
               streamingCard.finalize(fullResponse).then(ok => {
-                if (!ok || streamingCard.failed || streamingCard.permissionDenied) {
+                if (!ok || streamingCard.failed || streamingCard.permissionDenied || streamingCard.contentTruncated) {
                   const activeSessionRef = self.activeSessions.get(session.conversationId);
                   const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
                   sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
@@ -480,10 +481,11 @@ function runClaudeOnce(
           try { self.appendSessionLog(sessionDir, 'assistant', fullResponse); } catch { /* 日志写入失败不阻断消息发送 */ }
 
           // 流式卡片 finalize，成功后跳过普通消息，否则回退
+          // 回退条件：finalize 失败 / 卡片异常 / 权限不足 / 卡片内容被截断（超长）
           if (streamingCard && !streamingCard.permissionDenied) {
             hasSentResponse = true;
             streamingCard.finalize(fullResponse).then(ok => {
-              if (!ok || streamingCard.failed || streamingCard.permissionDenied) {
+              if (!ok || streamingCard.failed || streamingCard.permissionDenied || streamingCard.contentTruncated) {
                 const atUserId = activeSessionRef?.lastSenderStaffId || session.startStaffId;
                 sendClaudeResponseToDing(self, getReplyConversationId(session), getReplyWebhook(session), atUserId, fullResponse)
                   .catch(err => console.error('发送钉钉消息失败:', err));

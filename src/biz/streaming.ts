@@ -9,8 +9,12 @@ import { timestamp } from './session';
 const THROTTLE_MS = 500;
 /** 内容增量不足此字符数时延迟发送 */
 const MIN_DELTA_CHARS = 30;
-/** 内容超过此字符时截断并追加提示 */
-const MAX_PREVIEW_CHARS = 2000;
+/**
+ * 卡片最终内容上限（字符数）。
+ * 钉钉 AI Card markdown 组件支持约 50K 字符，这里取 30000 作为安全上限。
+ * 流式中间更新不截断；仅 finalize 时超过此值才截断并回退到普通消息补发。
+ */
+const MAX_CARD_CHARS = 30000;
 
 const DING_API_BASE = 'https://api.dingtalk.com';
 
@@ -43,6 +47,7 @@ export class StreamingCard {
   private inFlight: boolean = false;
   private _permissionDenied: boolean = false;
   private _missingScopes: string = '';
+  private _contentTruncated: boolean = false;
 
   private constructor(opts: IStreamingCardOpts, outTrackId: string) {
     this.self = opts.self;
@@ -156,6 +161,11 @@ export class StreamingCard {
     return this._missingScopes;
   }
 
+  /** finalize 时是否因超长而截断了内容 */
+  get contentTruncated(): boolean {
+    return this._contentTruncated;
+  }
+
   // ==================== 内部方法 ====================
 
   private scheduleFlush(isFinalize: boolean): void {
@@ -195,10 +205,14 @@ export class StreamingCard {
     const content = this.pendingContent;
     this.pendingContent = '';
 
-    // 截断超长内容
+    // 截断策略：
+    // - 流式中间更新：不截断，发送完整内容（钉钉渲染层能处理，isFull=true 每次全量替换）
+    // - finalize 时：超过 MAX_CARD_CHARS 才截断，并标记 contentTruncated 让调用方回退到普通消息补发
     let sendContent = content;
-    if (content.length > MAX_PREVIEW_CHARS) {
-      sendContent = content.substring(0, MAX_PREVIEW_CHARS) + '\n\n...';
+    if (isFinalize && content.length > MAX_CARD_CHARS) {
+      sendContent = content.substring(0, MAX_CARD_CHARS)
+        + '\n\n---\n> ⚠️ 内容较长，卡片仅展示前 ' + MAX_CARD_CHARS + ' 字符，完整内容将以普通消息补发';
+      this._contentTruncated = true;
     }
 
     const accessToken = await this.getAccessToken();
