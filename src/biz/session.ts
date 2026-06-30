@@ -1193,6 +1193,28 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         await recallAckReaction(self, conversationId, msgId, conversationConfig);
       }
     }
+
+    // goonPending: /goon 命令或 Watchdog 超时触发的强制重启，发送"继续"恢复执行
+    if (activeSession.goonPending) {
+      activeSession.goonPending = false;
+      activeSession.interrupted = false;
+      activeSession.isProcessing = true;
+      saveActiveSession(self, found!.key);
+      try {
+        ensureAgent(activeSession);
+        const agent = activeSession.agent!;
+        await agent.executeQuery(self, activeSession.session, {
+          message: '继续',
+          senderNick: activeSession.session.startNickName,
+          senderStaffId: activeSession.lastSenderStaffId,
+        });
+      } catch (err) {
+        console.error('goonPending 恢复执行失败:', err);
+      } finally {
+        activeSession.isProcessing = false;
+      }
+    }
+
     // 检查并处理排队消息
     await processMessageQueue(self, conversationId);
   } else {
