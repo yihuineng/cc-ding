@@ -1,6 +1,6 @@
 {
   "name": "cc-ding",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "本地Claude对接钉钉机器人工具套件",
   "keywords": [
     "cli",
@@ -48,6 +48,7 @@
     "blacklint": "utils-ok blacklint --blacklintDir \"src bin\"",
     "test": "mocha --exit \"test/**/*.test.ts\"",
     "build": "npm run lint && npm run test && node scripts/build.mjs",
+    "publish:minio": "node scripts/publish.mjs",
     "prepublishOnly": "npm run build"
   },
   "files": [

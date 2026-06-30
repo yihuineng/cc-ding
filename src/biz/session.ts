@@ -614,6 +614,7 @@ export function saveActiveSession(self: DingClaude, conversationId: string): voi
       lastSenderStaffId: activeSession.lastSenderStaffId,
       conversationConfig: activeSession.conversationConfig,
       messageQueue: activeSession.messageQueue?.length ? activeSession.messageQueue : undefined,
+      isProcessing: activeSession.isProcessing || undefined,
     };
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify(persistData, null, 2), 'utf-8');
@@ -676,15 +677,17 @@ export function loadActiveSessions(self: DingClaude): IRestoredSession[] {
         messageQueue: data.messageQueue || [],
         conversationConfig: data.conversationConfig,
       });
-      // 记录恢复的会话信息（用于异常中断通知）
-      restored.push({
-        conversationId: conv.conversationId,
-        sessionWebhook: data.session.sessionWebhook || '',
-        senderStaffId: data.lastSenderStaffId || session.startStaffId,
-        senderNick: session.startNickName || '',
-        startTime: session.startTimeStr,
-        hasQueuedMessages: !!(data.messageQueue?.length),
-      });
+      // 仅当持久化时正在处理中，才记录恢复的会话信息（用于异常中断通知）
+      if (data.isProcessing) {
+        restored.push({
+          conversationId: conv.conversationId,
+          sessionWebhook: data.session.sessionWebhook || '',
+          senderStaffId: data.lastSenderStaffId || session.startStaffId,
+          senderNick: session.startNickName || '',
+          startTime: session.startTimeStr,
+          hasQueuedMessages: !!(data.messageQueue?.length),
+        });
+      }
       // 恢复后有排队消息，启动处理
       if (data.messageQueue?.length) {
         console.log(`恢复 ${data.messageQueue.length} 条排队消息: 群=${conv.conversationId}`);

@@ -317,26 +317,32 @@ export async function sendDingMessage(self: DingClaude, opts: ISendMsgOpts): Pro
     const accessToken = await self.dingStreamClient.getAccessToken();
     const url = `https://oapi.dingtalk.com/robot/send?access_token=${dingToken}`;
     try {
-      await urllib.request(url, {
+      const response = await urllib.request(url, {
         method: 'POST',
         data: body,
         contentType: 'json',
         headers: { 'x-acs-dingtalk-access-token': accessToken },
         dataType: 'json',
       });
+      if (response.data?.errcode && response.data.errcode !== 0) {
+        console.error(`sendDingMessage (dingToken) 错误: ${JSON.stringify(response.data)}`);
+      }
     } catch (err) {
       console.error('通过 dingToken 发送钉钉消息失败:', err);
     }
   } else if (sessionWebhook) {
     const accessToken = await self.dingStreamClient.getAccessToken();
     try {
-      await urllib.request(sessionWebhook, {
+      const response = await urllib.request(sessionWebhook, {
         method: 'POST',
         data: body,
         contentType: 'json',
         headers: { 'x-acs-dingtalk-access-token': accessToken },
         dataType: 'json',
       });
+      if (response.data?.errcode && response.data.errcode !== 0) {
+        console.error(`sendDingMessage (sessionWebhook) 错误: ${JSON.stringify(response.data)}`);
+      }
     } catch (err) {
       console.error('通过 sessionWebhook 发送钉钉消息失败:', err);
     }

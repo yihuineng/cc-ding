@@ -34,7 +34,7 @@ import {
   getConversationDir, getSessionsDir, getTasksDir,
   getSessionDir, getSessionId, formatSessionInfo, readSessionLogTail,
   findHistorySession, findLatestSession, updateSessionFile, appendSessionLog,
-  getActiveSessionsFile, saveActiveSession, loadActiveSessions, IRestoredSession,
+  getActiveSessionsFile, saveActiveSession, loadActiveSessions,
   endSession, switchToSession, startNewSession, handleSessionMessage,
   findActiveSession, cleanCache, destroyConversation,
   ensureAgent, sendAckConfirmation, recallAckReaction,
@@ -278,7 +278,7 @@ export class DingClaude {
   appendSessionLog = appendSessionLog;
   getActiveSessionsFile = (conversationId: string) => getActiveSessionsFile(this, conversationId);
   saveActiveSession = (conversationId: string) => saveActiveSession(this, conversationId);
-  loadActiveSessions = () => loadActiveSessions(this) as IRestoredSession[];
+  loadActiveSessions = () => loadActiveSessions(this);
 
   // session - lifecycle
   endSession = (conversationId: string, sessionWebhook: string) => endSession(this, conversationId, sessionWebhook);
@@ -830,15 +830,15 @@ export class DingClaude {
   }
 
   /**
-   * 对命令输出进行截断和清理，防止过长或含特殊字符破坏钉钉消息
+   * 获取文本的最后 N 行
    */
-  private sanitizeOutput(content: string): string {
-    const cleaned = content.replace(/\r\n/g, '\n');
-    const MAX_OUTPUT = 8000;
-    if (cleaned.length > MAX_OUTPUT) {
-      return cleaned.substring(0, MAX_OUTPUT) + '\n...(输出已截断)';
+  private getLastLines(content: string, lineCount: number): string {
+    const lines = content.split('\n');
+    if (lines.length <= lineCount) {
+      return content;
     }
-    return cleaned;
+    const lastLines = lines.slice(-lineCount);
+    return `...(前面 ${lines.length - lineCount} 行已省略)\n${lastLines.join('\n')}`;
   }
 
   /**
@@ -1486,6 +1486,17 @@ export class DingClaude {
       route('/reboot', () => parseRebootCommand(prompt), async rebootCmd => {
         if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
+        // 生成安装命令：优先使用 updatePkgUrl，失败时回退到 npm
+        const buildInstallCmd = (): string | null => {
+          if (!rebootCmd.update) return null;
+          const updatePkgUrl = this.config.updatePkgUrl;
+          if (updatePkgUrl) {
+            // 先下载再安装，避免 npm 解析链接异常
+            return `(curl -sL -o /tmp/cc-ding-latest.tgz "${updatePkgUrl}" && npm install -g /tmp/cc-ding-latest.tgz || npm install -g cc-ding${tag})`;
+          }
+          return `npm install -g cc-ding${tag}`;
+        };
+
         // 校验 tag 参数，防止 shell 注入
         if (rebootCmd.tag && !/^[\w.\-]+$/.test(rebootCmd.tag)) {
           await this.sendDingMessage({
@@ -1559,7 +1570,7 @@ export class DingClaude {
             return;
           }
 
-          const installCmd = rebootCmd.update ? `npm install -g cc-ding${tag}` : null;
+          const installCmd = buildInstallCmd();
 
           // 不发送"正在重启"消息，重启完成后由 notifyPendingReboot() 发送完成通知
 
@@ -1588,9 +1599,7 @@ export class DingClaude {
 
         // ---- /reboot [--update]：仅重启当前 client（不再带 console） ----
         {
-          const cmd = rebootCmd.update
-            ? `npm install -g cc-ding${tag}`
-            : null;
+          const cmd = buildInstallCmd();
 
           // 不发送"正在重启"消息，重启完成后由 notifyPendingReboot() 发送完成通知
 
@@ -2428,7 +2437,7 @@ export class DingClaude {
 
         childExec(finalCmd, {
           cwd: conversationDir,
-          timeout: 30000,
+          timeout: 300000, // 5 分钟
           maxBuffer: 1024 * 1024, // 1MB
         }, async (error, stdout, stderr) => {
           try {
@@ -2436,13 +2445,13 @@ export class DingClaude {
             if (error) {
               replyContent = `❌ 命令执行失败\n\`\`\`\n${error.message}\n\`\`\``;
               if (stderr) {
-                replyContent += `\n\n**stderr:**\n\`\`\`\n${self.sanitizeOutput(stderr)}\n\`\`\``;
+                replyContent += `\n\n**stderr (最后20行):**\n\`\`\`\n${self.getLastLines(stderr, 20)}\n\`\`\``;
               }
             } else {
               const output = stdout || '(无输出)';
-              replyContent = `✅ 执行成功\n\`\`\`\n${self.sanitizeOutput(output)}\n\`\`\``;
+              replyContent = `✅ 执行成功\n\`\`\`\n${self.getLastLines(output, 20)}\n\`\`\``;
               if (stderr) {
-                replyContent += `\n\n**stderr:**\n\`\`\`\n${self.sanitizeOutput(stderr)}\n\`\`\``;
+                replyContent += `\n\n**stderr (最后20行):**\n\`\`\`\n${self.getLastLines(stderr, 20)}\n\`\`\``;
               }
             }
 
@@ -2994,28 +3003,6 @@ export class DingClaude {
   }
 
   /**
-   * 启动时通知用户：上次进程异常退出导致会话中断
-   */
-  private async notifyInterruptedSessions(restored: IRestoredSession[]): Promise<void> {
-    if (!restored.length) return;
-
-    await Promise.allSettled(restored.map(async (rs) => {
-      if (!rs.sessionWebhook || !rs.senderStaffId) return;
-      const atUserId = rs.senderStaffId.includes('-')
-        ? rs.senderStaffId
-        : (await queryDingUser(this, rs.senderStaffId))?.userid || rs.senderStaffId;
-      const queuedInfo = rs.hasQueuedMessages ? '，排队中的消息会继续处理' : '';
-      const content = `⚠️ 上次处理中时进程异常退出，您的会话在 ${rs.startTime} 被中断${queuedInfo}。\n如需继续，请直接发送新消息。`;
-      await sendDingMessage(this, {
-        conversationId: rs.conversationId,
-        sessionWebhook: rs.sessionWebhook,
-        content,
-        atUserId: atUserId !== rs.senderStaffId ? atUserId : undefined,
-      });
-    }));
-  }
-
-  /**
    * 启动时检查是否有重启后待通知的消息
    */
   private async notifyPendingReboot(): Promise<void> {
@@ -3335,11 +3322,8 @@ export class DingClaude {
       scheduleApiKeyCfgDailyReset(this);
     }
 
-    const restoredSessions = this.loadActiveSessions();
-    // 通知异常中断的会话用户（不阻塞启动）
-    this.notifyInterruptedSessions(restoredSessions).catch(err =>
-      console.error('通知中断会话失败', err),
-    );
+    this.loadActiveSessions();
+    // 不再通知异常中断的会话用户（避免打扰）
 
     // 启动时注入一次群信息上下文到各群的 .claude/CLAUDE.md，后续仅在配置变更时才更新
     injectStartupContexts(this);

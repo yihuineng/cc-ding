@@ -24,6 +24,9 @@ RUN CURRENT_NODE=$(node -v 2>/dev/null | sed 's/v//' | cut -d. -f1) && \
       echo "✅ Node.js $(node -v) 已满足要求"; \
     fi
 
+# ── 配置 npm 使用淘宝镜像（解决国内网络问题）────────
+RUN npm config set registry https://registry.npmmirror.com
+
 # ── 全局安装基础工具 ───────────────────────────────────
 # Claude Code: Anthropic 官方 AI 编程工具
 # pm2: Node.js 进程管理器（用于同时启动 console + a2a-server）

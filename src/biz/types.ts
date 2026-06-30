@@ -66,6 +66,8 @@ export interface IConfig {
       defaultSkill?: string;
     }>;
   };
+  /** 自定义更新包 URL（配置后 /reboot --update 优先从此 URL 安装，失败时回退到 npm 官方源） */
+  updatePkgUrl?: string;
 }
 
 export interface IConversation {
@@ -178,6 +180,8 @@ export interface IActiveSession {
   lastActivityTime?: number; // 最近一次 Claude 进程活动时间（watchdog 用）
   /** 当前 turn 自动超时恢复次数 */
   autoRecoveryAttempts?: number;
+  /** Watchdog 首次超时时间戳（用于计算是否超过 60 分钟停止提醒） */
+  watchdogFirstTimeoutAt?: number;
   /** 排队中的消息，当前查询完成后依次处理 */
   messageQueue?: IMessageQueueItem[];
   /** 当前会话使用的 Agent 实例（避免每次从 config 重新创建） */
@@ -191,6 +195,8 @@ export interface IActiveSessionPersist {
   conversationConfig: IConfig['conversations'][0];
   /** 持久化的排队消息（重启后恢复） */
   messageQueue?: IMessageQueueItem[];
+  /** 持久化时是否正在处理中（用于异常中断通知） */
+  isProcessing?: boolean;
 }
 
 // 待审批的授权申请
