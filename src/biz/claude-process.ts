@@ -1115,14 +1115,7 @@ export async function executeClaudeQuery(
               continue;
             }
           }
-          // 无可用配额
-          const atUserId = senderStaffId || session.startStaffId;
-          await sendDingMessage(self, {
-            conversationId: getReplyConversationId(session),
-            sessionWebhook: getReplyWebhook(session),
-            atUserId,
-            content: '⚠️ 当前无可用配额/API Key，请明天再试或联系管理员',
-          });
+          // 无可用配额，静默返回
           return;
         }
         if (err.isFastFail) {
