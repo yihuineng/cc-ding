@@ -26,10 +26,14 @@ interface IAuthUser {
 interface IRemoteConsole {
   /** Console 访问地址（如 http://192.168.1.100:8080） */
   url: string;
-  /** API Token（用于认证） */
-  token: string;
-  /** 该 Console 管理的 client IDs */
-  clientIds: string[];
+  /** API Token（用于认证，与 username/password 二选一） */
+  token?: string;
+  /** 登录账号（与 token 二选一） */
+  username?: string;
+  /** 登录密码（与 token 二选一） */
+  password?: string;
+  /** 该 Console 管理的 client IDs（可选，不配置则自动获取） */
+  clientIds?: string[];
 }
 
 /** 全局 Console 配置 */
@@ -178,9 +182,75 @@ function getGlobalConfig(): IGlobalConfigFile {
 }
 
 /** 获取客户端所属的远程 Console 配置（如果是远程客户端） */
+// Token 缓存：remoteConsoleUrl -> { token, expiresAt }
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+const TOKEN_CACHE_TTL = 23 * 60 * 60 * 1000; // 23 小时（略小于 24 小时的 token 有效期）
+
+// 远程客户端映射缓存：clientId -> remoteConsoleUrl
+const remoteClientMap = new Map<string, string>();
+
 function getClientRemoteConsole(clientId: string): IRemoteConsole | null {
   const globalCfg = getGlobalConfig();
-  return globalCfg.console?.remoteConsoles?.find(rc => rc.clientIds.includes(clientId)) || null;
+  const remoteConsoles = globalCfg.console?.remoteConsoles || [];
+
+  // 先检查 clientIds 配置
+  const byClientIds = remoteConsoles.find(rc => rc.clientIds?.includes(clientId));
+  if (byClientIds) return byClientIds;
+
+  // 再检查缓存的映射关系
+  const remoteUrl = remoteClientMap.get(clientId);
+  if (remoteUrl) {
+    const byCache = remoteConsoles.find(rc => rc.url === remoteUrl);
+    if (byCache) return byCache;
+  }
+
+  return null;
+}
+
+/** 获取远程 Console 的 API Token（支持自动登录和缓存） */
+async function getRemoteConsoleToken(remoteConsole: IRemoteConsole): Promise<string> {
+  // 如果已配置 token，直接返回
+  if (remoteConsole.token) {
+    return remoteConsole.token;
+  }
+
+  // 检查缓存
+  const cached = tokenCache.get(remoteConsole.url);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.token;
+  }
+
+  // 如果配置了账号密码，自动登录获取 token
+  if (remoteConsole.username && remoteConsole.password) {
+    const loginUrl = `${remoteConsole.url.replace(/\/$/, '')}/api/login`;
+    const res = await fetch(loginUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        account: remoteConsole.username,
+        password: remoteConsole.password,
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`远程 Console 登录失败: ${res.status} ${res.statusText}`);
+    }
+
+    const data = await res.json();
+    if (!data.token) {
+      throw new Error('远程 Console 登录失败: 未返回 token');
+    }
+
+    // 缓存 token
+    tokenCache.set(remoteConsole.url, {
+      token: data.token,
+      expiresAt: Date.now() + TOKEN_CACHE_TTL,
+    });
+
+    return data.token;
+  }
+
+  throw new Error('远程 Console 未配置认证信息（需要 token 或 username/password）');
 }
 
 /** 代理请求到远程 Console */
@@ -191,9 +261,10 @@ async function proxyToRemoteConsole(
   body?: string,
 ): Promise<{ status: number; data: any }> {
   const url = `${remoteConsole.url.replace(/\/$/, '')}${apiPath}`;
+  const token = await getRemoteConsoleToken(remoteConsole);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${remoteConsole.token}`,
+    'Authorization': `Bearer ${token}`,
   };
 
   const res = await fetch(url, {
@@ -516,6 +587,39 @@ async function handleGetClients(req: http.IncomingMessage, res: http.ServerRespo
       apiKeysValid: (config?.apiKeyCfg?.claudeSettings || []).filter(s => s.isValid).length,
     };
   });
+
+  // 添加远程 Console 管理的 clients
+  const globalCfg = getGlobalConfig();
+  const remoteConsoles = globalCfg.console?.remoteConsoles || [];
+
+  // 并发请求所有远程 Console
+  const remoteClientsPromises = remoteConsoles.map(async (rc) => {
+    // 如果没有配置 clientIds，自动从远程 Console 获取
+    if (!rc.clientIds || rc.clientIds.length === 0) {
+      try {
+        const { status, data } = await proxyToRemoteConsole(rc, 'GET', '/api/clients');
+        if (status === 200 && data.clients) {
+          // 建立 clientId -> remoteUrl 的映射关系
+          for (const client of data.clients) {
+            remoteClientMap.set(client.clientId, rc.url);
+          }
+          // 将远程 clients 添加到列表中，标记为远程
+          return data.clients.map((client: any) => ({
+            ...client,
+            remote: true,
+            remoteUrl: rc.url,
+          }));
+        }
+      } catch (e) {
+        console.error(`Failed to fetch clients from remote console ${rc.url}:`, e);
+      }
+    }
+    return [];
+  });
+
+  const remoteClientsArrays = await Promise.all(remoteClientsPromises);
+  const remoteClients = remoteClientsArrays.flat();
+  clients.push(...remoteClients);
 
   jsonResponse(res, 200, { clients });
 }
@@ -1129,6 +1233,7 @@ async function handleGetGlobalConfig(req: http.IncomingMessage, res: http.Server
   if (!requireAuth(req, res)) return;
 
   const config = getGlobalConfig();
+  // 返回完整的配置结构，包括 console 和 updatePkgUrl
   jsonResponse(res, 200, { config });
 }
 
@@ -1921,9 +2026,12 @@ textarea { font-family: var(--mono); font-size: 12px; resize: vertical; line-hei
 }
 .status-badge::before {
   content: '';
+  display: inline-block;
   width: 6px;
   height: 6px;
   border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
   animation: pulse 2s ease-in-out infinite;
 }
 .status-online {
@@ -2403,6 +2511,8 @@ async function renderApp() {
   \`;
 
   document.getElementById('user-info').textContent = '👤 ' + state.account;
+  // 先加载全局配置（包含远程 Console 配置），再加载客户端列表
+  await loadGlobalConfig(true); // skipRender = true，避免显示全局配置页面
   await loadClients();
 }
 
@@ -2436,19 +2546,11 @@ function renderClientList() {
     return;
   }
 
-  // 构建远程 client 映射
-  const remoteMap = new Map();
-  const remoteConsoles = state.globalConfig.remoteConsoles || [];
-  for (const rc of remoteConsoles) {
-    for (const cid of rc.clientIds) {
-      remoteMap.set(cid, rc.url);
-    }
-  }
-
   let html = '<div class="card"><div class="flex-between"><div class="card-title" style="margin-bottom:0">客户端列表 (' + state.clients.length + ')</div><button class="btn btn-primary" onclick="showCreateClientModal()">➕ 新建 Client</button></div></div><div class="card-grid">';
   for (const c of state.clients) {
-    const remoteUrl = remoteMap.get(c.clientId);
-    const isRemote = !!remoteUrl;
+    // 使用后端返回的 remote 字段
+    const isRemote = !!c.remote;
+    const remoteUrl = c.remoteUrl || '';
     const remoteIndicator = isRemote ? '<span class="text-muted" style="font-size:11px;margin-left:8px;" title="远程: ' + escHtml(remoteUrl) + '"> 远程</span>' : '';
     const actionBtn = c.online
       ? '<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();stopClient(\\x27' + c.clientId + '\\x27)" title="停止" style="margin-left:8px;">⏹</button>'
@@ -2462,7 +2564,7 @@ function renderClientList() {
             <div class="client-id">\${escHtml(c.clientId)}</div>
           </div>
           <div style="display:flex;align-items:center;">
-            <span class="status-badge \${c.online ? 'status-online' : 'status-offline'}">\${c.online ? '● 在线' : '○ 离线'}</span>
+            <span class="status-badge \${c.online ? 'status-online' : 'status-offline'}">\${c.online ? '在线' : '离线'}</span>
             \${actionBtn}
           </div>
         </div>
@@ -2593,10 +2695,10 @@ function renderClientDetail(clientId) {
   else if (state.activeTab === 'env') contentHtml = renderEnvTab(clientId);
   else if (state.activeTab === 'raw') contentHtml = renderRawTab(clientId);
 
-  // 构建远程标识
-  const remoteConsoles = state.globalConfig.remoteConsoles || [];
-  const remoteConsole = remoteConsoles.find(rc => rc.clientIds.includes(clientId));
-  const remoteIndicator = remoteConsole ? '<span class="text-muted" style="font-size:11px;margin-left:8px;" title="远程: ' + escHtml(remoteConsole.url) + '"> 远程</span>' : '';
+  // 构建远程标识（优先使用后端返回的 remote 字段）
+  const isRemote = c?.remote || false;
+  const remoteUrl = c?.remoteUrl || '';
+  const remoteIndicator = isRemote ? '<span class="text-muted" style="font-size:11px;margin-left:8px;" title="远程: ' + escHtml(remoteUrl) + '"> 远程</span>' : '';
 
   // 启停按钮（根据在线状态切换）
   const startStopBtnHtml = c?.online
@@ -2608,7 +2710,7 @@ function renderClientDetail(clientId) {
       <button class="btn btn-sm" onclick="backToList()">← 返回</button>
       <span>
         <span class="client-name">\${escHtml(c?.clientName || clientId)}\${remoteIndicator}</span>
-        <span class="status-badge \${c?.online ? 'status-online' : 'status-offline'}" style="margin-left:8px;">\${c?.online ? '● 在线' : '○ 离线'}</span>
+        <span class="status-badge \${c?.online ? 'status-online' : 'status-offline'}" style="margin-left:8px;">\${c?.online ? '在线' : '离线'}</span>
       </span>
       <div style="display:flex;gap:8px;">
         \${startStopBtnHtml}
@@ -3411,11 +3513,19 @@ async function saveRawConfig(clientId) {
 }
 
 // ===== Render: Global Config =====
-async function loadGlobalConfig() {
+async function loadGlobalConfig(skipRender = false) {
   try {
     const data = await api('/api/global/config');
-    state.globalConfig = data.config;
-    renderGlobalSection();
+    // data.config 是 IGlobalConfigFile 类型，包含 console 和 updatePkgUrl
+    // 将 console 字段提取到顶层，同时保留 updatePkgUrl
+    const consoleConfig = data.config.console || {};
+    state.globalConfig = {
+      ...consoleConfig,
+      updatePkgUrl: data.config.updatePkgUrl,
+    };
+    if (!skipRender) {
+      renderGlobalSection();
+    }
   } catch (e) {
     toast(e.message, 'error');
   }
@@ -3440,7 +3550,7 @@ function renderGlobalSection() {
       const rc = remoteConsoles[i];
       remoteHtml += '<tr>' +
         '<td class="text-mono">' + escHtml(rc.url) + '</td>' +
-        '<td class="text-mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">' + escHtml(rc.clientIds.join(', ')) + '</td>' +
+        '<td class="text-mono" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;">' + escHtml(rc.clientIds ? rc.clientIds.join(', ') : '(自动获取)') + '</td>' +
         '<td style="white-space:nowrap;">' +
         '<button class="btn btn-sm" onclick="editRemoteConsole(' + i + ')">编辑</button> ' +
         '<button class="btn btn-sm btn-danger" onclick="deleteRemoteConsole(' + i + ')">删除</button>' +
@@ -3503,12 +3613,27 @@ function showRemoteConsoleModal(rc, index) {
         <input type="text" id="rc-url" value="\${isEdit ? escHtml(rc.url) : 'http://'}" placeholder="http://192.168.1.100:8080">
       </div>
       <div class="form-group">
-        <label>API Token *</label>
-        <input type="text" id="rc-token" value="\${isEdit ? escHtml(rc.token) : ''}" placeholder="Bearer Token">
+        <label>认证方式</label>
+        <select id="rc-authType" onchange="toggleRemoteAuthType()">
+          <option value="token" \${isEdit && rc.token ? 'selected' : (!isEdit || rc.token ? 'selected' : '')}>API Token</option>
+          <option value="password" \${isEdit && rc.username ? 'selected' : ''}>账号密码</option>
+        </select>
+      </div>
+      <div id="rc-token-group" class="form-group" style="display:\${isEdit && rc.username ? 'none' : 'block'}">
+        <label>API Token</label>
+        <input type="text" id="rc-token" value="\${isEdit ? escHtml(rc.token || '') : ''}" placeholder="Bearer Token">
+      </div>
+      <div id="rc-username-group" class="form-group" style="display:\${isEdit && rc.username ? 'block' : 'none'}">
+        <label>登录账号</label>
+        <input type="text" id="rc-username" value="\${isEdit ? escHtml(rc.username || '') : ''}" placeholder="admin">
+      </div>
+      <div id="rc-password-group" class="form-group" style="display:\${isEdit && rc.username ? 'block' : 'none'}">
+        <label>登录密码</label>
+        <input type="password" id="rc-password" value="\${isEdit ? escHtml(rc.password || '') : ''}" placeholder="留空表示不变">
       </div>
       <div class="form-group">
-        <label>Client IDs (逗号分隔) *</label>
-        <input type="text" id="rc-clientIds" value="\${isEdit ? escHtml(rc.clientIds.join(', ')) : ''}" placeholder="client-a, client-b">
+        <label>Client IDs (逗号分隔，可选)</label>
+        <input type="text" id="rc-clientIds" value="\${isEdit && rc.clientIds ? escHtml(rc.clientIds.join(', ')) : ''}" placeholder="留空则自动获取">
       </div>
       <div class="modal-actions">
         <button class="btn" onclick="document.getElementById('remote-console-modal').remove()">取消</button>
@@ -3518,18 +3643,45 @@ function showRemoteConsoleModal(rc, index) {
   showModal('remote-console-modal', isEdit ? '编辑远程 Console' : '添加远程 Console', bodyHtml, 'rc-url');
 }
 
+function toggleRemoteAuthType() {
+  const authType = document.getElementById('rc-authType').value;
+  document.getElementById('rc-token-group').style.display = authType === 'token' ? 'block' : 'none';
+  document.getElementById('rc-username-group').style.display = authType === 'password' ? 'block' : 'none';
+  document.getElementById('rc-password-group').style.display = authType === 'password' ? 'block' : 'none';
+}
+
 async function saveRemoteConsole(index) {
   const url = document.getElementById('rc-url').value.trim();
+  const authType = document.getElementById('rc-authType').value;
   const token = document.getElementById('rc-token').value.trim();
+  const username = document.getElementById('rc-username').value.trim();
+  const password = document.getElementById('rc-password').value.trim();
   const clientIdsStr = document.getElementById('rc-clientIds').value.trim();
 
-  if (!url || !token || !clientIdsStr) {
-    toast('请填写所有必填字段', 'error');
+  if (!url) {
+    toast('请填写 Console 地址', 'error');
     return;
   }
 
-  const clientIds = clientIdsStr.split(',').map(s => s.trim()).filter(Boolean);
-  const remoteConsole = { url, token, clientIds };
+  if (authType === 'token' && !token) {
+    toast('请填写 API Token', 'error');
+    return;
+  }
+
+  if (authType === 'password' && (!username || !password)) {
+    toast('请填写登录账号和密码', 'error');
+    return;
+  }
+
+  const clientIds = clientIdsStr ? clientIdsStr.split(',').map(s => s.trim()).filter(Boolean) : undefined;
+  const remoteConsole = { url, clientIds };
+
+  if (authType === 'token') {
+    remoteConsole.token = token;
+  } else {
+    remoteConsole.username = username;
+    remoteConsole.password = password;
+  }
 
   try {
     const gc = state.globalConfig;
