@@ -1028,44 +1028,51 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
   }
 
   try {
-    ensureAgent(activeSession);
-    const agent = activeSession.agent!;
-    await agent.executeQuery(self, activeSession.session, {
-      message,
-      skill: activeSession.conversationConfig.taskCfg?.skill,
-      senderNick,
-      senderStaffId,
-    });
-  } catch (err) {
-    console.error('执行队列 Agent 查询失败:', err);
-    await sendDingMessage(self, {
-      conversationId: entryConvId, sessionWebhook, atUserId: senderStaffId,
-      content: ` 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
-    });
-  } finally {
-    activeSession.isProcessing = false;
-    // 水印：队列消息处理完成
-    if (entryCreateAt) userMessageWatermark.markCompleted(conversationId, entryCreateAt);
-  }
-
-  // goonPending: /goon 命令触发的强制重启，发送"继续"恢复执行
-  if (activeSession.goonPending) {
-    activeSession.goonPending = false;
-    activeSession.interrupted = false;
-    activeSession.isProcessing = true;
     try {
       ensureAgent(activeSession);
       const agent = activeSession.agent!;
       await agent.executeQuery(self, activeSession.session, {
-        message: '继续',
-        senderNick: activeSession.session.startNickName,
-        senderStaffId: activeSession.lastSenderStaffId,
+        message,
+        skill: activeSession.conversationConfig.taskCfg?.skill,
+        senderNick,
+        senderStaffId,
       });
     } catch (err) {
-      console.error('goonPending 恢复执行失败:', err);
-    } finally {
-      activeSession.isProcessing = false;
+      console.error('执行队列 Agent 查询失败:', err);
+      try {
+        await sendDingMessage(self, {
+          conversationId: entryConvId, sessionWebhook, atUserId: senderStaffId,
+          content: ` 处理消息时发生错误: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      } catch (sendErr) {
+        console.warn('发送错误消息失败:', sendErr);
+      }
     }
+
+    // goonPending: /goon 命令触发的强制重启，发送"继续"恢复执行
+    if (activeSession.goonPending) {
+      activeSession.goonPending = false;
+      activeSession.interrupted = false;
+      activeSession.isProcessing = true;
+      try {
+        ensureAgent(activeSession);
+        const agent = activeSession.agent!;
+        await agent.executeQuery(self, activeSession.session, {
+          message: '继续',
+          senderNick: activeSession.session.startNickName,
+          senderStaffId: activeSession.lastSenderStaffId,
+        });
+      } catch (err) {
+        console.error('goonPending 恢复执行失败:', err);
+      } finally {
+        activeSession.isProcessing = false;
+      }
+    }
+  } finally {
+    // 确保无论如何都会继续处理队列中的下一条消息
+    activeSession.isProcessing = false;
+    // 水印：队列消息处理完成
+    if (entryCreateAt) userMessageWatermark.markCompleted(conversationId, entryCreateAt);
   }
 
   // 如果队列还有消息，继续处理
@@ -1216,9 +1223,13 @@ export async function handleSessionMessage(self: DingClaude, opts: {
       activeSession.isProcessing = false;
       // 水印：标记处理完成
       if (msgCreateAt) userMessageWatermark.markCompleted(conversationId, msgCreateAt);
-      // 处理完成，撤回确认表情
-      if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
-        await recallAckReaction(self, conversationId, msgId, conversationConfig);
+      // 处理完成，撤回确认表情（用 try-catch 包裹，避免影响后续队列处理）
+      try {
+        if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
+          await recallAckReaction(self, conversationId, msgId, conversationConfig);
+        }
+      } catch (recallErr) {
+        console.warn('撤回确认表情失败:', recallErr);
       }
     }
 

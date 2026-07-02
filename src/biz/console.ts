@@ -63,6 +63,7 @@ interface ISystemStatus {
   ccDingVersion: string;
   nodeVersion: string;
   platform: string;
+  hostname: string;
   uptime: number;
   clients: number;
   onlineClients: number;
@@ -270,7 +271,7 @@ async function proxyToRemoteConsole(
   const res = await fetch(url, {
     method,
     headers,
-    body: body ? JSON.parse(body) : undefined,
+    body: body || undefined,
   });
 
   const data = await res.json();
@@ -678,7 +679,27 @@ async function handleGetClientConfig(req: http.IncomingMessage, res: http.Server
 async function handlePatchClientConfig(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
   if (!requireAuth(req, res)) return;
 
-  const remoteConsole = getClientRemoteConsole(clientId);
+  let remoteConsole = getClientRemoteConsole(clientId);
+
+  // 如果缓存中没有找到，尝试从所有远程 Console 中查找
+  if (!remoteConsole) {
+    const globalCfg = getGlobalConfig();
+    const remoteConsoles = globalCfg.console?.remoteConsoles || [];
+
+    for (const rc of remoteConsoles) {
+      try {
+        const { status } = await proxyToRemoteConsole(rc, 'GET', `/api/clients/${clientId}/config`);
+        if (status === 200) {
+          // 找到了，建立映射关系
+          remoteClientMap.set(clientId, rc.url);
+          remoteConsole = rc;
+          break;
+        }
+      } catch (e) {
+        // 忽略错误，继续尝试下一个远程 Console
+      }
+    }
+  }
 
   try {
     const body = await readBody(req);
@@ -987,15 +1008,27 @@ async function handleDeleteConversation(req: http.IncomingMessage, res: http.Ser
 async function handleGetRawConfig(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
   if (!requireAuth(req, res)) return;
 
-  const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
-  if (!fs.existsSync(configPath)) {
-    jsonError(res, 404, '客户端配置不存在');
-    return;
-  }
+  const remoteConsole = getClientRemoteConsole(clientId);
 
   try {
-    const raw = fs.readFileSync(configPath, 'utf-8');
-    jsonResponse(res, 200, { content: raw });
+    if (remoteConsole) {
+      // 远程客户端：通过 API 代理获取
+      const { status, data } = await proxyToRemoteConsole(remoteConsole, 'GET', `/api/clients/${clientId}/config/raw`);
+      if (status !== 200) {
+        jsonError(res, status, data.error || '远程原始配置读取失败');
+        return;
+      }
+      jsonResponse(res, 200, data);
+    } else {
+      // 本地客户端
+      const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
+      if (!fs.existsSync(configPath)) {
+        jsonError(res, 404, '客户端配置不存在');
+        return;
+      }
+      const raw = fs.readFileSync(configPath, 'utf-8');
+      jsonResponse(res, 200, { content: raw });
+    }
   } catch (err) {
     jsonError(res, 500, '读取失败');
   }
@@ -1005,22 +1038,40 @@ async function handleGetRawConfig(req: http.IncomingMessage, res: http.ServerRes
 async function handlePutRawConfig(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
   if (!requireAuth(req, res)) return;
 
-  const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
-  if (!fs.existsSync(configPath)) {
-    jsonError(res, 404, '客户端配置不存在');
-    return;
-  }
+  const remoteConsole = getClientRemoteConsole(clientId);
 
   try {
     const body = await readBody(req);
     const data = JSON.parse(body || '{}');
     // 验证 JSON
     JSON.parse(data.content || '');
-    // 备份
-    backupFile(configPath);
-    // 原子写入
-    atomicWrite(configPath, data.content);
-    jsonResponse(res, 200, { message: '原始配置已保存' });
+
+    if (remoteConsole) {
+      // 远程客户端：通过 API 代理保存
+      const { status, data: responseData } = await proxyToRemoteConsole(
+        remoteConsole,
+        'PUT',
+        `/api/clients/${clientId}/config/raw`,
+        body,
+      );
+      if (status !== 200) {
+        jsonError(res, status, responseData.error || '远程原始配置保存失败');
+        return;
+      }
+      jsonResponse(res, 200, responseData);
+    } else {
+      // 本地客户端
+      const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
+      if (!fs.existsSync(configPath)) {
+        jsonError(res, 404, '客户端配置不存在');
+        return;
+      }
+      // 备份
+      backupFile(configPath);
+      // 原子写入
+      atomicWrite(configPath, data.content);
+      jsonResponse(res, 200, { message: '原始配置已保存' });
+    }
   } catch (err) {
     jsonError(res, 400, 'JSON 格式错误');
   }
@@ -1327,11 +1378,119 @@ async function handleGetStatus(req: http.IncomingMessage, res: http.ServerRespon
     ccDingVersion: projUtil().getPkgVersion(),
     nodeVersion: process.version,
     platform: process.platform,
+    hostname: require('os').hostname(),
     uptime: process.uptime(),
     clients: clientDirs.length,
     onlineClients: onlineCount,
   };
   jsonResponse(res, 200, { status });
+}
+
+/** GET /api/remote/status?url=... - 获取远程 Console 的系统状态 */
+async function handleGetRemoteStatus(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  const urlMatch = req.url?.match(/[?&]url=([^&]+)/);
+  if (!urlMatch) {
+    jsonError(res, 400, '缺少 url 参数');
+    return;
+  }
+
+  const remoteUrl = decodeURIComponent(urlMatch[1]);
+  const globalCfg = getGlobalConfig();
+  const remoteConsoles = globalCfg.console?.remoteConsoles || [];
+  const remoteConsole = remoteConsoles.find(rc => rc.url === remoteUrl);
+
+  if (!remoteConsole) {
+    jsonError(res, 404, '远程 Console 未配置');
+    return;
+  }
+
+  try {
+    const { status, data } = await proxyToRemoteConsole(remoteConsole, 'GET', '/api/status');
+    if (status !== 200) {
+      jsonError(res, status, data.error || '获取远程状态失败');
+      return;
+    }
+    jsonResponse(res, 200, data);
+  } catch (err) {
+    jsonError(res, 500, `获取远程状态失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** 从请求 URL 中提取 url 参数对应的远程 Console 配置 */
+function getRemoteConsoleFromQuery(req: http.IncomingMessage): IRemoteConsole | null {
+  const urlMatch = req.url?.match(/[?&]url=([^&]+)/);
+  if (!urlMatch) return null;
+  const remoteUrl = decodeURIComponent(urlMatch[1]);
+  const globalCfg = getGlobalConfig();
+  const remoteConsoles = globalCfg.console?.remoteConsoles || [];
+  return remoteConsoles.find(rc => rc.url === remoteUrl) || null;
+}
+
+/** 通用远程全局配置代理辅助 */
+async function proxyRemoteGlobal(
+  remoteConsole: IRemoteConsole,
+  method: string,
+  remoteApiPath: string,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  actionLabel: string,
+): Promise<void> {
+  let bodyStr: string | undefined;
+  if (method !== 'GET' && req.method !== 'GET') {
+    bodyStr = await readBody(req);
+  }
+  try {
+    const { status, data } = await proxyToRemoteConsole(remoteConsole, method, remoteApiPath, bodyStr);
+    if (status !== 200 && status !== 201) {
+      jsonError(res, status, data.error || `${actionLabel}失败`);
+      return;
+    }
+    jsonResponse(res, 200, data);
+  } catch (err) {
+    jsonError(res, 500, `${actionLabel}失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** GET /api/remote/global/config?url=... - 获取远程 Console 的全局配置 */
+async function handleGetRemoteGlobalConfig(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const rc = getRemoteConsoleFromQuery(req);
+  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+  await proxyRemoteGlobal(rc, 'GET', '/api/global/config', req, res, '获取远程全局配置');
+}
+
+/** PUT /api/remote/global/config?url=... - 更新远程 Console 的全局配置 */
+async function handlePutRemoteGlobalConfig(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const rc = getRemoteConsoleFromQuery(req);
+  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+  await proxyRemoteGlobal(rc, 'PUT', '/api/global/config', req, res, '更新远程全局配置');
+}
+
+/** GET /api/remote/global/settings-tpl?url=... - 获取远程 Console 的 settings-tpl */
+async function handleGetRemoteSettingsTpl(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const rc = getRemoteConsoleFromQuery(req);
+  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+  await proxyRemoteGlobal(rc, 'GET', '/api/global/settings-tpl', req, res, '获取远程 settings-tpl');
+}
+
+/** PUT /api/remote/global/settings-tpl?url=... - 更新远程 Console 的 settings-tpl */
+async function handlePutRemoteSettingsTpl(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const rc = getRemoteConsoleFromQuery(req);
+  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+  await proxyRemoteGlobal(rc, 'PUT', '/api/global/settings-tpl', req, res, '更新远程 settings-tpl');
+}
+
+/** PUT /api/remote/global/update-pkg-url?url=... - 更新远程 Console 的 updatePkgUrl */
+async function handlePutRemoteUpdatePkgUrl(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const rc = getRemoteConsoleFromQuery(req);
+  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+  await proxyRemoteGlobal(rc, 'PUT', '/api/global/update-pkg-url', req, res, '更新远程更新包 URL');
 }
 
 // 需要从 common.ts 导入
@@ -1386,6 +1545,12 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
     return;
   }
 
+  // GET /api/remote/status?url=...
+  if (pathname === '/api/remote/status' && req.method === 'GET') {
+    await handleGetRemoteStatus(req, res);
+    return;
+  }
+
   // GET /api/global/config
   if (pathname === '/api/global/config' && req.method === 'GET') {
     await handleGetGlobalConfig(req, res);
@@ -1413,6 +1578,36 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // PUT /api/global/update-pkg-url
   if (pathname === '/api/global/update-pkg-url' && req.method === 'PUT') {
     await handlePutUpdatePkgUrl(req, res);
+    return;
+  }
+
+  // GET /api/remote/global/config?url=...
+  if (pathname === '/api/remote/global/config' && req.method === 'GET') {
+    await handleGetRemoteGlobalConfig(req, res);
+    return;
+  }
+
+  // PUT /api/remote/global/config?url=...
+  if (pathname === '/api/remote/global/config' && req.method === 'PUT') {
+    await handlePutRemoteGlobalConfig(req, res);
+    return;
+  }
+
+  // GET /api/remote/global/settings-tpl?url=...
+  if (pathname === '/api/remote/global/settings-tpl' && req.method === 'GET') {
+    await handleGetRemoteSettingsTpl(req, res);
+    return;
+  }
+
+  // PUT /api/remote/global/settings-tpl?url=...
+  if (pathname === '/api/remote/global/settings-tpl' && req.method === 'PUT') {
+    await handlePutRemoteSettingsTpl(req, res);
+    return;
+  }
+
+  // PUT /api/remote/global/update-pkg-url?url=...
+  if (pathname === '/api/remote/global/update-pkg-url' && req.method === 'PUT') {
+    await handlePutRemoteUpdatePkgUrl(req, res);
     return;
   }
 
@@ -1781,8 +1976,8 @@ export async function startConsoleServer(options: IConsoleServerOptions = {}): P
 /** 获取 Console 服务 URL（用于 /open console 命令） */
 export function getConsoleUrl(port?: number, host?: string): string {
   const globalCfg = getGlobalConfig();
-  const p = port ?? globalCfg.port ?? 8080;
-  const h = host ?? globalCfg.host ?? '0.0.0.0';
+  const p = port ?? globalCfg.console?.port ?? 8080;
+  const h = host ?? globalCfg.console?.host ?? '0.0.0.0';
   // 绑定地址 0.0.0.0/:: 无法在浏览器中访问，替换为 localhost
   const urlHost = (h === '0.0.0.0' || h === '::') ? 'localhost' : h;
   return `http://${urlHost}:${p}`;
@@ -2339,8 +2534,12 @@ const state = {
   files: {},
   envVars: [],
   globalConfig: {},
-  status: null,
   settingsTpl: '',
+  localStatus: null,
+  remoteStatuses: {},
+  remoteGlobalConfigs: {},
+  remoteSettingsTpls: {},
+  activeRemoteGlobalUrl: null,
 };
 
 // 常用环境变量提示（用于添加时的 autocomplete）
@@ -2497,7 +2696,6 @@ async function renderApp() {
       <h1>🖥️ cc-ding Console</h1>
       <div class="header-actions">
         <span class="user-info" id="user-info">👤 admin</span>
-        <button class="btn btn-sm" onclick="loadStatus();showTab('status')">系统</button>
         <button class="btn btn-sm" onclick="loadGlobalConfig()">全局</button>
         <button class="btn btn-sm" onclick="doLogout()">退出</button>
       </div>
@@ -2506,7 +2704,6 @@ async function renderApp() {
       <div id="client-list-section"></div>
       <div id="client-detail-section" style="display:none"></div>
       <div id="global-section" style="display:none"></div>
-      <div id="status-section" style="display:none"></div>
     </div>
   \`;
 
@@ -2527,14 +2724,113 @@ function doLogout() {
 }
 
 // ===== Load Clients =====
-async function loadClients() {
+let clientsLoading = false;
+let lastClientsLoadTime = 0;
+const CLIENTS_CACHE_TTL = 30000; // 30 秒缓存
+
+async function loadClients(forceRefresh = false) {
+  // 如果正在加载，则跳过
+  if (clientsLoading) return;
+
+  // 如果有缓存且未过期且不是强制刷新，则直接渲染
+  if (!forceRefresh && state.clients.length > 0 && (Date.now() - lastClientsLoadTime < CLIENTS_CACHE_TTL)) {
+    renderClientList();
+    // 在后台刷新数据
+    refreshClientsInBackground();
+    return;
+  }
+
+  clientsLoading = true;
   try {
+    // 先渲染现有数据（如果有）
+    if (state.clients.length > 0) {
+      renderClientList();
+    }
+
     const data = await api('/api/clients');
     state.clients = data.clients;
+    lastClientsLoadTime = Date.now();
+
+    // 加载本地系统信息
+    try {
+      const statusData = await api('/api/status');
+      state.localStatus = statusData.status;
+      state.localStatusLoadTime = Date.now();
+    } catch (e) {
+      console.error('Failed to load local status:', e);
+    }
+
+    // 为每个远程机器加载系统信息
+    const remoteUrls = [...new Set(state.clients.filter(c => c.remote).map(c => c.remoteUrl))];
+    if (!state.remoteStatuses) state.remoteStatuses = {};
+    if (!state.remoteStatusLoadTimes) state.remoteStatusLoadTimes = {};
+
+    for (const url of remoteUrls) {
+      if (url) {
+        try {
+          // 通过本地 API 代理获取远程系统信息
+          const statusData = await api('/api/remote/status?url=' + encodeURIComponent(url));
+          state.remoteStatuses[url] = statusData.status;
+          state.remoteStatusLoadTimes[url] = Date.now();
+        } catch (e) {
+          console.error('Failed to load remote status for ' + url + ':', e);
+        }
+      }
+    }
+
     renderClientList();
   } catch (e) {
     toast('加载客户端列表失败: ' + e.message, 'error');
+  } finally {
+    clientsLoading = false;
   }
+}
+
+// 后台刷新数据（不阻塞 UI）
+async function refreshClientsInBackground() {
+  try {
+    // 刷新客户端列表
+    const data = await api('/api/clients');
+    state.clients = data.clients;
+    lastClientsLoadTime = Date.now();
+
+    // 刷新本地系统信息
+    try {
+      const statusData = await api('/api/status');
+      state.localStatus = statusData.status;
+      state.localStatusLoadTime = Date.now();
+    } catch (e) {
+      // 忽略错误
+    }
+
+    // 刷新远程系统信息
+    const remoteUrls = [...new Set(state.clients.filter(c => c.remote).map(c => c.remoteUrl))];
+    if (!state.remoteStatuses) state.remoteStatuses = {};
+    if (!state.remoteStatusLoadTimes) state.remoteStatusLoadTimes = {};
+
+    for (const url of remoteUrls) {
+      if (url) {
+        try {
+          const statusData = await api('/api/remote/status?url=' + encodeURIComponent(url));
+          state.remoteStatuses[url] = statusData.status;
+          state.remoteStatusLoadTimes[url] = Date.now();
+        } catch (e) {
+          // 忽略错误
+        }
+      }
+    }
+
+    renderClientList();
+  } catch (e) {
+    // 忽略错误
+  }
+}
+
+// 强制刷新所有数据
+async function refreshClients() {
+  toast('正在刷新...', 'info');
+  await loadClients(true);
+  toast('刷新完成', 'success');
 }
 
 function renderClientList() {
@@ -2542,42 +2838,165 @@ function renderClientList() {
   if (!section) return;
 
   if (state.clients.length === 0) {
-    section.innerHTML = '<div class="card"><div class="flex-between"><div class="card-title" style="margin-bottom:0">客户端列表</div><button class="btn btn-primary" onclick="showCreateClientModal()">➕ 新建 Client</button></div></div><div class="empty-state"><div class="icon">📭</div><p>暂无客户端配置</p><p class="text-muted">请创建新 Client 或运行 cc-ding init 初始化</p></div>';
+    section.innerHTML = '<div class="card"><div class="flex-between"><div class="card-title" style="margin-bottom:0">客户端列表</div><div style="display:flex;gap:8px;"><button class="btn btn-sm" onclick="refreshClients()">🔄 刷新</button><button class="btn btn-primary" onclick="showCreateClientModal()">➕ 新建 Client</button></div></div><div class="empty-state"><div class="icon">📭</div><p>暂无客户端配置</p><p class="text-muted">请创建新 Client 或运行 cc-ding init 初始化</p></div>';
     return;
   }
 
-  let html = '<div class="card"><div class="flex-between"><div class="card-title" style="margin-bottom:0">客户端列表 (' + state.clients.length + ')</div><button class="btn btn-primary" onclick="showCreateClientModal()">➕ 新建 Client</button></div></div><div class="card-grid">';
-  for (const c of state.clients) {
-    // 使用后端返回的 remote 字段
-    const isRemote = !!c.remote;
-    const remoteUrl = c.remoteUrl || '';
-    const remoteIndicator = isRemote ? '<span class="text-muted" style="font-size:11px;margin-left:8px;" title="远程: ' + escHtml(remoteUrl) + '"> 远程</span>' : '';
-    const actionBtn = c.online
-      ? '<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();stopClient(\\x27' + c.clientId + '\\x27)" title="停止" style="margin-left:8px;">⏹</button>'
-      : '<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();startClient(\\x27' + c.clientId + '\\x27)" title="启动" style="margin-left:8px;">▶</button>';
+  // 按照机器分组：本地 vs 远程
+  const localClients = state.clients.filter(c => !c.remote);
+  const remoteClients = state.clients.filter(c => c.remote);
 
-    html += \`
-      <div class="card client-card" onclick="selectClient('\${c.clientId}')">
-        <div class="flex-between">
-          <div>
-            <div class="client-name">\${escHtml(c.clientName || c.clientId)}\${remoteIndicator}</div>
-            <div class="client-id">\${escHtml(c.clientId)}</div>
-          </div>
-          <div style="display:flex;align-items:center;">
-            <span class="status-badge \${c.online ? 'status-online' : 'status-offline'}">\${c.online ? '在线' : '离线'}</span>
-            \${actionBtn}
-          </div>
+  // 远程客户端按 URL 分组
+  const remoteGroups = {};
+  for (const c of remoteClients) {
+    const url = c.remoteUrl || 'unknown';
+    if (!remoteGroups[url]) {
+      remoteGroups[url] = [];
+    }
+    remoteGroups[url].push(c);
+  }
+
+  let html = '';
+  html += '<div style="margin-bottom:12px;text-align:right;"><button class="btn btn-sm" onclick="refreshClients()">🔄 刷新数据</button></div>';
+
+  // 本地机器分组
+  if (localClients.length > 0) {
+    const localOnline = localClients.filter(c => c.online).length;
+    const localStatus = state.localStatus;
+    const hostname = localStatus?.hostname || 'localhost';
+    html += '<div class="card"><div class="flex-between" style="margin-bottom:12px;"><div class="card-title" style="margin-bottom:0;">💻 ' + escHtml(hostname) + ' (' + localClients.length + ')</div><div style="display:flex;gap:8px;"><button class="btn btn-sm" onclick="loadGlobalConfig()">⚙️ 全局配置</button><button class="btn btn-primary" onclick="showCreateClientModal()">➕ 新建 Client</button></div></div>';
+
+    // 显示本地系统信息
+    if (localStatus) {
+      // 动态计算运行时长
+      const uptimeSeconds = localStatus.uptime + Math.floor((Date.now() - (state.localStatusLoadTime || Date.now())) / 1000);
+      html += '<div style="display:flex;gap:16px;margin-bottom:12px;font-size:12px;color:var(--text-secondary);flex-wrap:wrap;">';
+      html += '<span>📊 总计: ' + localClients.length + '</span>';
+      html += '<span style="color:var(--accent);">● 在线: ' + localOnline + '</span>';
+      html += '<span>○ 离线: ' + (localClients.length - localOnline) + '</span>';
+      html += '<span>📦 cc-ding: ' + escHtml(localStatus.ccDingVersion) + '</span>';
+      html += '<span>⚙️ Node: ' + escHtml(localStatus.nodeVersion) + '</span>';
+      html += '<span>💻 平台: ' + escHtml(localStatus.platform) + '</span>';
+      html += '<span>⏱️ 运行: <span id="local-uptime">' + formatUptime(uptimeSeconds) + '</span></span>';
+      html += '</div>';
+    } else {
+      html += '<div style="display:flex;gap:16px;margin-bottom:12px;font-size:12px;color:var(--text-secondary);">';
+      html += '<span>📊 总计: ' + localClients.length + '</span>';
+      html += '<span style="color:var(--accent);">● 在线: ' + localOnline + '</span>';
+      html += '<span>○ 离线: ' + (localClients.length - localOnline) + '</span>';
+      html += '</div>';
+    }
+
+    html += '<div class="card-grid">';
+    for (const c of localClients) {
+      html += renderClientCard(c);
+    }
+    html += '</div></div>';
+  }
+
+  // 远程机器分组
+  for (const [url, clients] of Object.entries(remoteGroups)) {
+    const online = clients.filter(c => c.online).length;
+    const remoteStatus = state.remoteStatuses[url];
+    const hostname = remoteStatus?.hostname || url;
+    const safeUrlForId = url.replace(/[^a-zA-Z0-9]/g, '_');
+    html += '<div class="card"><div class="flex-between" style="margin-bottom:12px;"><div class="card-title" style="margin-bottom:0;">🌐 ' + escHtml(hostname) + ' (' + clients.length + ')</div><div style="display:flex;gap:8px;"><button class="btn btn-sm" onclick="loadRemoteGlobalConfig(' + JSON.stringify(url) + ')">⚙️ 全局配置</button><button class="btn btn-sm" onclick="refreshRemoteStatus(' + JSON.stringify(url) + ')">🔄 刷新</button></div></div>';
+
+    // 显示远程系统信息
+    if (remoteStatus) {
+      // 动态计算运行时长
+      const loadTime = state.remoteStatusLoadTimes?.[url] || Date.now();
+      const uptimeSeconds = remoteStatus.uptime + Math.floor((Date.now() - loadTime) / 1000);
+      const safeUrlId = url.replace(/[^a-zA-Z0-9]/g, '_');
+      html += '<div style="display:flex;gap:16px;margin-bottom:12px;font-size:12px;color:var(--text-secondary);flex-wrap:wrap;">';
+      html += '<span>📊 总计: ' + clients.length + '</span>';
+      html += '<span style="color:var(--accent);">● 在线: ' + online + '</span>';
+      html += '<span>○ 离线: ' + (clients.length - online) + '</span>';
+      html += '<span>📦 cc-ding: ' + escHtml(remoteStatus.ccDingVersion) + '</span>';
+      html += '<span>⚙️ Node: ' + escHtml(remoteStatus.nodeVersion) + '</span>';
+      html += '<span>💻 平台: ' + escHtml(remoteStatus.platform) + '</span>';
+      html += '<span>⏱️ 运行: <span id="remote-uptime-' + safeUrlId + '">' + formatUptime(uptimeSeconds) + '</span></span>';
+      html += '</div>';
+    } else {
+      html += '<div style="display:flex;gap:16px;margin-bottom:12px;font-size:12px;color:var(--text-secondary);">';
+      html += '<span>📊 总计: ' + clients.length + '</span>';
+      html += '<span style="color:var(--accent);">● 在线: ' + online + '</span>';
+      html += '<span>○ 离线: ' + (clients.length - online) + '</span>';
+      html += '</div>';
+    }
+
+    html += '<div class="card-grid">';
+    for (const c of clients) {
+      html += renderClientCard(c);
+    }
+    html += '</div></div>';
+  }
+
+  section.innerHTML = html;
+
+  // 启动运行时长更新定时器
+  startUptimeUpdater();
+}
+
+// 运行时长更新定时器
+let uptimeUpdaterInterval = null;
+function startUptimeUpdater() {
+  // 清除之前的定时器
+  if (uptimeUpdaterInterval) {
+    clearInterval(uptimeUpdaterInterval);
+  }
+
+  // 每秒更新一次运行时长
+  uptimeUpdaterInterval = setInterval(() => {
+    // 更新本地运行时长
+    if (state.localStatus && state.localStatusLoadTime) {
+      const localUptimeEl = document.getElementById('local-uptime');
+      if (localUptimeEl) {
+        const uptimeSeconds = state.localStatus.uptime + Math.floor((Date.now() - state.localStatusLoadTime) / 1000);
+        localUptimeEl.textContent = formatUptime(uptimeSeconds);
+      }
+    }
+
+    // 更新远程运行时长
+    if (state.remoteStatuses && state.remoteStatusLoadTimes) {
+      for (const [url, status] of Object.entries(state.remoteStatuses)) {
+        if (status && state.remoteStatusLoadTimes[url]) {
+          const safeUrlId = url.replace(/[^a-zA-Z0-9]/g, '_');
+          const remoteUptimeEl = document.getElementById('remote-uptime-' + safeUrlId);
+          if (remoteUptimeEl) {
+            const uptimeSeconds = status.uptime + Math.floor((Date.now() - state.remoteStatusLoadTimes[url]) / 1000);
+            remoteUptimeEl.textContent = formatUptime(uptimeSeconds);
+          }
+        }
+      }
+    }
+  }, 1000);
+}
+
+function renderClientCard(c) {
+  const actionBtn = c.online
+    ? '<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();stopClient(\\x27' + c.clientId + '\\x27)" title="停止" style="margin-left:8px;">⏹</button>'
+    : '<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();startClient(\\x27' + c.clientId + '\\x27)" title="启动" style="margin-left:8px;">▶</button>';
+
+  return \`
+    <div class="card client-card" onclick="selectClient('\${c.clientId}')">
+      <div class="flex-between">
+        <div>
+          <div class="client-name">\${escHtml(c.clientName || c.clientId)}</div>
+          <div class="client-id">\${escHtml(c.clientId)}</div>
         </div>
-        <div class="client-meta">
-          \${c.pid != null ? '<span>🆔 PID: ' + c.pid + '</span>' : ''}
-          <span>💬 \${c.conversationCount} 会话</span>
-          <span>🔑 \${c.apiKeysValid}/\${c.apiKeyCount} Key</span>
+        <div style="display:flex;align-items:center;">
+          <span class="status-badge \${c.online ? 'status-online' : 'status-offline'}">\${c.online ? '在线' : '离线'}</span>
+          \${actionBtn}
         </div>
       </div>
-    \`;
-  }
-  html += '</div>';
-  section.innerHTML = html;
+      <div class="client-meta">
+        \${c.pid != null ? '<span>🆔 PID: ' + c.pid + '</span>' : ''}
+        <span>💬 \${c.conversationCount} 会话</span>
+        <span>🔑 \${c.apiKeysValid}/\${c.apiKeyCount} Key</span>
+      </div>
+    </div>
+  \`;
 }
 
 // ===== Create Client Modal =====
@@ -2806,15 +3225,20 @@ function formatBytes(bytes) {
 }
 
 function formatUptime(ms) {
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
+  const totalSeconds = Math.floor(ms / 1000);
+  const seconds = totalSeconds % 60;
+  const minutes = Math.floor(totalSeconds / 60) % 60;
+  const hours = Math.floor(totalSeconds / 3600) % 24;
+  const days = Math.floor(totalSeconds / 86400) % 30;
+  const months = Math.floor(totalSeconds / (86400 * 30));
 
-  if (days > 0) return days + '天 ' + (hours % 24) + '小时';
-  if (hours > 0) return hours + '小时 ' + (minutes % 60) + '分钟';
-  if (minutes > 0) return minutes + '分钟';
-  return seconds + '秒';
+  const parts = [];
+  if (months > 0) parts.push(months + '月');
+  if (days > 0) parts.push(days + '天');
+  if (hours > 0) parts.push(hours + '时');
+  if (minutes > 0) parts.push(minutes + '分');
+  parts.push(seconds + '秒');
+  return parts.join('');
 }
 
 function switchTab(tab) {
@@ -2916,7 +3340,7 @@ function renderConvTab(clientId) {
 
   for (let i = 0; i < convs.length; i++) {
     const conv = convs[i];
-    html += '<tr>' +
+    html += '<tr id="conv-row-' + escHtml(conv.conversationId) + '">' +
       '<td>' + escHtml(conv.conversationTitle || conv.conversationId) +
         (conv.workDir ? ' <span title="自定义工作目录: ' + escHtml(conv.workDir) + '">📁</span>' : '') +
         (conv.linkConversationId ? ' <span title="关联会话: ' + escHtml(conv.linkConversationId) + '">🔗</span>' : '') +
@@ -3534,7 +3958,6 @@ async function loadGlobalConfig(skipRender = false) {
 function renderGlobalSection() {
   document.getElementById('client-list-section').style.display = 'none';
   document.getElementById('client-detail-section').style.display = 'none';
-  document.getElementById('status-section').style.display = 'none';
   const section = document.getElementById('global-section');
   section.style.display = 'block';
 
@@ -3574,9 +3997,7 @@ function renderGlobalSection() {
     </div>
     <div class="card">
       <div class="card-title">全局更新配置</div>
-      <div class="form-row">
-        <div class="form-group" style="grid-column:1/-1;"><label>更新包 URL</label><input type="text" id="gc-updatePkgUrl" value="\${escHtml(state.globalConfig.updatePkgUrl || '')}" placeholder="http://.../cc-ding-latest.tgz"></div>
-      </div>
+      <div class="form-group"><label>更新包 URL</label><input type="text" id="gc-updatePkgUrl" value="\${escHtml(state.globalConfig.updatePkgUrl || '')}" placeholder="http://.../cc-ding-latest.tgz" style="width:100%;font-family:var(--mono);font-size:12px;"></div>
       <div class="form-actions"><button class="btn btn-primary" onclick="saveUpdatePkgUrl()">💾 保存</button></div>
     </div>
     <div class="card">
@@ -3717,9 +4138,9 @@ async function deleteRemoteConsole(index) {
 
 function showClientList() {
   document.getElementById('global-section').style.display = 'none';
-  document.getElementById('status-section').style.display = 'none';
   document.getElementById('client-detail-section').style.display = 'none';
   document.getElementById('client-list-section').style.display = 'block';
+  state.activeRemoteGlobalUrl = null;
 }
 
 async function saveGlobalConfig() {
@@ -3767,43 +4188,142 @@ async function saveSettingsTpl() {
   }
 }
 
-// ===== Render: Status =====
-async function loadStatus() {
+// ===== Remote Global Config =====
+function buildRemoteApiUrl(baseUrl, apiPath) {
+  return apiPath + '?url=' + encodeURIComponent(baseUrl);
+}
+
+async function loadRemoteGlobalConfig(url, skipRender) {
   try {
-    const data = await api('/api/status');
-    state.status = data.status;
-    renderStatusSection();
+    const data = await api(buildRemoteApiUrl(url, '/api/remote/global/config'));
+    const consoleConfig = (data.config && data.config.console) || {};
+    state.remoteGlobalConfigs[url] = {
+      ...consoleConfig,
+      updatePkgUrl: data.config.updatePkgUrl,
+    };
+    state.activeRemoteGlobalUrl = url;
+    if (!skipRender) {
+      renderRemoteGlobalSection(url);
+    }
+    // 同时加载远程 settings-tpl
+    loadRemoteSettingsTpl(url);
   } catch (e) {
-    toast(e.message, 'error');
+    toast('加载远程全局配置失败: ' + e.message, 'error');
   }
 }
 
-function renderStatusSection() {
+async function loadRemoteSettingsTpl(url) {
+  try {
+    const data = await api(buildRemoteApiUrl(url, '/api/remote/global/settings-tpl'));
+    state.remoteSettingsTpls[url] = data.content || '';
+    const editor = document.getElementById('remote-settings-tpl-editor');
+    if (editor) editor.value = state.remoteSettingsTpls[url];
+  } catch (e) {
+    // 忽略
+  }
+}
+
+function renderRemoteGlobalSection(url) {
   document.getElementById('client-list-section').style.display = 'none';
   document.getElementById('client-detail-section').style.display = 'none';
-  document.getElementById('global-section').style.display = 'none';
-  const section = document.getElementById('status-section');
+  const section = document.getElementById('global-section');
   section.style.display = 'block';
 
-  const s = state.status;
-  if (!s) { section.innerHTML = '<div class="empty-state">加载中...</div>'; return; }
+  const gc = state.remoteGlobalConfigs[url] || {};
+  const status = state.remoteStatuses[url];
+  const hostname = status?.hostname || url;
+  const tplContent = state.remoteSettingsTpls[url] || '';
 
   section.innerHTML = \`
     <div class="flex-between mb-8">
       <button class="btn btn-sm" onclick="showClientList()">← 返回</button>
-      <span class="client-name">📊 系统信息</span>
+      <span class="client-name">🌐 \${escHtml(hostname)} - 全局配置</span>
     </div>
     <div class="card">
-      <div class="status-grid">
-        <div class="status-item"><div class="value">\${escHtml(s.ccDingVersion)}</div><div class="label">cc-ding 版本</div></div>
-        <div class="status-item"><div class="value">\${escHtml(s.nodeVersion)}</div><div class="label">Node.js 版本</div></div>
-        <div class="status-item"><div class="value">\${escHtml(s.platform)}</div><div class="label">平台</div></div>
-        <div class="status-item"><div class="value">\${s.clients}</div><div class="label">客户端总数</div></div>
-        <div class="status-item"><div class="value" style="color:var(--accent);">\${s.onlineClients}</div><div class="label">在线客户端</div></div>
-        <div class="status-item"><div class="value">\${Math.round(s.uptime)}s</div><div class="label">运行时间</div></div>
+      <div class="card-title">Console 配置</div>
+      <div class="form-row">
+        <div class="form-group"><label>端口</label><input type="number" id="rgc-port" value="\${gc.port || 8080}"></div>
+        <div class="form-group"><label>Host</label><input type="text" id="rgc-host" value="\${gc.host || '0.0.0.0'}"></div>
       </div>
+      <div class="form-actions"><button class="btn btn-primary" onclick="saveRemoteGlobalConfig('\${escHtml(url)}')">💾 保存</button></div>
+    </div>
+    <div class="card">
+      <div class="card-title">全局更新配置</div>
+      <div class="form-group"><label>更新包 URL</label><input type="text" id="rgc-updatePkgUrl" value="\${escHtml(gc.updatePkgUrl || '')}" placeholder="http://.../cc-ding-latest.tgz" style="width:100%;font-family:var(--mono);font-size:12px;"></div>
+      <div class="form-actions"><button class="btn btn-primary" onclick="saveRemoteUpdatePkgUrl('\${escHtml(url)}')">💾 保存</button></div>
+    </div>
+    <div class="card">
+      <div class="card-title">远程 Console 列表</div>
+      <div class="text-muted" style="padding:8px 0;font-size:12px;">远程 Console 的管理需要在该远程机器上操作，此处仅展示本机配置。</div>
+    </div>
+    <div class="card">
+      <div class="card-title">settings-tpl.json</div>
+      <textarea id="remote-settings-tpl-editor" rows="12" style="width:100%;">\${escHtml(tplContent)}</textarea>
+      <div class="form-actions"><button class="btn btn-sm" onclick="loadRemoteSettingsTpl('\${escHtml(url)}')">🔄 刷新</button><button class="btn btn-primary" onclick="saveRemoteSettingsTpl('\${escHtml(url)}')">💾 保存</button></div>
     </div>
   \`;
+}
+
+async function saveRemoteGlobalConfig(url) {
+  const port = parseInt(document.getElementById('rgc-port').value, 10);
+  const host = document.getElementById('rgc-host').value.trim();
+  const gc = state.remoteGlobalConfigs[url] || {};
+  gc.port = port;
+  gc.host = host;
+  state.remoteGlobalConfigs[url] = gc;
+  try {
+    await api(buildRemoteApiUrl(url, '/api/remote/global/config'), {
+      method: 'PUT',
+      body: JSON.stringify({ port: gc.port, host: gc.host, remoteConsoles: gc.remoteConsoles || [] }),
+    });
+    toast('远程 Console 配置已保存', 'success');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function saveRemoteUpdatePkgUrl(url) {
+  const updatePkgUrl = document.getElementById('rgc-updatePkgUrl').value.trim();
+  const gc = state.remoteGlobalConfigs[url] || {};
+  gc.updatePkgUrl = updatePkgUrl;
+  state.remoteGlobalConfigs[url] = gc;
+  try {
+    await api(buildRemoteApiUrl(url, '/api/remote/global/update-pkg-url'), {
+      method: 'PUT',
+      body: JSON.stringify({ updatePkgUrl }),
+    });
+    toast('远程更新包 URL 已保存', 'success');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function saveRemoteSettingsTpl(url) {
+  const editor = document.getElementById('remote-settings-tpl-editor');
+  if (!editor) return;
+  const content = editor.value;
+  try {
+    JSON.parse(content);
+    await api(buildRemoteApiUrl(url, '/api/remote/global/settings-tpl'), {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    });
+    state.remoteSettingsTpls[url] = content;
+    toast('远程 settings-tpl.json 已保存', 'success');
+  } catch (e) {
+    if (e instanceof SyntaxError) toast('JSON 格式错误', 'error');
+    else toast(e.message, 'error');
+  }
+}
+
+async function refreshRemoteStatus(url) {
+  try {
+    const statusData = await api('/api/remote/status?url=' + encodeURIComponent(url));
+    if (!state.remoteStatuses) state.remoteStatuses = {};
+    if (!state.remoteStatusLoadTimes) state.remoteStatusLoadTimes = {};
+    state.remoteStatuses[url] = statusData.status;
+    state.remoteStatusLoadTimes[url] = Date.now();
+    renderClientList();
+    toast('远程状态已刷新', 'success');
+  } catch (e) {
+    toast('刷新失败: ' + e.message, 'error');
+  }
 }
 
 // ===== Utilities =====
@@ -3817,6 +4337,7 @@ function escHtml(str) {
   const params = new URLSearchParams(window.location.search);
   const targetClient = params.get('client');
   const targetTab = params.get('tab');
+  const targetConv = params.get('conv');
 
   if (state.token && !state.firstLogin) {
     // 已登录，检查 URL 参数是否需要自动导航
@@ -3826,7 +4347,20 @@ function escHtml(str) {
         const client = state.clients.find(c => c.clientId === targetClient);
         if (client) {
           selectClient(targetClient).then(() => {
-            if (targetTab && ['config', 'keys', 'files', 'env', 'raw'].includes(targetTab)) {
+            // 如果指定了 conv 参数，优先跳转到会话管理 tab 并定位到该会话
+            if (targetConv) {
+              switchTab('conversations');
+              // 等待渲染完成后滚动到目标会话
+              setTimeout(() => {
+                const targetEl = document.getElementById('conv-row-' + targetConv);
+                if (targetEl) {
+                  targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  targetEl.style.transition = 'background-color 0.5s';
+                  targetEl.style.backgroundColor = 'rgba(0, 255, 157, 0.15)';
+                  setTimeout(() => { targetEl.style.backgroundColor = ''; }, 3000);
+                }
+              }, 200);
+            } else if (targetTab && ['config', 'conversations', 'keys', 'files', 'env', 'raw'].includes(targetTab)) {
               switchTab(targetTab);
             }
           });

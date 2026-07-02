@@ -2,7 +2,6 @@ import fs from 'fs';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import * as esbuild from 'esbuild';
 
 const rootDir = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const distDir = path.join(rootDir, 'dist');
@@ -43,26 +42,8 @@ function patchBinShebangs() {
   }
 }
 
-async function minifyDistJs() {
-  const jsFiles = walkFiles(distDir).filter(file => file.endsWith('.js'));
-  console.log('Minifying JavaScript files...');
-  for (const file of jsFiles) {
-    const source = fs.readFileSync(file, 'utf-8');
-    const result = await esbuild.transform(source, {
-      minify: true,
-      target: 'es2020',
-      platform: 'node',
-      format: 'cjs',
-      loader: 'js',
-      legalComments: 'none',
-    });
-    fs.writeFileSync(file, result.code, 'utf-8');
-  }
-}
-
 fs.rmSync(distDir, { recursive: true, force: true });
 run(process.execPath, [ tscPath ]);
 fs.cpSync(resourceDir, path.join(distDir, 'resource'), { recursive: true });
 fs.rmSync(path.join(distDir, 'test'), { recursive: true, force: true });
 patchBinShebangs();
-await minifyDistJs();

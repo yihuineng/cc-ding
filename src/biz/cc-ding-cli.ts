@@ -2284,13 +2284,13 @@ export class DingClaude {
               const url = getConsoleUrl(port, host);
               await this.sendDingMessage({
                 conversationId, sessionWebhook,
-                content: `️ Console 管理界面:\n\`\`\`\n${url}?client=${this.clientId}&conv=${conversationId}&tab=config\n\`\`\`\n> 注意: Console 服务未运行在本机，请手动在浏览器中打开`,
+                content: `️ Console 管理界面:\n\`\`\`\n${url}?client=${this.clientId}&conv=${conversationId}&tab=conversations\n\`\`\`\n> 注意: Console 服务未运行在本机，请手动在浏览器中打开`,
                 msgType: 'markdown',
               });
               return;
             }
             const url = getConsoleUrl(port, host);
-            const openUrl = `${url}?client=${this.clientId}&conv=${conversationId}&tab=config`;
+            const openUrl = `${url}?client=${this.clientId}&conv=${conversationId}&tab=conversations`;
             if (platform === 'darwin') {
               await launchDetached('open', [ openUrl ]);
             } else if (isWindowsPlatform(platform)) {
