@@ -598,36 +598,39 @@ export function isImageFile(filePath: string): boolean {
 }
 
 /**
- * 上传文件到钉钉，获取 downloadCode/mediaId
- * POST /v1.0/robot/messageFiles/upload
+ * 上传文件到钉钉，获取 mediaId
+ * POST /media/upload (oapi 旧 API，稳定可靠，与 cc-connect 一致)
+ * @param mediaType - voice | image | file
  */
 export async function uploadMediaToDingTalk(
   self: DingClaude,
   filePath: string,
+  mediaType: 'voice' | 'image' | 'file' = 'file',
 ): Promise<string | null> {
   try {
     const accessToken = await self.dingStreamClient.getAccessToken();
 
-    const url = `${DING_API_BASE}/v1.0/robot/messageFiles/upload`;
+    const url = `${DING_OAPI_BASE}/media/upload?access_token=${accessToken}&type=${mediaType}`;
     const result = await urllib.request(url, {
       method: 'POST',
-      headers: {
-        'x-acs-dingtalk-access-token': accessToken,
-      },
-      data: { file: fs.createReadStream(filePath) },
-      contentType: 'multipart/form-data',
+      // urllib v4: files 对象传路径字符串，自动 createReadStream + 提取 basename 作为文件名
+      files: { media: filePath },
       dataType: 'json',
       timeout: 30000,
     });
 
     if (result.status !== 200 || !result.data) {
-      console.error(`uploadMediaToDingTalk 返回非200: status=${result.status}`);
+      console.error(`uploadMediaToDingTalk 返回非200: status=${result.status}, data=${JSON.stringify(result.data)}`);
       return null;
     }
 
     const body = result.data as Record<string, unknown>;
-    // 返回可能包含 downloadCode 或 mediaId
-    return (body.downloadCode as string) || (body.mediaId as string) || null;
+    // 旧 API 返回 errcode/errmsg/media_id
+    if ((body.errcode as number) !== 0 && body.errcode !== undefined) {
+      console.error(`uploadMediaToDingTalk API 错误: errcode=${body.errcode}, errmsg=${body.errmsg}`);
+      return null;
+    }
+    return (body.media_id as string) || null;
   } catch (err) {
     console.error(`uploadMediaToDingTalk 失败: ${filePath}`, err);
     return null;
@@ -636,7 +639,7 @@ export async function uploadMediaToDingTalk(
 
 /**
  * 通过群消息 API 发送图片
- * POST /v1.0/im/groupMessages/send with sampleImageMsg
+ * POST /v1.0/robot/groupMessages/send with sampleImageMsg
  */
 export async function sendGroupImageMessage(
   self: DingClaude,
@@ -645,7 +648,7 @@ export async function sendGroupImageMessage(
 ): Promise<boolean> {
   try {
     const accessToken = await self.dingStreamClient.getAccessToken();
-    const url = `${DING_API_BASE}/v1.0/im/groupMessages/send`;
+    const url = `${DING_API_BASE}/v1.0/robot/groupMessages/send`;
 
     const result = await urllib.request(url, {
       method: 'POST',
@@ -670,7 +673,7 @@ export async function sendGroupImageMessage(
 
 /**
  * 通过群消息 API 发送文件
- * POST /v1.0/im/groupMessages/send with sampleFileMsg
+ * POST /v1.0/robot/groupMessages/send with sampleFile
  */
 export async function sendGroupFileMessage(
   self: DingClaude,
@@ -680,23 +683,39 @@ export async function sendGroupFileMessage(
 ): Promise<boolean> {
   try {
     const accessToken = await self.dingStreamClient.getAccessToken();
-    const url = `${DING_API_BASE}/v1.0/im/groupMessages/send`;
+    const url = `${DING_API_BASE}/v1.0/robot/groupMessages/send`;
+
+    // 提取文件扩展名（与 cc-connect 一致）
+    const ext = fileName.includes('.') ? fileName.substring(fileName.lastIndexOf('.') + 1) : '';
+
+    const requestBody = {
+      robotCode: self.clientId,
+      openConversationId: conversationId,
+      msgKey: 'sampleFile',
+      msgParam: JSON.stringify({ mediaId, fileName, fileType: ext }),
+    };
+    console.log(`sendGroupFileMessage 请求: url=${url}, body=${JSON.stringify(requestBody)}`);
 
     const result = await urllib.request(url, {
       method: 'POST',
-      data: {
-        robotCode: self.clientId,
-        openConversationId: conversationId,
-        msgKey: 'sampleFileMsg',
-        msgParam: JSON.stringify({ mediaId, fileName }),
-      },
+      data: requestBody,
       contentType: 'json',
       headers: { 'x-acs-dingtalk-access-token': accessToken },
       dataType: 'json',
       timeout: 10000,
     });
 
-    return result.status === 200;
+    if (result.status !== 200) {
+      console.error(`sendGroupFileMessage 非200: status=${result.status}, data=${JSON.stringify(result.data)}`);
+      return false;
+    }
+    const respData = result.data as Record<string, unknown>;
+    if (respData && (respData.errcode as number) && (respData.errcode as number) !== 0) {
+      console.error(`sendGroupFileMessage API错误: errcode=${respData.errcode}, errmsg=${respData.errmsg}, data=${JSON.stringify(respData)}`);
+      return false;
+    }
+    console.log(`sendGroupFileMessage 成功: mediaId=${mediaId}, fileName=${fileName}`);
+    return true;
   } catch (err) {
     console.error(`sendGroupFileMessage 失败: ${conversationId}`, err);
     return false;
@@ -772,7 +791,7 @@ export async function sendImageMessage(
       console.error(`sendImageMessage: 本地文件不存在 ${opts.localPath}`);
       return false;
     }
-    mediaId = await uploadMediaToDingTalk(self, opts.localPath);
+    mediaId = await uploadMediaToDingTalk(self, opts.localPath, 'image');
     if (!mediaId) {
       console.error(`sendImageMessage: 上传图片到钉钉失败 ${opts.localPath}`);
       return false;
@@ -828,7 +847,7 @@ export async function sendFileMessage(
       console.error(`sendFileMessage: 本地文件不存在 ${opts.localPath}`);
       return false;
     }
-    mediaId = await uploadMediaToDingTalk(self, opts.localPath);
+    mediaId = await uploadMediaToDingTalk(self, opts.localPath, 'file');
     if (!mediaId) {
       console.error(`sendFileMessage: 上传文件到钉钉失败 ${opts.localPath}`);
       return false;

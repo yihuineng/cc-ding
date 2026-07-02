@@ -157,7 +157,7 @@ export class SendQueueProcessor {
     }
 
     // 1. 上传图片获取 mediaId
-    const mediaId = await uploadMediaToDingTalk(this.dc, filePath);
+    const mediaId = await uploadMediaToDingTalk(this.dc, filePath, 'image');
     if (!mediaId) {
       console.warn(`[${timestamp()}] 图片上传失败: ${filePath}`);
       // 降级：用 markdown 发送文件路径
@@ -234,7 +234,7 @@ export class SendQueueProcessor {
     }
 
     // 2. 上传文件获取 mediaId
-    const mediaId = await uploadMediaToDingTalk(this.dc, filePath);
+    const mediaId = await uploadMediaToDingTalk(this.dc, filePath, 'file');
     const fileName = path.basename(filePath);
     const fileSize = fs.statSync(filePath).size;
 
