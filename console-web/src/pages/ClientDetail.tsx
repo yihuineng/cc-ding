@@ -1,39 +1,81 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Tabs, Button, Space, Tag, message } from 'antd'
+import { Tabs, Button, Space, Tag, message, Popconfirm } from 'antd'
 import { ArrowLeftOutlined, StopOutlined, ReloadOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import { IConfig } from '../types'
 import ConfigTab from '../components/ConfigTab'
+import ConversationsTab from '../components/ConversationsTab'
+import KeysTab from '../components/KeysTab'
+import FilesTab from '../components/FilesTab'
+import EnvTab from '../components/EnvTab'
+import RawTab from '../components/RawTab'
 
 export default function ClientDetail() {
   const { clientId, tab } = useParams()
   const navigate = useNavigate()
   const [config, setConfig] = useState<IConfig | null>(null)
   const [loading, setLoading] = useState(true)
+  const [actionLoading, setActionLoading] = useState(false)
 
-  useEffect(() => {
+  const loadConfig = useCallback(async () => {
     if (!clientId) return
-    api.getClientConfig(clientId)
-      .then(setConfig)
-      .catch(e => message.error(e.message))
-      .finally(() => setLoading(false))
+    try {
+      const data = await api.getClientConfig(clientId)
+      setConfig(data)
+    } catch (e: any) {
+      message.error(e.message)
+    } finally {
+      setLoading(false)
+    }
   }, [clientId])
+
+  useEffect(() => { loadConfig() }, [loadConfig])
+
+  const handleStop = async () => {
+    if (!clientId) return
+    setActionLoading(true)
+    try {
+      await api.stopClient(clientId)
+      message.success('客户端已停止')
+    } catch (e: any) {
+      message.error(e.message || '停止失败')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  const handleRestart = async () => {
+    if (!clientId) return
+    setActionLoading(true)
+    try {
+      await api.restartPm2(clientId)
+      message.success('客户端重启中...')
+    } catch (e: any) {
+      message.error(e.message || '重启失败')
+    } finally {
+      setActionLoading(false)
+    }
+  }
 
   if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
   if (!config) return <div style={{ padding: 24 }}>配置加载失败</div>
 
   return (
-    <div style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, alignItems: 'center' }}>
-        <Space>
+    <div className="page-container">
+      <div className="page-header">
+        <Space wrap>
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回</Button>
           <span style={{ fontWeight: 600, fontSize: 16 }}>{config.clientName || clientId}</span>
           <Tag color="green">在线</Tag>
         </Space>
         <Space>
-          <Button danger icon={<StopOutlined />}>停止</Button>
-          <Button icon={<ReloadOutlined />}>重启</Button>
+          <Popconfirm title="确定停止此客户端?" onConfirm={handleStop}>
+            <Button danger icon={<StopOutlined />} loading={actionLoading}>停止</Button>
+          </Popconfirm>
+          <Popconfirm title="确定重启此客户端?" onConfirm={handleRestart}>
+            <Button icon={<ReloadOutlined />} loading={actionLoading}>重启</Button>
+          </Popconfirm>
         </Space>
       </div>
 
@@ -42,11 +84,25 @@ export default function ClientDetail() {
         onChange={key => navigate(`/client/${clientId}/${key}`, { replace: true })}
         items={[
           { key: 'config', label: '⚙️ 配置', children: <ConfigTab clientId={clientId!} config={config} /> },
-          { key: 'conversations', label: '💬 会话管理', children: <div>会话管理（开发中）</div> },
-          { key: 'keys', label: '🔑 API Key', children: <div>API Key（开发中）</div> },
-          { key: 'files', label: '📁 文件', children: <div>文件（开发中）</div> },
-          { key: 'env', label: '🌍 环境变量', children: <div>环境变量（开发中）</div> },
-          { key: 'raw', label: ' 原始JSON', children: <div>原始JSON（开发中）</div> },
+          {
+            key: 'conversations',
+            label: '💬 会话',
+            children: (
+              <ConversationsTab
+                clientId={clientId!}
+                conversations={config.conversations || []}
+                onRefresh={loadConfig}
+              />
+            ),
+          },
+          { key: 'keys', label: '🔑 API Key', children: <KeysTab clientId={clientId!} /> },
+          { key: 'files', label: '📁 文件', children: <FilesTab clientId={clientId!} /> },
+          {
+            key: 'env',
+            label: '🌍 环境变量',
+            children: <EnvTab clientId={clientId!} config={config} onRefresh={loadConfig} />,
+          },
+          { key: 'raw', label: '📝 原始JSON', children: <RawTab clientId={clientId!} /> },
         ]}
       />
     </div>
