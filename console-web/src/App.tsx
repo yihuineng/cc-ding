@@ -3,6 +3,7 @@ import { ConfigProvider } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import Login from './pages/Login'
 import Clients from './pages/Clients'
+import ClientDetail from './pages/ClientDetail'
 
 function App() {
   return (
@@ -11,6 +12,8 @@ function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<Clients />} />
+          <Route path="/client/:clientId" element={<ClientDetail />} />
+          <Route path="/client/:clientId/:tab" element={<ClientDetail />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
