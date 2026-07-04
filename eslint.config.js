@@ -16,6 +16,7 @@ module.exports = [
       '.nyc_output/',
       'resource/',
       'resource-init/',
+      'console-web/',
     ],
   },
   ...compat.extends('eslint-config-egg/typescript'),
