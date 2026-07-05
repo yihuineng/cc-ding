@@ -1421,6 +1421,94 @@ async function handleGetRemoteStatus(req: http.IncomingMessage, res: http.Server
   }
 }
 
+/** POST /api/remote/scan - 扫描局域网内的 cc-ding Console */
+async function handleScanRemoteConsoles(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  try {
+    const body = await readBody(req);
+    const data = JSON.parse(body || '{}');
+    const subnet = data.subnet; // e.g., "192.168.3"
+
+    if (!subnet || !/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(subnet)) {
+      jsonError(res, 400, '无效的子网地址，格式如: 192.168.3');
+      return;
+    }
+
+    // Get already configured remote console URLs
+    const globalCfg = getGlobalConfig();
+    const configuredUrls = new Set((globalCfg.console?.remoteConsoles || []).map(rc => rc.url));
+
+    // Get local IP addresses to exclude
+    const localIps = new Set<string>();
+    const interfaces = os.networkInterfaces();
+    for (const info of Object.values(interfaces)) {
+      if (!info) continue;
+      for (const addr of info) {
+        if (addr.family === 'IPv4') {
+          localIps.add(addr.address);
+        }
+      }
+    }
+
+    // Scan the subnet
+    const port = data.port || 8080;
+    const timeout = data.timeout || 2000; // 2 seconds per host
+    const discovered: Array<{ url: string; hostname: string; ccDingVersion: string }> = [];
+
+    // Generate IP range (1-254)
+    const scanPromises: Promise<void>[] = [];
+    for (let i = 1; i <= 254; i++) {
+      const ip = `${subnet}.${i}`;
+
+      // Skip local IPs
+      if (localIps.has(ip)) continue;
+
+      scanPromises.push(
+        (async () => {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+            const response = await fetch(`http://${ip}:${port}/api/status`, {
+              signal: controller.signal,
+              headers: { 'Content-Type': 'application/json' },
+            });
+
+            clearTimeout(timeoutId);
+
+            if (response.ok) {
+              const statusData = await response.json();
+              const status = statusData.status || statusData;
+
+              // Check if it's a cc-ding console
+              if (status.ccDingVersion) {
+                const url = `http://${ip}:${port}`;
+                // Skip if already configured
+                if (!configuredUrls.has(url)) {
+                  discovered.push({
+                    url,
+                    hostname: status.hostname || ip,
+                    ccDingVersion: status.ccDingVersion,
+                  });
+                }
+              }
+            }
+          } catch {
+            // Host not reachable or timeout, skip
+          }
+        })()
+      );
+    }
+
+    await Promise.all(scanPromises);
+
+    jsonResponse(res, 200, { discovered, count: discovered.length });
+  } catch (err) {
+    jsonError(res, 500, `扫描失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 /** 从请求 URL 中提取 url 参数对应的远程 Console 配置 */
 function getRemoteConsoleFromQuery(req: http.IncomingMessage): IRemoteConsole | null {
   const urlMatch = req.url?.match(/[?&]url=([^&]+)/);
@@ -2092,6 +2180,12 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
     return;
   }
 
+  // POST /api/remote/scan
+  if (pathname === '/api/remote/scan' && req.method === 'POST') {
+    await handleScanRemoteConsoles(req, res);
+    return;
+  }
+
   // POST /api/remote/clients?url=...
   if (pathname === '/api/remote/clients' && req.method === 'POST') {
     await handleRemoteCreateClient(req, res);
@@ -2439,12 +2533,24 @@ export class ConsoleServer {
 
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
+      // Resolve console-web/dist path (works from both src/ and dist/)
+      const getConsoleWebDist = () => {
+        const candidates = [
+          path.join(__dirname, '..', '..', '..', 'console-web', 'dist'),
+          path.join(__dirname, '..', '..', 'console-web', 'dist'),
+        ];
+        for (const p of candidates) {
+          if (fs.existsSync(path.join(p, 'index.html'))) return p;
+        }
+        return candidates[0];
+      };
+
       this.server = http.createServer(async (req, res) => {
         const { pathname, query } = parseUrl(req.url || '/');
 
         // Serve React frontend static assets
         if (pathname.startsWith('/assets/')) {
-          const assetPath = path.join(__dirname, '..', '..', 'console-web', 'dist', pathname);
+          const assetPath = path.join(getConsoleWebDist(), pathname);
           if (fs.existsSync(assetPath)) {
             const ext = path.extname(assetPath);
             const contentTypes: Record<string, string> = {
@@ -2483,7 +2589,7 @@ export class ConsoleServer {
 
         // SPA fallback: all non-API routes serve index.html
         if (req.method === 'GET') {
-          const consoleWebDist = path.join(__dirname, '..', '..', 'console-web', 'dist');
+          const consoleWebDist = getConsoleWebDist();
           const indexPath = path.join(consoleWebDist, 'index.html');
           if (fs.existsSync(indexPath)) {
             res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -2632,11 +2738,17 @@ export function isLocalHost(host: string): boolean {
 // ==================== 生成前端 HTML ====================
 
 export function generateConsoleHtml(): string {
-  const consoleWebDist = path.join(__dirname, '..', '..', 'console-web', 'dist');
-  const indexPath = path.join(consoleWebDist, 'index.html');
+  // Try multiple paths to find console-web/dist (works from both src/ and dist/)
+  const candidates = [
+    path.join(__dirname, '..', '..', '..', 'console-web', 'dist'),
+    path.join(__dirname, '..', '..', 'console-web', 'dist'),
+  ];
 
-  if (fs.existsSync(indexPath)) {
-    return fs.readFileSync(indexPath, 'utf-8');
+  for (const consoleWebDist of candidates) {
+    const indexPath = path.join(consoleWebDist, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      return fs.readFileSync(indexPath, 'utf-8');
+    }
   }
 
   // Fallback

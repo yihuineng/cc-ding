@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
-import { Card, Button, Space, message, Spin } from 'antd'
-import { SaveOutlined, ReloadOutlined } from '@ant-design/icons'
+import { useEffect, useState, useRef } from 'react'
+import { Card, Button, Space, message, Spin, Tag } from 'antd'
+import { SaveOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons'
+import Editor, { type OnMount } from '@monaco-editor/react'
 import { api } from '../api/client'
+import { configSchema } from '../schema/config-schema'
 
 interface Props {
   clientId: string
@@ -12,13 +14,23 @@ export default function RawTab({ clientId }: Props) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
+  const [valid, setValid] = useState<boolean | null>(null)
+  const [validationErrors, setValidationErrors] = useState<string[]>([])
+  const editorRef = useRef<any>(null)
 
   const loadRaw = async () => {
     setLoading(true)
     try {
-      const data = await api.getRawConfig(clientId)
-      setContent(JSON.stringify(data, null, 2))
+      const data: any = await api.getRawConfig(clientId)
+      // API returns { content: "..." } or the raw object directly
+      const raw = typeof data.content === 'string' ? data.content : JSON.stringify(data, null, 2)
+      let parsed
+      try { parsed = JSON.parse(raw) } catch { parsed = raw }
+      const json = typeof parsed === 'object' ? JSON.stringify(parsed, null, 2) : raw
+      setContent(json)
       setDirty(false)
+      setValid(true)
+      setValidationErrors([])
     } catch (e: any) {
       message.error(e.message || '加载失败')
     } finally {
@@ -28,13 +40,35 @@ export default function RawTab({ clientId }: Props) {
 
   useEffect(() => { loadRaw() }, [clientId])
 
+  const handleEditorMount: OnMount = (editor, monaco) => {
+    editorRef.current = editor
+    monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
+      validate: true,
+      schemas: [{
+        uri: 'https://cc-ding/schema/config.json',
+        fileMatch: ['*'],
+        schema: configSchema,
+      }],
+    })
+    monaco.editor.onDidChangeMarkers(([uri]) => {
+      const markers = monaco.editor.getModelMarkers({ resource: uri })
+      const errors = markers
+        .filter(m => m.severity === monaco.MarkerSeverity.Error)
+        .map(m => `第 ${m.startLineNumber} 行: ${m.message}`)
+      setValidationErrors(errors)
+      setValid(errors.length === 0)
+    })
+  }
+
   const handleSave = async () => {
+    if (valid === false) {
+      message.error('JSON 格式或 Schema 校验失败，请修正错误后再保存')
+      return
+    }
     setSaving(true)
     try {
       let parsed
-      try {
-        parsed = JSON.parse(content)
-      } catch {
+      try { parsed = JSON.parse(content) } catch {
         message.error('JSON 格式错误，请检查')
         setSaving(false)
         return
@@ -51,42 +85,53 @@ export default function RawTab({ clientId }: Props) {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
-        <div style={{ fontSize: 12, color: '#999' }}>
-          直接编辑 config.json 原始内容，保存后将立即生效
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: '#999' }}>直接编辑 config.json 原始内容</span>
+          {valid !== null && (
+            valid ? <Tag icon={<CheckCircleOutlined />} color="success">JSON 有效</Tag>
+                  : <Tag icon={<CloseCircleOutlined />} color="error">JSON 无效</Tag>
+          )}
+          {dirty && <Tag color="warning">未保存</Tag>}
         </div>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={loadRaw}>刷新</Button>
-          <Button
-            type="primary"
-            icon={<SaveOutlined />}
-            onClick={handleSave}
-            loading={saving}
-            disabled={!dirty}
-          >
-            保存
-          </Button>
+          <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving} disabled={!dirty || valid === false}>保存</Button>
         </Space>
       </div>
 
+      {validationErrors.length > 0 && (
+        <Card size="small" style={{ marginBottom: 16, borderColor: '#ff4d4f' }}>
+          <div style={{ color: '#ff4d4f', fontSize: 13, marginBottom: 8 }}>校验错误 ({validationErrors.length})</div>
+          <div style={{ maxHeight: 120, overflow: 'auto', fontSize: 12 }}>
+            {validationErrors.slice(0, 5).map((err, i) => (
+              <div key={i} style={{ color: '#ff4d4f', marginBottom: 4 }}>{err}</div>
+            ))}
+            {validationErrors.length > 5 && <div style={{ color: '#999' }}>... 还有 {validationErrors.length - 5} 个错误</div>}
+          </div>
+        </Card>
+      )}
+
       <Spin spinning={loading}>
-        <Card>
-          <textarea
+        <Card styles={{ body: { padding: 0 } }}>
+          <Editor
+            height="600px"
+            defaultLanguage="json"
             value={content}
-            onChange={e => { setContent(e.target.value); setDirty(true) }}
-            style={{
-              width: '100%',
-              minHeight: 500,
-              fontFamily: 'monospace',
+            theme="vs-dark"
+            onChange={value => { setContent(value || ''); setDirty(true) }}
+            onMount={handleEditorMount}
+            options={{
+              minimap: { enabled: false },
               fontSize: 13,
-              lineHeight: 1.5,
-              border: '1px solid #d9d9d9',
-              borderRadius: 6,
-              padding: 12,
-              resize: 'vertical',
-              outline: 'none',
+              lineHeight: 20,
+              scrollBeyondLastLine: false,
+              roundedSelection: true,
+              formatOnPaste: true,
+              formatOnType: true,
+              automaticLayout: true,
+              tabSize: 2,
             }}
-            spellCheck={false}
           />
         </Card>
       </Spin>

@@ -40,8 +40,17 @@ export const api = {
       body: JSON.stringify({ oldPassword, newPassword }),
     }),
 
-  // ── Status ──
-  getStatus: () => request<IStatus>('/api/status'),
+  // ─ Status ──
+  getStatus: () => request<{ status: IStatus }>('/api/status').then(d => d.status),
+
+  getRemoteStatus: (url: string) =>
+    request<{ status: IStatus }>(`/api/remote/status?url=${encodeURIComponent(url)}`).then(d => d.status),
+
+  scanRemoteConsoles: (subnet: string, port?: number, timeout?: number) =>
+    request<{ discovered: Array<{ url: string; hostname: string; ccDingVersion: string }>; count: number }>(
+      '/api/remote/scan',
+      { method: 'POST', body: JSON.stringify({ subnet, port, timeout }) }
+    ),
 
   // ── Clients ──
   getClients: () => request<{ clients: IClient[] }>('/api/clients'),

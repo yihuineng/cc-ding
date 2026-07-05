@@ -17,8 +17,8 @@ interface EnvItem {
 
 export default function EnvTab({ clientId, config, onRefresh }: Props) {
   const [envs, setEnvs] = useState<EnvItem[]>(() => {
-    // Extract envs from config if available (stored as envVars or similar)
-    const raw = (config as any).envVars || (config as any).env || {}
+    // Extract envs from config (stored as 'envs' in the API response)
+    const raw = (config as any).envs || (config as any).envVars || (config as any).env || {}
     if (typeof raw === 'object' && !Array.isArray(raw)) {
       return Object.entries(raw).map(([key, value]) => ({ key, value: String(value) }))
     }
@@ -71,7 +71,7 @@ export default function EnvTab({ clientId, config, onRefresh }: Props) {
     try {
       const envObj: Record<string, string> = {}
       envs.forEach(e => { envObj[e.key] = e.value })
-      await api.patchClientConfig(clientId, { envVars: envObj })
+      await api.patchClientConfig(clientId, { envs: envObj })
       message.success('环境变量已保存')
       setDirty(false)
       onRefresh()

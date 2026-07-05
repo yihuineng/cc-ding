@@ -22,7 +22,7 @@ export default function ClientDetail() {
     if (!clientId) return
     try {
       const data = await api.getClientConfig(clientId)
-      setConfig(data)
+      setConfig((data as any).config || data)
     } catch (e: any) {
       message.error(e.message)
     } finally {

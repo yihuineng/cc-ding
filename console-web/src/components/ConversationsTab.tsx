@@ -4,7 +4,7 @@ import {
   Collapse, Row, Col, Popconfirm, message, Empty, Badge,
 } from 'antd'
 import {
-  PlusOutlined, SaveOutlined, DeleteOutlined, DownOutlined, UpOutlined,
+  SaveOutlined, DeleteOutlined, DownOutlined, UpOutlined,
 } from '@ant-design/icons'
 import { api } from '../api/client'
 import { IConversation } from '../types'
@@ -23,8 +23,6 @@ export default function ConversationsTab({ clientId, conversations, onRefresh }:
   const [editForms, setEditForms] = useState<Record<string, IConversation>>({})
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [filterType, setFilterType] = useState<string>('all')
-  const [addModalOpen, setAddModalOpen] = useState(false)
-  const [addForm] = Form.useForm()
 
   const filtered = useMemo(() => {
     if (filterType === 'all') return conversations
@@ -74,24 +72,6 @@ export default function ConversationsTab({ clientId, conversations, onRefresh }:
     }
   }
 
-  const handleAdd = async () => {
-    try {
-      const values = await addForm.validateFields()
-      await api.addConversation(clientId, {
-        conversationId: values.conversationId,
-        conversationTitle: values.conversationTitle,
-        conversationType: values.conversationType || '2',
-      })
-      message.success('会话已添加')
-      setAddModalOpen(false)
-      addForm.resetFields()
-      onRefresh()
-    } catch (e: any) {
-      if (e.errorFields) return
-      message.error(e.message || '添加失败')
-    }
-  }
-
   const convCounts = useMemo(() => ({
     all: conversations.length,
     '2': conversations.filter(c => c.conversationType === '2').length,
@@ -112,36 +92,7 @@ export default function ConversationsTab({ clientId, conversations, onRefresh }:
             { key: '1', label: `单聊 (${convCounts['1']})` },
           ]}
         />
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddModalOpen(true)}>
-          添加会话
-        </Button>
       </div>
-
-      {/* Add conversation modal */}
-      {addModalOpen && (
-        <Card size="small" style={{ marginBottom: 16, border: '1px solid #00ff9d' }}>
-          <Form form={addForm} layout="inline" style={{ flexWrap: 'wrap', gap: 8 }}>
-            <Form.Item name="conversationId" rules={[{ required: true, message: '必填' }]} style={{ minWidth: 200 }}>
-              <Input placeholder="会话ID" />
-            </Form.Item>
-            <Form.Item name="conversationTitle" style={{ minWidth: 150 }}>
-              <Input placeholder="会话标题" />
-            </Form.Item>
-            <Form.Item name="conversationType" initialValue="2">
-              <Select style={{ width: 100 }} options={[
-                { value: '2', label: '群聊' },
-                { value: '1', label: '单聊' },
-              ]} />
-            </Form.Item>
-            <Form.Item>
-              <Space>
-                <Button type="primary" onClick={handleAdd}>确定</Button>
-                <Button onClick={() => { setAddModalOpen(false); addForm.resetFields() }}>取消</Button>
-              </Space>
-            </Form.Item>
-          </Form>
-        </Card>
-      )}
 
       {filtered.length === 0 ? (
         <Empty description="暂无会话" />

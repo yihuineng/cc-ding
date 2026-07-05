@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Form, Input, InputNumber, Switch, Button, Card, Row, Col, message, Divider } from 'antd'
 import { SaveOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
@@ -12,6 +12,10 @@ interface Props {
 export default function ConfigTab({ clientId, config }: Props) {
   const [form] = Form.useForm()
   const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    form.setFieldsValue(config)
+  }, [config, form])
 
   const onSave = async () => {
     setSaving(true)
@@ -35,61 +39,57 @@ export default function ConfigTab({ clientId, config }: Props) {
   return (
     <div>
       <Card title="基本信息" style={{ marginBottom: 16 }}>
-        <Form form={form} layout="vertical" initialValues={config}>
-          <Row gutter={16}>
-            <Col span={12}>
+        <Form form={form} layout="vertical">
+          <Row gutter={[16, 0]}>
+            <Col xs={24} sm={12}>
               <Form.Item name="clientName" label="Client 名称"><Input /></Form.Item>
             </Col>
-            <Col span={12}>
+            <Col xs={24} sm={12}>
               <Form.Item name="owner" label="Owner"><Input /></Form.Item>
             </Col>
-            <Col span={12}>
+            <Col xs={24} sm={12}>
               <Form.Item name="model" label="默认模型"><Input /></Form.Item>
             </Col>
-            <Col span={12}>
-              <Form.Item name="whiteUserList" label="白名单 (逗号分隔)">
-                <Input />
-              </Form.Item>
+            <Col xs={24} sm={12}>
+              <Form.Item name="whiteUserList" label="白名单 (逗号分隔)"><Input /></Form.Item>
             </Col>
-            <Col span={12}>
-              <Form.Item name="adminUserList" label="管理员列表 (逗号分隔)">
-                <Input />
-              </Form.Item>
+            <Col xs={24} sm={12}>
+              <Form.Item name="adminUserList" label="管理员列表 (逗号分隔)"><Input /></Form.Item>
             </Col>
-            <Col span={12}>
+            <Col xs={24} sm={12}>
               <Form.Item name="ownerConversationId" label="Owner 单聊会话ID"><Input /></Form.Item>
             </Col>
-            <Col span={12}>
+            <Col xs={24} sm={12}>
               <Form.Item name="preBash" label="前置命令 (preBash)"><Input /></Form.Item>
             </Col>
           </Row>
           <Divider />
-          <Row gutter={16}>
-            <Col span={6}>
+          <Row gutter={[16, 0]}>
+            <Col xs={12} sm={6}>
               <Form.Item name="debug" label="DEBUG" valuePropName="checked"><Switch /></Form.Item>
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={6}>
               <Form.Item name="resultOnly" label="结果模式" valuePropName="checked"><Switch /></Form.Item>
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={6}>
               <Form.Item name="includeThinking" label="思考过程" valuePropName="checked"><Switch /></Form.Item>
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={6}>
               <Form.Item name="enableMsgToUser" label="单聊消息" valuePropName="checked"><Switch /></Form.Item>
             </Col>
           </Row>
           <Divider />
-          <Row gutter={16}>
-            <Col span={6}>
+          <Row gutter={[16, 0]}>
+            <Col xs={12} sm={6}>
               <Form.Item name="taskQueueSize" label="任务队列大小"><InputNumber style={{ width: '100%' }} /></Form.Item>
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={6}>
               <Form.Item name="sessionMaxConcurrency" label="最大并发"><InputNumber style={{ width: '100%' }} /></Form.Item>
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={6}>
               <Form.Item name="maxTurnTimeMins" label="Watchdog 超时(分钟)"><InputNumber style={{ width: '100%' }} /></Form.Item>
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={6}>
               <Form.Item name="maxAutoRecovery" label="自动恢复次数"><InputNumber style={{ width: '100%' }} /></Form.Item>
             </Col>
           </Row>

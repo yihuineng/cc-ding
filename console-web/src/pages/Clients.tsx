@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Button, Space, Tag, Typography, Row, Col, Card, message,
-  Dropdown, Modal, Form, Input, Popconfirm,
+  Dropdown, Modal, Form, Input, Popconfirm, Select,
 } from 'antd'
 import type { MenuProps } from 'antd'
 import {
@@ -10,28 +10,73 @@ import {
   ThunderboltOutlined, RedoOutlined, ToolOutlined,
 } from '@ant-design/icons'
 import { api } from '../api/client'
-import { IClient, IStatus } from '../types'
+import { IClient, IStatus, IRemoteConsole } from '../types'
 import ClientCard from '../components/ClientCard'
+import { homeCache } from '../utils/cache'
 
 export default function Clients() {
   const navigate = useNavigate()
   const [clients, setClients] = useState<IClient[]>([])
   const [status, setStatus] = useState<IStatus | null>(null)
+  const [remoteConsoles, setRemoteConsoles] = useState<IRemoteConsole[]>([])
+  const [remoteStatuses, setRemoteStatuses] = useState<Record<string, IStatus>>({})
   const [loading, setLoading] = useState(true)
   const [batchLoading, setBatchLoading] = useState(false)
   const [machineLoading, setMachineLoading] = useState(false)
   const [createModalOpen, setCreateModalOpen] = useState(false)
   const [createForm] = Form.useForm()
   const [createLoading, setCreateLoading] = useState(false)
+  const [createTarget, setCreateTarget] = useState<string>('local')
 
-  const loadData = async () => {
+  const loadData = async (forceRefresh = false) => {
+    // Try cache first
+    if (!forceRefresh) {
+      const cached = homeCache.get()
+      if (cached) {
+        setClients(cached.clients)
+        setStatus(cached.status)
+      }
+    }
+
     try {
-      const [clientsData, statusData] = await Promise.all([
-        api.getClients(),
-        api.getStatus(),
-      ])
-      setClients(clientsData.clients || [])
-      setStatus(statusData)
+      // Always load global config for remote consoles
+      const globalConfigData = await api.getGlobalConfig()
+      const configData: any = globalConfigData
+      const consoles = configData.config?.console?.remoteConsoles || configData.config?.remoteConsoles || []
+      setRemoteConsoles(consoles)
+
+      // Load remote statuses
+      const statusPromises = consoles.map(async (rc: IRemoteConsole) => {
+        try {
+          const remoteStatus = await api.getRemoteStatus(rc.url)
+          return { url: rc.url, status: remoteStatus }
+        } catch {
+          return { url: rc.url, status: null }
+        }
+      })
+      const statusResults = await Promise.all(statusPromises)
+      const statusMap: Record<string, IStatus> = {}
+      statusResults.forEach(({ url, status }) => {
+        if (status) statusMap[url] = status
+      })
+      setRemoteStatuses(statusMap)
+
+      // Load clients and status if not from cache
+      if (!homeCache.get() || forceRefresh) {
+        const [clientsData, statusData] = await Promise.all([
+          api.getClients(),
+          api.getStatus(),
+        ])
+        const newClients = clientsData.clients || []
+        setClients(newClients)
+        setStatus(statusData)
+
+        // Update cache
+        homeCache.set({
+          clients: newClients,
+          status: statusData,
+        })
+      }
     } catch (e: any) {
       message.error(e.message)
     } finally {
@@ -42,11 +87,27 @@ export default function Clients() {
   useEffect(() => { loadData() }, [])
 
   const localClients = clients.filter(c => !c.remote)
-  const remoteGroups: Record<string, IClient[]> = {}
+
+  // Get all configured remote URLs
+  const configuredRemoteUrls = new Set(remoteConsoles.map(rc => rc.url))
+
+  // Merge remote clients with configured remote consoles
+  const remoteGroups: Record<string, { clients: IClient[], config?: IRemoteConsole }> = {}
+
+  // Add clients from API
   clients.filter(c => c.remote).forEach(c => {
     const url = c.remoteUrl || 'unknown'
-    if (!remoteGroups[url]) remoteGroups[url] = []
-    remoteGroups[url].push(c)
+    if (!remoteGroups[url]) remoteGroups[url] = { clients: [] }
+    remoteGroups[url].clients.push(c)
+  })
+
+  // Add configured remote consoles that don't have connected clients
+  remoteConsoles.forEach(rc => {
+    if (!remoteGroups[rc.url]) {
+      remoteGroups[rc.url] = { clients: [], config: rc }
+    } else if (!remoteGroups[rc.url].config) {
+      remoteGroups[rc.url].config = rc
+    }
   })
 
   // ── Batch operations ──
@@ -69,6 +130,8 @@ export default function Clients() {
         await api.batchConsoleRestart()
         message.success('正在重启全部 Console...')
       }
+      // Refresh data after operation
+      setTimeout(() => loadData(true), 2000)
     } catch (e: any) {
       message.error(e.message || '操作失败')
     } finally {
@@ -96,6 +159,8 @@ export default function Clients() {
         await api.remoteConsoleRestart(url)
         message.success(`正在重启 ${url} 的 Console...`)
       }
+      // Refresh data after operation
+      setTimeout(() => loadData(true), 2000)
     } catch (e: any) {
       message.error(e.message || '操作失败')
     } finally {
@@ -123,6 +188,8 @@ export default function Clients() {
         await api.consoleRestart()
         message.success('正在重启 Console...')
       }
+      // Refresh data after operation
+      setTimeout(() => loadData(true), 2000)
     } catch (e: any) {
       message.error(e.message || '操作失败')
     } finally {
@@ -131,7 +198,7 @@ export default function Clients() {
   }
 
   // ── Create client ──
-  const handleCreateClient = async (remoteUrl?: string) => {
+  const handleCreateClient = async () => {
     try {
       const values = await createForm.validateFields()
       setCreateLoading(true)
@@ -139,12 +206,13 @@ export default function Clients() {
         clientId: values.clientId,
         clientName: values.clientName,
       }
-      if (remoteUrl) data.remoteUrl = remoteUrl
+      if (createTarget !== 'local') data.remoteUrl = createTarget
       await api.createClient(data)
       message.success('Client 已创建')
       setCreateModalOpen(false)
       createForm.resetFields()
-      loadData()
+      setCreateTarget('local')
+      loadData(true)
     } catch (e: any) {
       if (e.errorFields) return
       message.error(e.message || '创建失败')
@@ -158,43 +226,48 @@ export default function Clients() {
   return (
     <div className="page-container">
       <div className="page-header">
-        <Typography.Title level={4} style={{ margin: 0 }}>🖥️ CC-DING Console</Typography.Title>
-        <Space>
+        <Typography.Title level={4} style={{ margin: 0 }} className="page-title">🖥️ CC-DING</Typography.Title>
+        <Space className="header-actions">
           <Dropdown menu={{ items: batchMenuItems, onClick: handleBatchClick }} disabled={batchLoading}>
-            <Button loading={batchLoading}>
-              批量操作 <DownOutlined />
+            <Button size="small" loading={batchLoading}>
+              批量 <DownOutlined />
             </Button>
           </Dropdown>
-          <Button icon={<ReloadOutlined />} onClick={loadData}>刷新</Button>
-          <Button onClick={() => { localStorage.clear(); navigate('/login') }}>退出</Button>
+          <Button size="small" icon={<ReloadOutlined />} onClick={() => loadData(true)}>刷新</Button>
+          <Button size="small" onClick={() => { localStorage.clear(); navigate('/login') }}>退出</Button>
         </Space>
       </div>
 
       {/* Local machines */}
-      <Card title={`MB.LOCAL (${localClients.length})`} extra={
-        <Space wrap>
-          <Dropdown menu={{ items: localMachineMenuItems, onClick: handleLocalMachineClick }} disabled={machineLoading}>
-            <Button size="small" loading={machineLoading}>
-              机器操作 <DownOutlined />
+      <Card styles={{ body: { padding: '12px 16px' } }}>
+        {/* Custom header with title and buttons */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>
+            MB.LOCAL ({localClients.length})
+          </div>
+          <Space wrap>
+            <Dropdown menu={{ items: localMachineMenuItems, onClick: handleLocalMachineClick }} disabled={machineLoading}>
+              <Button size="small" loading={machineLoading}>
+                机器操作 <DownOutlined />
+              </Button>
+            </Dropdown>
+            <Button size="small" icon={<SettingOutlined />} onClick={() => navigate('/global')}>全局配置</Button>
+            <Button
+              type="primary"
+              size="small"
+              icon={<PlusOutlined />}
+              onClick={() => setCreateModalOpen(true)}
+            >
+              新建 Client
             </Button>
-          </Dropdown>
-          <Button size="small" icon={<SettingOutlined />} onClick={() => navigate('/global')}>全局配置</Button>
-          <Button
-            type="primary"
-            size="small"
-            icon={<PlusOutlined />}
-            onClick={() => setCreateModalOpen(true)}
-          >
-            新建 Client
-          </Button>
-        </Space>
-      }>
+          </Space>
+        </div>
         {status && (
           <div className="status-bar">
             <Tag color="green">● 在线: {localClients.filter(c => c.online).length}</Tag>
-            <span>cc-ding: {status.ccDingVersion}</span>
-            <span>⚙️ Node: {status.nodeVersion}</span>
-            <span>💻 平台: {status.platform}</span>
+            {status.ccDingVersion && <span>📦 {status.ccDingVersion}</span>}
+            {status.nodeVersion && <span>⚙️ Node {status.nodeVersion}</span>}
+            {status.platform && <span>💻 {status.platform}</span>}
           </div>
         )}
         <Row gutter={[16, 16]}>
@@ -207,59 +280,116 @@ export default function Clients() {
       </Card>
 
       {/* Remote machines */}
-      {Object.entries(remoteGroups).map(([url, groupClients]) => (
-        <Card
-          key={url}
-          title={`🌐 ${url} (${groupClients.length})`}
-          extra={
-            <Space wrap>
-              <Dropdown
-                menu={{
-                  items: getMachineMenuItems(url),
-                  onClick: ({ key }) => handleMachineClick(url, key),
-                }}
-                disabled={machineLoading}
-              >
-                <Button size="small" loading={machineLoading}>
-                  机器操作 <DownOutlined />
+      {Object.entries(remoteGroups).map(([url, group]) => {
+        const hasClients = group.clients.length > 0
+        const onlineCount = group.clients.filter(c => c.online).length
+        const isOffline = !hasClients
+        const displayName = group.config?.hostname || url
+        const remoteStatus = remoteStatuses[url]
+
+        return (
+          <Card
+            key={url}
+            style={{ marginTop: 16, opacity: isOffline ? 0.7 : 1 }}
+            styles={{ body: { padding: '12px 16px' } }}
+          >
+            {/* Custom header with title and buttons */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+              <div className="remote-title" style={{ fontSize: 15, fontWeight: 600 }}>
+                 {displayName} ({hasClients ? `${onlineCount} 在线 / ${group.clients.length} 总计` : '离线'})
+                {isOffline && <Tag color="default" style={{ marginLeft: 8 }}>未连接</Tag>}
+              </div>
+              <Space wrap>
+                <Dropdown
+                  menu={{
+                    items: getMachineMenuItems(url),
+                    onClick: ({ key }) => handleMachineClick(url, key),
+                  }}
+                  disabled={machineLoading}
+                >
+                  <Button size="small" loading={machineLoading}>
+                    机器操作 <DownOutlined />
+                  </Button>
+                </Dropdown>
+                <Button size="small" icon={<ReloadOutlined />} onClick={() => loadData(true)}>刷新</Button>
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<PlusOutlined />}
+                  onClick={() => setCreateModalOpen(true)}
+                >
+                  新建 Client
                 </Button>
-              </Dropdown>
-              <Button size="small" icon={<ReloadOutlined />} onClick={loadData}>刷新</Button>
-              <Button
-                type="primary"
-                size="small"
-                icon={<PlusOutlined />}
-                onClick={() => setCreateModalOpen(true)}
-              >
-                新建 Client
-              </Button>
-            </Space>
-          }
-          style={{ marginTop: 16 }}
-        >
-          <div className="status-bar">
-            <Tag color="green">● 在线: {groupClients.filter(c => c.online).length}</Tag>
-          </div>
-          <Row gutter={[16, 16]}>
-            {groupClients.map(c => (
-              <Col xs={24} sm={12} lg={8} key={c.clientId}>
-                <ClientCard client={c} />
-              </Col>
-            ))}
-          </Row>
-        </Card>
-      ))}
+              </Space>
+            </div>
+            {hasClients ? (
+              <>
+                <div className="status-bar">
+                  <Tag color="green">● 在线: {onlineCount}</Tag>
+                  {group.clients.length > onlineCount && <Tag color="default">○ 离线: {group.clients.length - onlineCount}</Tag>}
+                  {remoteStatus ? (
+                    <>
+                      {remoteStatus.ccDingVersion && <span>📦 {remoteStatus.ccDingVersion}</span>}
+                      {remoteStatus.nodeVersion && <span>⚙️ Node {remoteStatus.nodeVersion}</span>}
+                      {remoteStatus.platform && <span>💻 {remoteStatus.platform}</span>}
+                    </>
+                  ) : (
+                    <Tag color="default" style={{ fontSize: 11 }}>状态获取失败</Tag>
+                  )}
+                </div>
+                <Row gutter={[16, 16]}>
+                  {group.clients.map(c => (
+                    <Col xs={24} sm={12} lg={8} key={c.clientId}>
+                      <ClientCard client={c} />
+                    </Col>
+                  ))}
+                </Row>
+              </>
+            ) : remoteStatus ? (
+              <>
+                <div className="status-bar">
+                  <Tag color="orange">● 离线</Tag>
+                  {remoteStatus.ccDingVersion && <span> {remoteStatus.ccDingVersion}</span>}
+                  {remoteStatus.nodeVersion && <span>️ Node {remoteStatus.nodeVersion}</span>}
+                  {remoteStatus.platform && <span>💻 {remoteStatus.platform}</span>}
+                </div>
+                <div style={{ textAlign: 'center', padding: '20px 0', color: '#999' }}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>🔌</div>
+                  <div>该远程主机当前未连接</div>
+                  <div style={{ fontSize: 12, marginTop: 4 }}>请检查远程 Console 是否正常运行</div>
+                </div>
+              </>
+            ) : (
+              <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+                <div style={{ fontSize: 48, marginBottom: 16 }}>🔌</div>
+                <div>该远程主机当前未连接</div>
+                <div style={{ fontSize: 12, marginTop: 8 }}>请检查远程 Console 是否正常运行</div>
+              </div>
+            )}
+          </Card>
+        )
+      })}
 
       {/* Create Client Modal */}
       <Modal
         title="新建 Client"
         open={createModalOpen}
-        onCancel={() => { setCreateModalOpen(false); createForm.resetFields() }}
+        onCancel={() => { setCreateModalOpen(false); createForm.resetFields(); setCreateTarget('local') }}
         onOk={() => handleCreateClient()}
         confirmLoading={createLoading}
         destroyOnClose
       >
         <Form form={createForm} layout="vertical" style={{ marginTop: 16 }}>
+          <Form.Item name="target" label="目标机器" initialValue="local">
+            <Select onChange={setCreateTarget}>
+              <Select.Option value="local">本机 (MB.LOCAL)</Select.Option>
+              {remoteConsoles.map(rc => (
+                <Select.Option key={rc.url} value={rc.url}>
+                   {rc.hostname || rc.url}
+                </Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
           <Form.Item name="clientId" label="Client ID" rules={[{ required: true, message: '请输入 Client ID' }]}>
             <Input placeholder="唯一标识符" />
           </Form.Item>

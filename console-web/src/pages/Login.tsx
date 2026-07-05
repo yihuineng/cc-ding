@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { Form, Input, Button, message } from 'antd'
 import { LockOutlined, UserOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
+import './Login.css'
 
 export default function Login() {
   const navigate = useNavigate()
@@ -24,18 +25,18 @@ export default function Login() {
   }
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', background: '#0a0e14' }}>
-      <div style={{ width: 360, padding: 24, background: '#fff', borderRadius: 8, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}>
-        <h2 style={{ textAlign: 'center', marginBottom: 24 }}>🔐 CC-DING Console</h2>
-        <Form onFinish={onFinish} size="large">
+    <div className="login-page">
+      <div className="login-card">
+        <h2 className="login-title">🔐 CC-DING Console</h2>
+        <Form onFinish={onFinish} size="large" initialValues={{ account: 'admin' }}>
           <Form.Item name="account" rules={[{ required: true, message: '请输入账号' }]}>
-            <Input prefix={<UserOutlined />} placeholder="admin" defaultValue="admin" />
+            <Input prefix={<UserOutlined />} placeholder="admin" />
           </Form.Item>
           <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
             <Input.Password prefix={<LockOutlined />} placeholder="默认: admin" />
           </Form.Item>
           <Form.Item>
-            <Button type="primary" htmlType="submit" loading={loading} block>登 录</Button>
+            <Button type="primary" htmlType="submit" loading={loading} block className="login-btn">登 录</Button>
           </Form.Item>
         </Form>
       </div>
