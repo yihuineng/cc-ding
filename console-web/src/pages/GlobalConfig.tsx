@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Tabs, Form, Input, InputNumber, Button, Card, Space, Popconfirm, message, Spin, Tag, Collapse, Progress, Modal } from 'antd'
-import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, DownOutlined, ScanOutlined, SettingOutlined } from '@ant-design/icons'
+import { Tabs, Form, Input, InputNumber, Button, Card, Space, Popconfirm, message, Spin, Tag, Collapse, Progress } from 'antd'
+import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, DownOutlined, ScanOutlined } from '@ant-design/icons'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import { api } from '../api/client'
 import { IGlobalConfig, IRemoteConsole } from '../types'
@@ -46,11 +46,6 @@ export default function GlobalConfig() {
   const [settingsValid, setSettingsValid] = useState<boolean | null>(null)
   const [settingsErrors, setSettingsErrors] = useState<string[]>([])
   const settingsEditorRef = useRef<any>(null)
-
-  // Remote config management modal
-  const [remoteConfigUrl, setRemoteConfigUrl] = useState<string | null>(null)
-  const [remoteConfigModalOpen, setRemoteConfigModalOpen] = useState(false)
-  const [remoteConfigTab, setRemoteConfigTab] = useState('apikeys')
 
   useEffect(() => {
     api.getGlobalConfig()
@@ -311,7 +306,6 @@ export default function GlobalConfig() {
                             </div>
                             <Space>
                               <Button size="small" onClick={() => handleEdit(rc)}>编辑</Button>
-                              <Button size="small" icon={<SettingOutlined />} onClick={() => { setRemoteConfigUrl(rc.url); setRemoteConfigTab('apikeys'); setRemoteConfigModalOpen(true) }}>全局配置</Button>
                               <Popconfirm title="确定删除?" onConfirm={() => handleDelete(rc.url)}>
                                 <Button size="small" danger icon={<DeleteOutlined />} />
                               </Popconfirm>
@@ -447,35 +441,6 @@ export default function GlobalConfig() {
                     </Space>
                   </Form>
                 </Card>
-              )}
-
-              {/* Remote Config Management Modal */}
-              {remoteConfigModalOpen && remoteConfigUrl && (
-                <Modal
-                  title={`管理全局配置 — ${remoteConsoles.find(rc => rc.url === remoteConfigUrl)?.hostname || remoteConfigUrl}`}
-                  open={remoteConfigModalOpen}
-                  onCancel={() => { setRemoteConfigModalOpen(false); setRemoteConfigUrl(null) }}
-                  footer={null}
-                  width={900}
-                  style={{ top: 20 }}
-                >
-                  <Tabs
-                    activeKey={remoteConfigTab}
-                    onChange={setRemoteConfigTab}
-                    items={[
-                      {
-                        key: 'apikeys',
-                        label: '🔑 API Keys',
-                        children: <GlobalKeysTab remoteUrl={remoteConfigUrl} />,
-                      },
-                      {
-                        key: 'retrylogs',
-                        label: '🔄 重试日志',
-                        children: <GlobalRetryLogsTab remoteUrl={remoteConfigUrl} />,
-                      },
-                    ]}
-                  />
-                </Modal>
               )}
             </div>
           ),
