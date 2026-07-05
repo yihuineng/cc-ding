@@ -30,7 +30,7 @@ export interface IConfig {
   /** API Key 池化管理（可选，配置后启用 API Key 轮换） */
   apiKeyCfg?: {
     resetTime?: string; // 最近一次重置时间 yyyy-MM-dd HH:mm:ss
-    claudeSettings: IClaudeSetting[];
+    modelSettings: IClaudeSetting[];
     /** 按 baseUrl 配置的可重试报错关键词（baseUrl -> 关键词列表），Claude 异常退出信息匹配时自动发送"继续"重试 */
     retryLogs?: Record<string, string[]>;
   };
@@ -212,7 +212,7 @@ export interface IAuthRequest {
 
 // Claude 配置项（API Key 池化管理的单个配置）
 export interface IClaudeSetting {
-  isValid: boolean;   // 是否有效，429 或连续 TPM 快速失败时置 false，跨天自动重置为 true
+  isValid: boolean;   // 是否启用，仅允许用户手动变更（系统不会自动修改此值）
   apiKey: string;     // API Key
   baseUrl: string;    // API Base URL
   model: string;      // 使用的模型

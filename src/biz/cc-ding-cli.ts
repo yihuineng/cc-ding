@@ -55,7 +55,7 @@ import {
   parseDeadline, getDefaultDeadline,
 } from './todo';
 import { parseTodoCommand } from './commands';
-import { resetApiKeyCfg, scheduleApiKeyCfgDailyReset, startupCheck, saveClientConfig } from './api-key-manager';
+import { resetApiKeyCfg, startupCheck, saveClientConfig } from './api-key-manager';
 import { resolveSecret } from './secrets';
 import { ICommandRoute, route } from './command-route';
 import { CronEngine, formatCronJobList, formatCronJobInfo, isValidCronExpression } from './cron';
@@ -1936,11 +1936,11 @@ export class DingClaude {
         }
 
         resetApiKeyCfg(this);
-        const validCount = this.config.apiKeyCfg.claudeSettings.filter(s => s.isValid).length;
+        const validCount = this.config.apiKeyCfg.modelSettings.filter(s => s.isValid).length;
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: `✅ apiKeyCfg 已重置\n- 有效 Key 数: ${validCount}/${this.config.apiKeyCfg.claudeSettings.length}\n- 重置时间: ${this.config.apiKeyCfg.resetTime || '-'}`,
+          content: `✅ apiKeyCfg 已重置\n- 有效 Key 数: ${validCount}/${this.config.apiKeyCfg.modelSettings.length}\n- 重置时间: ${this.config.apiKeyCfg.resetTime || '-'}`,
           msgType: 'markdown',
         });
       }),
@@ -3330,12 +3330,7 @@ export class DingClaude {
     // 解析 config 中的手机号为 userId
     await resolveAllPhonesInConfig(this);
 
-    // 启动时重置 apiKeyCfg（仅当已配置时）
-    if (this.config.apiKeyCfg) {
-      resetApiKeyCfg(this);
-      // 调度每天 0 点自动重置 apiKeyCfg
-      scheduleApiKeyCfgDailyReset(this);
-    }
+    // apiKeyCfg 启动时不再自动重置 isValid（仅允许用户手动变更）
 
     this.loadActiveSessions();
     // 不再通知异常中断的会话用户（避免打扰）

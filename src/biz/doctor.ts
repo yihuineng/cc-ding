@@ -161,15 +161,15 @@ export function runDoctor(clientDir: string): CheckResult[] {
     if (cfg.resetTime) {
       results.push(check('PASS', `apiKeyCfg.resetTime: ${cfg.resetTime}`));
     }
-    if (!Array.isArray(cfg.claudeSettings)) {
-      results.push(check('WARN', 'apiKeyCfg.claudeSettings 不是数组'));
-    } else if (cfg.claudeSettings.length === 0) {
-      results.push(check('WARN', 'apiKeyCfg.claudeSettings 为空，无备用 Key'));
+    if (!Array.isArray(cfg.modelSettings)) {
+      results.push(check('WARN', 'apiKeyCfg.modelSettings 不是数组'));
+    } else if (cfg.modelSettings.length === 0) {
+      results.push(check('WARN', 'apiKeyCfg.modelSettings 为空，无备用 Key'));
     } else {
       const seenKeys = new Set<string>();
-      for (let i = 0; i < cfg.claudeSettings.length; i++) {
-        const s: IClaudeSetting = cfg.claudeSettings[i];
-        const p = `apiKeyCfg.claudeSettings[${i}]`;
+      for (let i = 0; i < cfg.modelSettings.length; i++) {
+        const s: IClaudeSetting = cfg.modelSettings[i];
+        const p = `apiKeyCfg.modelSettings[${i}]`;
         if (!s.apiKey) {
           results.push(check('FATAL', `${p} 缺少 apiKey`));
         } else if (seenKeys.has(s.apiKey)) {
@@ -181,8 +181,8 @@ export function runDoctor(clientDir: string): CheckResult[] {
         if (!s.model) results.push(check('WARN', `${p} 缺少 model`));
         if (typeof s.isValid !== 'boolean') results.push(check('WARN', `${p} isValid 类型异常: ${typeof s.isValid}`));
       }
-      const validCount = cfg.claudeSettings.filter((s: IClaudeSetting) => s.isValid).length;
-      results.push(check('PASS', `apiKeyCfg.claudeSettings 共 ${cfg.claudeSettings.length} 项，有效 ${validCount}`));
+      const validCount = cfg.modelSettings.filter((s: IClaudeSetting) => s.isValid).length;
+      results.push(check('PASS', `apiKeyCfg.modelSettings 共 ${cfg.modelSettings.length} 项，有效 ${validCount}`));
     }
   } else {
     results.push(check('WARN', 'apiKeyCfg 未配置，无法使用 API Key 池化轮换'));

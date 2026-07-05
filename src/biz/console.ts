@@ -587,8 +587,8 @@ async function handleGetClients(req: http.IncomingMessage, res: http.ServerRespo
         freedomMode: !!conv.freedomMode,
         streaming: !!conv.streaming,
       })),
-      apiKeyCount: config?.apiKeyCfg?.claudeSettings?.length || 0,
-      apiKeysValid: (config?.apiKeyCfg?.claudeSettings || []).filter(s => s.isValid).length,
+      apiKeyCount: config?.apiKeyCfg?.modelSettings?.length || 0,
+      apiKeysValid: (config?.apiKeyCfg?.modelSettings || []).filter(s => s.isValid).length,
     };
   });
 
@@ -668,8 +668,8 @@ async function handleGetClientConfig(req: http.IncomingMessage, res: http.Server
         return conv;
       });
     }
-    if (maskedConfig.apiKeyCfg?.claudeSettings) {
-      maskedConfig.apiKeyCfg.claudeSettings = maskedConfig.apiKeyCfg.claudeSettings.map((s: any) => {
+    if (maskedConfig.apiKeyCfg?.modelSettings) {
+      maskedConfig.apiKeyCfg.modelSettings = maskedConfig.apiKeyCfg.modelSettings.map((s: any) => {
         if (s.apiKey) s.apiKey = maskSecret(s.apiKey);
         return s;
       });
@@ -1106,7 +1106,7 @@ async function handleGetApiKeys(req: http.IncomingMessage, res: http.ServerRespo
 
   try {
     const config = fileUtil.getJSON(configPath) as IConfig;
-    const keys = (config.apiKeyCfg?.claudeSettings || []).map((setting, index) => ({
+    const keys = (config.apiKeyCfg?.modelSettings || []).map((setting, index) => ({
       index,
       isValid: setting.isValid,
       apiKey: maskSecret(setting.apiKey),
@@ -1136,8 +1136,8 @@ async function handleAddApiKey(req: http.IncomingMessage, res: http.ServerRespon
     const body = await readBody(req);
     const data = JSON.parse(body || '{}');
     const config = fileUtil.getJSON(configPath) as IConfig;
-    if (!config.apiKeyCfg) config.apiKeyCfg = { claudeSettings: [] };
-    if (!config.apiKeyCfg.claudeSettings) config.apiKeyCfg.claudeSettings = [];
+    if (!config.apiKeyCfg) config.apiKeyCfg = { modelSettings: [] };
+    if (!config.apiKeyCfg.modelSettings) config.apiKeyCfg.modelSettings = [];
 
     const newKey: IClaudeSetting = {
       isValid: data.isValid !== false,
@@ -1147,7 +1147,7 @@ async function handleAddApiKey(req: http.IncomingMessage, res: http.ServerRespon
       smallModel: data.smallModel || '',
       memo: data.memo || '',
     };
-    config.apiKeyCfg.claudeSettings.push(newKey);
+    config.apiKeyCfg.modelSettings.push(newKey);
     backupFile(configPath);
     atomicWrite(configPath, JSON.stringify(config, null, 2));
     jsonResponse(res, 201, { message: 'API Key 已添加' });
@@ -1170,7 +1170,7 @@ async function handleUpdateApiKey(req: http.IncomingMessage, res: http.ServerRes
     const body = await readBody(req);
     const data = JSON.parse(body || '{}');
     const config = fileUtil.getJSON(configPath) as IConfig;
-    const settings = config.apiKeyCfg?.claudeSettings || [];
+    const settings = config.apiKeyCfg?.modelSettings || [];
     if (index < 0 || index >= settings.length) {
       jsonError(res, 404, 'API Key 索引不存在');
       return;
@@ -1203,7 +1203,7 @@ async function handleDeleteApiKey(req: http.IncomingMessage, res: http.ServerRes
 
   try {
     const config = fileUtil.getJSON(configPath) as IConfig;
-    const settings = config.apiKeyCfg?.claudeSettings || [];
+    const settings = config.apiKeyCfg?.modelSettings || [];
     if (index < 0 || index >= settings.length) {
       jsonError(res, 404, 'API Key 索引不存在');
       return;
@@ -1229,8 +1229,8 @@ async function handleResetApiKeys(req: http.IncomingMessage, res: http.ServerRes
 
   try {
     const config = fileUtil.getJSON(configPath) as IConfig;
-    if (config.apiKeyCfg?.claudeSettings) {
-      for (const setting of config.apiKeyCfg.claudeSettings) {
+    if (config.apiKeyCfg?.modelSettings) {
+      for (const setting of config.apiKeyCfg.modelSettings) {
         setting.isValid = true;
       }
       config.apiKeyCfg.resetTime = dateUtil.mm(Date.now()).format('YYYY-MM-DD HH:mm:ss');

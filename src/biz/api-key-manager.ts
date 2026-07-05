@@ -22,8 +22,8 @@ export function saveClientConfig(self: DingClaude): void {
 }
 
 /**
- * 重置 apiKeyCfg：claudeSettings[].isValid 全部重置为 true
- * 用于启动时和每天 0 点定时重置
+ * 重置 apiKeyCfg：modelSettings[].isValid 全部重置为 true
+ * 仅由用户通过命令触发，系统不会自动调用
  */
 export function resetApiKeyCfg(self: DingClaude): void {
   const cfg = self.config.apiKeyCfg;
@@ -32,49 +32,28 @@ export function resetApiKeyCfg(self: DingClaude): void {
   const now = new Date();
   cfg.resetTime = dateUtil.mm(now.getTime()).format('YYYY-MM-DD HH:mm:ss');
   let resetCount = 0;
-  for (const setting of cfg.claudeSettings) {
+  for (const setting of cfg.modelSettings) {
     if (!setting.isValid) {
       setting.isValid = true;
       resetCount++;
     }
   }
   if (resetCount > 0) {
-    console.log(`[${timestamp()}] ${resetCount} 个已失效 Claude Setting 重新标记为有效`);
+    console.log(`[${timestamp()}] ${resetCount} 个 Model Setting 已重新启用`);
   }
   saveClientConfig(self);
-  console.log(`[${timestamp()}] apiKeyCfg 已重置 (所有 Claude Setting isValid=true)`);
+  console.log(`[${timestamp()}] apiKeyCfg 已重置 (所有 Model Setting isValid=true)`);
 }
 
 /**
- * 调度每天 0 点重置 apiKeyCfg
- * 每次触发后重新对齐下一个 0 点，避免 setInterval 漂移累积
- */
-export function scheduleApiKeyCfgDailyReset(self: DingClaude): void {
-  const scheduleNext = () => {
-    const now = new Date();
-    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
-    const msUntilMidnight = nextMidnight.getTime() - now.getTime();
-
-    setTimeout(() => {
-      console.log(`[${timestamp()}] 定时重置 apiKeyCfg (每天0点)`);
-      resetApiKeyCfg(self);
-      scheduleNext(); // 重新校准到下一个 0 点
-    }, msUntilMidnight);
-
-    console.log(`[${timestamp()}] apiKeyCfg 每日重置已调度，下次重置: ${nextMidnight.toISOString()}`);
-  };
-  scheduleNext();
-}
-
-/**
- * 生成 Claude Setting 的可读标识，有 memo 时显示 memo，否则显示 apiKey 后6位
+ * 生成 Model Setting 的可读标识，有 memo 时显示 memo，否则显示 apiKey 后6位
  */
 export function settingLabel(setting: IClaudeSetting): string {
   return setting.memo ? setting.memo : `...${setting.apiKey.slice(-6)}`;
 }
 
 /**
- * 在 claudeSettings 中查找指定 apiKey 的可读标识
+ * 在 modelSettings 中查找指定 apiKey 的可读标识
  */
 function findSettingLabel(settings: IClaudeSetting[], apiKey: string): string {
   const found = settings.find(s => resolveSecret(s.apiKey) === resolveSecret(apiKey));
@@ -82,34 +61,33 @@ function findSettingLabel(settings: IClaudeSetting[], apiKey: string): string {
 }
 
 /**
- * 将指定的 Claude Setting 标记为无效，并挑选新的有效 Setting
- * 返回新的有效 Setting，若无可用则返回 null
+ * 连续失败时切换 Key：从启用的 Setting 中随机选一个（排除当前 Key）
+ * isValid 仅允许用户手动变更，系统不会自动标记为无效
+ * 返回新的 Setting，若无可用则返回 null
  */
 export function rotateApiKey(self: DingClaude, usedKey: string): IClaudeSetting | null {
   const cfg = self.config.apiKeyCfg;
   if (!cfg) return null;
-  // 标记匹配的 setting 为无效
-  for (const setting of cfg.claudeSettings) {
-    if (resolveSecret(setting.apiKey) === resolveSecret(usedKey) && setting.isValid) {
-      setting.isValid = false;
-      break;
-    }
-  }
-  const validCount = cfg.claudeSettings.filter(s => s.isValid).length;
-  const usedKeyLabel = findSettingLabel(cfg.claudeSettings, usedKey);
-  console.log(`[${timestamp()}] Claude Setting 已失效: ${usedKeyLabel}, 剩余有效: ${validCount}`);
-  saveClientConfig(self);
 
-  return pickValidApiKey(self);
+  const resolvedUsedKey = resolveSecret(usedKey);
+  const candidates = cfg.modelSettings.filter(s => s.isValid && resolveSecret(s.apiKey) !== resolvedUsedKey);
+  if (candidates.length === 0) return null;
+
+  const newSetting = candidates[Math.floor(Math.random() * candidates.length)];
+  const usedKeyLabel = findSettingLabel(cfg.modelSettings, usedKey);
+  console.log(`[${timestamp()}] 连续失败切换 Key: ${usedKeyLabel} → ${settingLabel(newSetting)}（剩余候选: ${candidates.length}）`);
+  return newSetting;
 }
 
 /**
- * 随机从 claudeSettings 中取一个有效的 Setting
+ * 随机从 modelSettings 中取一个有效的 Setting
+ * @param excludeApiKey 排除指定 apiKey（用于切换时排除当前 Key）
  */
-export function pickValidApiKey(self: DingClaude): IClaudeSetting | null {
+export function pickValidApiKey(self: DingClaude, excludeApiKey?: string): IClaudeSetting | null {
   const cfg = self.config.apiKeyCfg;
   if (!cfg) return null;
-  const validSettings = cfg.claudeSettings.filter(s => s.isValid);
+  const resolvedExclude = excludeApiKey ? resolveSecret(excludeApiKey) : undefined;
+  const validSettings = cfg.modelSettings.filter(s => s.isValid && (!resolvedExclude || resolveSecret(s.apiKey) !== resolvedExclude));
   if (validSettings.length === 0) return null;
   return validSettings[Math.floor(Math.random() * validSettings.length)];
 }
@@ -328,7 +306,7 @@ export function startupCheck(self: DingClaude): void {
     { value: config.clientSecret, label: 'clientSecret' },
     { value: config.defaultDingToken, label: 'defaultDingToken' },
     ...(config.conversations || []).map((c, i) => ({ value: c.dingToken, label: `conversations[${i}].dingToken` })),
-    ...(config.apiKeyCfg?.claudeSettings || []).map((s, i) => ({ value: s.apiKey, label: `apiKeyCfg.claudeSettings[${i}].apiKey` })),
+    ...(config.apiKeyCfg?.modelSettings || []).map((s, i) => ({ value: s.apiKey, label: `apiKeyCfg.modelSettings[${i}].apiKey` })),
   ];
   for (const { value, label } of envRefChecks) {
     if (isEnvRef(value) && !resolveSecret(value)) {
@@ -343,16 +321,16 @@ export function startupCheck(self: DingClaude): void {
     if (cfg.resetTime) {
       results.push({ level: 'PASS', message: `apiKeyCfg 上次重置时间: ${cfg.resetTime}` });
     }
-    // claudeSettings
-    if (!Array.isArray(cfg.claudeSettings)) {
-      results.push({ level: 'WARN', message: 'apiKeyCfg.claudeSettings 不是数组，API Key 轮换功能不可用' });
-    } else if (cfg.claudeSettings.length === 0) {
-      results.push({ level: 'WARN', message: 'apiKeyCfg.claudeSettings 为空，无可用 Key' });
+    // modelSettings
+    if (!Array.isArray(cfg.modelSettings)) {
+      results.push({ level: 'WARN', message: 'apiKeyCfg.modelSettings 不是数组，API Key 轮换功能不可用' });
+    } else if (cfg.modelSettings.length === 0) {
+      results.push({ level: 'WARN', message: 'apiKeyCfg.modelSettings 为空，无可用 Key' });
     } else {
       const seenKeys = new Set<string>();
-      for (let i = 0; i < cfg.claudeSettings.length; i++) {
-        const s = cfg.claudeSettings[i];
-        const p = `apiKeyCfg.claudeSettings[${i}]`;
+      for (let i = 0; i < cfg.modelSettings.length; i++) {
+        const s = cfg.modelSettings[i];
+        const p = `apiKeyCfg.modelSettings[${i}]`;
         if (!s.apiKey) {
           results.push({ level: 'FATAL', message: `${p} 缺少 apiKey` });
         } else if (seenKeys.has(s.apiKey)) {
@@ -370,8 +348,8 @@ export function startupCheck(self: DingClaude): void {
           results.push({ level: 'WARN', message: `${p} isValid 类型异常: ${typeof s.isValid}` });
         }
       }
-      const validCount = cfg.claudeSettings.filter(s => s.isValid).length;
-      results.push({ level: 'PASS', message: `apiKeyCfg.claudeSettings 共 ${cfg.claudeSettings.length} 项，有效 ${validCount}` });
+      const validCount = cfg.modelSettings.filter(s => s.isValid).length;
+      results.push({ level: 'PASS', message: `apiKeyCfg.modelSettings 共 ${cfg.modelSettings.length} 项，有效 ${validCount}` });
     }
   }
 

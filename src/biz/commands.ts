@@ -393,8 +393,8 @@ export function formatGlobalConfig(cfg: IConfig): string {
   if (cfg.owner) lines.push(`- **owner:** ${cfg.owner}`);
   if (cfg.whiteUserList?.length) lines.push(`- **全局白名单:** ${cfg.whiteUserList.join(', ')}`);
   if (cfg.apiKeyCfg) {
-    const validCount = cfg.apiKeyCfg.claudeSettings.filter(s => s.isValid).length;
-    lines.push(`- **apiKeyCfg:** ${validCount}/${cfg.apiKeyCfg.claudeSettings.length} 有效`);
+    const validCount = cfg.apiKeyCfg.modelSettings.filter(s => s.isValid).length;
+    lines.push(`- **apiKeyCfg:** ${validCount}/${cfg.apiKeyCfg.modelSettings.length} 有效`);
     lines.push(`  - **最近重置:** ${cfg.apiKeyCfg.resetTime || '-'}`);
   }
   lines.push(`- **enableMsgToUser:** ${cfg.enableMsgToUser ?? false} (私聊消息开关)`);

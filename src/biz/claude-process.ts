@@ -58,7 +58,7 @@ export function resolveClaudeSettingsPath(
     const savedApiKey = readApiKeyFromSettings(dingGroupDir);
     let currentSetting: IClaudeSetting | null = null;
     if (savedApiKey) {
-      currentSetting = self.config.apiKeyCfg.claudeSettings.find(s => resolveSecret(s.apiKey) === savedApiKey && s.isValid) || null;
+      currentSetting = self.config.apiKeyCfg.modelSettings.find(s => resolveSecret(s.apiKey) === savedApiKey && s.isValid) || null;
     }
     if (!currentSetting) {
       currentSetting = pickValidApiKey(self);
@@ -895,13 +895,13 @@ export async function executeClaudeQuery(
   if (!fs.existsSync(sessionDir)) {
     throw new Error('会话目录已被清理，请发送新消息开始新会话');
   }
-  // 从 settings-ding.json 恢复上次使用的 Claude Setting
+  // 从 settings-ding.json 恢复上次使用的 Model Setting
   let currentSetting: IClaudeSetting | null = null;
   const savedApiKey = readApiKeyFromSettings(dingGroupDir);
   if (savedApiKey && self.config.apiKeyCfg) {
-    currentSetting = self.config.apiKeyCfg.claudeSettings.find(s => resolveSecret(s.apiKey) === savedApiKey && s.isValid) || null;
+    currentSetting = self.config.apiKeyCfg.modelSettings.find(s => resolveSecret(s.apiKey) === savedApiKey && s.isValid) || null;
     if (currentSetting) {
-      console.log(`[${timestamp()}] 从 settings-ding.json 恢复 Claude Setting: ${settingLabel(currentSetting)}`);
+      console.log(`[${timestamp()}] 从 settings-ding.json 恢复 Model Setting: ${settingLabel(currentSetting)}`);
     }
   }
   const forceSettingsPath = getForceEnabledSettingsPath(dingGroupDir);
