@@ -6,6 +6,8 @@ const CACHE_TTL = 5 * 60 * 1000 // 5 minutes
 interface CacheData {
   clients: any[]
   status: any
+  remoteConsoles?: any[]
+  remoteStatuses?: Record<string, any>
   timestamp: number
 }
 
@@ -29,7 +31,7 @@ export const homeCache = {
     }
   },
 
-  set(data: { clients: any[]; status: any }): void {
+  set(data: { clients: any[]; status: any; remoteConsoles?: any[]; remoteStatuses?: Record<string, any> }): void {
     try {
       const cacheData: CacheData = {
         ...data,

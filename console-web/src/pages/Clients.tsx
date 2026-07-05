@@ -30,12 +30,12 @@ export default function Clients() {
 
   const loadData = async (forceRefresh = false) => {
     // Try cache first
-    if (!forceRefresh) {
-      const cached = homeCache.get()
-      if (cached) {
-        setClients(cached.clients)
-        setStatus(cached.status)
-      }
+    const cached = homeCache.get()
+    if (!forceRefresh && cached) {
+      setClients(cached.clients)
+      setStatus(cached.status)
+      if (cached.remoteConsoles) setRemoteConsoles(cached.remoteConsoles)
+      if (cached.remoteStatuses) setRemoteStatuses(cached.remoteStatuses)
     }
 
     try {
@@ -45,13 +45,19 @@ export default function Clients() {
       const consoles = configData.config?.console?.remoteConsoles || configData.config?.remoteConsoles || []
       setRemoteConsoles(consoles)
 
-      // Load remote statuses
+      // Load remote statuses with short timeout to avoid blocking UI
+      // Use cached remote statuses as fallback
       const statusPromises = consoles.map(async (rc: IRemoteConsole) => {
         try {
+          // Use AbortController for 3s timeout
+          const controller = new AbortController()
+          const timeoutId = setTimeout(() => controller.abort(), 3000)
           const remoteStatus = await api.getRemoteStatus(rc.url)
+          clearTimeout(timeoutId)
           return { url: rc.url, status: remoteStatus }
         } catch {
-          return { url: rc.url, status: null }
+          // Fallback to cached status
+          return { url: rc.url, status: cached?.remoteStatuses?.[rc.url] || null }
         }
       })
       const statusResults = await Promise.all(statusPromises)
@@ -62,7 +68,7 @@ export default function Clients() {
       setRemoteStatuses(statusMap)
 
       // Load clients and status if not from cache
-      if (!homeCache.get() || forceRefresh) {
+      if (!cached || forceRefresh) {
         const [clientsData, statusData] = await Promise.all([
           api.getClients(),
           api.getStatus(),
@@ -71,10 +77,20 @@ export default function Clients() {
         setClients(newClients)
         setStatus(statusData)
 
-        // Update cache
+        // Update cache (including remote data)
         homeCache.set({
           clients: newClients,
           status: statusData,
+          remoteConsoles: consoles,
+          remoteStatuses: statusMap,
+        })
+      } else {
+        // Update cache with latest remote data only
+        homeCache.set({
+          clients: cached.clients,
+          status: cached.status,
+          remoteConsoles: consoles,
+          remoteStatuses: statusMap,
         })
       }
     } catch (e: any) {
