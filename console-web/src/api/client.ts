@@ -165,6 +165,38 @@ export const api = {
       body: JSON.stringify(content),
     }),
 
+  // ─ Global API Keys ──
+  getGlobalApiKeys: () => request<{ apiKeys: IApiKey[]; resetTime: string }>('/api/global/apikeys'),
+
+  addGlobalApiKey: (key: Partial<IApiKey>) =>
+    request('/api/global/apikeys', {
+      method: 'POST',
+      body: JSON.stringify(key),
+    }),
+
+  updateGlobalApiKey: (index: number, key: Partial<IApiKey>) =>
+    request(`/api/global/apikeys/${index}`, {
+      method: 'PUT',
+      body: JSON.stringify(key),
+    }),
+
+  deleteGlobalApiKey: (index: number) =>
+    request(`/api/global/apikeys/${index}`, {
+      method: 'DELETE',
+    }),
+
+  resetGlobalApiKeys: () =>
+    request('/api/global/apikeys/reset', { method: 'POST' }),
+
+  // ── Global RetryLogs ──
+  getGlobalRetryLogs: () => request<{ retryLogs: Record<string, string[]> }>('/api/global/retrylogs'),
+
+  putGlobalRetryLogs: (retryLogs: Record<string, string[]>) =>
+    request('/api/global/retrylogs', {
+      method: 'PUT',
+      body: JSON.stringify({ retryLogs }),
+    }),
+
   // ── Batch Operations ──
   batchUpdate: () =>
     request('/api/batch/update', { method: 'POST' }),
