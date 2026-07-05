@@ -584,7 +584,9 @@ function runClaudeOnce(
         return;
       }
 
-      reject(new Error(`Claude 进程退出，代码: ${code}`));
+      const exitErr = new Error(`Claude 进程退出，代码: ${code}`) as Error & { combinedOutput?: string };
+      exitErr.combinedOutput = combinedOutput;
+      reject(exitErr);
     });
 
     child.on('error', (err) => {
@@ -994,6 +996,7 @@ export async function executeClaudeQuery(
   let consecutiveFastFail = 0;
   let totalRetries = 0;
   let retryStartTime = 0;
+  let retryLogRetry = false; // retryLogs 关键词匹配触发的重试
   const retryHistory: string[] = [];
   const originalActiveSession = self.activeSessions.get(session.conversationId);
   // 新 turn 开始，重置自动恢复计数和首次超时时间
@@ -1036,7 +1039,8 @@ export async function executeClaudeQuery(
   while (true) {
     if (!isSessionStillActive('停止重试')) return;
 
-    const isRetry = consecutiveFastFail > 0;
+    const isRetry = consecutiveFastFail > 0 || retryLogRetry;
+    retryLogRetry = false; // 重置，下次循环默认非 retryLogs 重试
 
     // 无限重试循环检测
     if (totalRetries >= MAX_TOTAL_RETRIES || (totalRetries >= 3 && retryStartTime > 0 && Date.now() - retryStartTime > MAX_RETRY_DURATION_MS)) {
@@ -1244,6 +1248,26 @@ export async function executeClaudeQuery(
         }
         consecutiveFastFail = 0;
         continue;
+      }
+      // retryLogs 关键词匹配：按 baseUrl 查找可重试报错关键词，随机间隔 1-2 分钟后发送"继续"重试
+      const errWithOutput = err as Error & { combinedOutput?: string };
+      const retryLogs = currentSetting ? self.config.apiKeyCfg?.retryLogs?.[currentSetting.baseUrl] : undefined;
+      if (retryLogs?.length && errWithOutput.combinedOutput) {
+        const matched = retryLogs.find(kw => errWithOutput.combinedOutput!.includes(kw));
+        if (matched) {
+          totalRetries++; retryStartTime = retryStartTime || Date.now();
+          // 随机间隔 60-120 秒，避免被识别为程序行为
+          const delayMs = 60_000 + Math.floor(Math.random() * 60_000);
+          const delaySec = Math.round(delayMs / 1000);
+          retryHistory.push(`[${timestamp()}] retryLogs 匹配"${matched}"，${delaySec}s 后发送"继续"重试`);
+          console.log(`[${timestamp()}] retryLogs 匹配"${matched}"(${currentSetting.baseUrl})，${delaySec}s 后重试 (${totalRetries}/${MAX_TOTAL_RETRIES})`);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: retryLogs 匹配"${matched}"，${delaySec}s 后发送"继续"重试\n`, 'utf-8');
+          await sleep(delayMs);
+          if (!isSessionStillActive('停止 retryLogs 重试')) return;
+          consecutiveFastFail = 0;
+          retryLogRetry = true;
+          continue;
+        }
       }
       throw err;
     }

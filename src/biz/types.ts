@@ -31,6 +31,8 @@ export interface IConfig {
   apiKeyCfg?: {
     resetTime?: string; // 最近一次重置时间 yyyy-MM-dd HH:mm:ss
     claudeSettings: IClaudeSetting[];
+    /** 按 baseUrl 配置的可重试报错关键词（baseUrl -> 关键词列表），Claude 异常退出信息匹配时自动发送"继续"重试 */
+    retryLogs?: Record<string, string[]>;
   };
   /** 是否开启 DEBUG 日志，默认 false */
   debug?: boolean;
