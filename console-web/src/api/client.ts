@@ -165,6 +165,25 @@ export const api = {
       body: JSON.stringify(content),
     }),
 
+  // ── Remote Global Config ──
+  getRemoteGlobalConfig: (url: string) =>
+    request<IGlobalConfig>(`/api/remote/global/config?url=${encodeURIComponent(url)}`),
+
+  putRemoteGlobalConfig: (url: string, config: any) =>
+    request(`/api/remote/global/config?url=${encodeURIComponent(url)}`, {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    }),
+
+  getRemoteSettingsTpl: (url: string) =>
+    request<any>(`/api/remote/global/settings-tpl?url=${encodeURIComponent(url)}`),
+
+  putRemoteSettingsTpl: (url: string, content: any) =>
+    request(`/api/remote/global/settings-tpl?url=${encodeURIComponent(url)}`, {
+      method: 'PUT',
+      body: JSON.stringify(content),
+    }),
+
   // ─ Global API Keys ──
   getGlobalApiKeys: () => request<{ apiKeys: IApiKey[]; resetTime: string }>('/api/global/apikeys'),
 

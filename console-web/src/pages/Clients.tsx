@@ -12,6 +12,8 @@ import {
 import { api } from '../api/client'
 import { IClient, IStatus, IRemoteConsole } from '../types'
 import ClientCard from '../components/ClientCard'
+import ConsoleConfigTab from '../components/ConsoleConfigTab'
+import SettingsTplTab from '../components/SettingsTplTab'
 import GlobalKeysTab from '../components/GlobalKeysTab'
 import GlobalRetryLogsTab from '../components/GlobalRetryLogsTab'
 import { homeCache } from '../utils/cache'
@@ -33,7 +35,7 @@ export default function Clients() {
   // Remote config modal
   const [remoteConfigUrl, setRemoteConfigUrl] = useState<string | null>(null)
   const [remoteConfigModalOpen, setRemoteConfigModalOpen] = useState(false)
-  const [remoteConfigTab, setRemoteConfigTab] = useState('apikeys')
+  const [remoteConfigTab, setRemoteConfigTab] = useState('console')
 
   const loadData = async (forceRefresh = false) => {
     // Try cache first
@@ -334,7 +336,7 @@ export default function Clients() {
                     机器操作 <DownOutlined />
                   </Button>
                 </Dropdown>
-                <Button size="small" icon={<SettingOutlined />} onClick={() => { setRemoteConfigUrl(url); setRemoteConfigTab('apikeys'); setRemoteConfigModalOpen(true) }}>全局配置</Button>
+                <Button size="small" icon={<SettingOutlined />} onClick={() => { setRemoteConfigUrl(url); setRemoteConfigTab('console'); setRemoteConfigModalOpen(true) }}>全局配置</Button>
                 <Button
                   type="primary"
                   size="small"
@@ -435,6 +437,16 @@ export default function Clients() {
           activeKey={remoteConfigTab}
           onChange={setRemoteConfigTab}
           items={[
+            {
+              key: 'console',
+              label: '️ Console 配置',
+              children: <ConsoleConfigTab remoteUrl={remoteConfigUrl || undefined} />,
+            },
+            {
+              key: 'settings',
+              label: '📝 settings-tpl',
+              children: <SettingsTplTab remoteUrl={remoteConfigUrl || undefined} />,
+            },
             {
               key: 'apikeys',
               label: '🔑 API Keys',
