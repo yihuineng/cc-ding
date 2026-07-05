@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Tabs, Form, Input, InputNumber, Button, Card, Space, Popconfirm, message, Spin, Tag, Collapse, Table, Progress } from 'antd'
+import { Tabs, Form, Input, InputNumber, Button, Card, Space, Popconfirm, message, Spin, Tag, Collapse, Progress } from 'antd'
 import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, DownOutlined, ScanOutlined } from '@ant-design/icons'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import { api } from '../api/client'
@@ -382,25 +382,22 @@ export default function GlobalConfig() {
                         <div style={{ fontWeight: 600 }}>发现 {discoveredConsoles.length} 个 Console</div>
                         <Button size="small" type="primary" onClick={handleAddAllDiscovered}>全部添加</Button>
                       </div>
-                      <Table
-                        dataSource={discoveredConsoles}
-                        columns={[
-                          { title: '地址', dataIndex: 'url', key: 'url', render: (v: string) => <code>{v}</code> },
-                          { title: '主机名', dataIndex: 'hostname', key: 'hostname' },
-                          { title: '版本', dataIndex: 'ccDingVersion', key: 'version' },
-                          {
-                            title: '操作',
-                            key: 'action',
-                            width: 100,
-                            render: (_: any, record: DiscoveredConsole) => (
-                              <Button size="small" type="primary" onClick={() => handleAddDiscovered(record)}>添加</Button>
-                            ),
-                          },
-                        ]}
-                        rowKey="url"
-                        pagination={false}
-                        size="small"
-                      />
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 8 }}>
+                        {discoveredConsoles.map(dc => (
+                          <Card key={dc.url} size="small" styles={{ body: { padding: '10px 14px' } }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontWeight: 600, fontSize: 13 }}>{dc.hostname || dc.url}</div>
+                                <div style={{ fontSize: 11, color: '#999', wordBreak: 'break-all' }}>
+                                  {dc.url}
+                                  {dc.ccDingVersion && <span style={{ marginLeft: 8 }}>v{dc.ccDingVersion}</span>}
+                                </div>
+                              </div>
+                              <Button size="small" type="primary" onClick={() => handleAddDiscovered(dc)}>添加</Button>
+                            </div>
+                          </Card>
+                        ))}
+                      </div>
                     </div>
                   )}
 

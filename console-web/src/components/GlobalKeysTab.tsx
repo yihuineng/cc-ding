@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Table, Button, Space, Tag, Modal, Form, Input, Popconfirm, message, Tooltip } from 'antd'
+import { Card, Button, Space, Tag, Modal, Form, Input, Popconfirm, message, Tooltip } from 'antd'
 import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import { IApiKey } from '../types'
@@ -85,66 +85,7 @@ export default function GlobalKeysTab() {
     return key.slice(0, 4) + '****' + key.slice(-4)
   }
 
-  const columns = [
-    {
-      title: '状态',
-      dataIndex: 'isValid',
-      key: 'isValid',
-      width: 70,
-      render: (v: boolean) => (
-        <Tag color={v ? 'green' : 'red'}>{v ? '有效' : '无效'}</Tag>
-      ),
-    },
-    {
-      title: 'API Key',
-      dataIndex: 'apiKey',
-      key: 'apiKey',
-      render: (v: string) => (
-        <Tooltip title="后端已掩码，编辑时需输入完整 Key">
-          <code style={{ fontSize: 12 }}>{maskKey(v)}</code>
-        </Tooltip>
-      ),
-    },
-    {
-      title: 'Model',
-      dataIndex: 'model',
-      key: 'model',
-      render: (v: string) => v || '-',
-    },
-    {
-      title: '小模型',
-      dataIndex: 'smallModel',
-      key: 'smallModel',
-      render: (v: string) => v || '-',
-    },
-    {
-      title: 'Base URL',
-      dataIndex: 'baseUrl',
-      key: 'baseUrl',
-      ellipsis: true,
-      render: (v: string) => v ? <code style={{ fontSize: 11 }}>{v}</code> : '-',
-    },
-    {
-      title: '备注',
-      dataIndex: 'memo',
-      key: 'memo',
-      ellipsis: true,
-      render: (v: string) => v || '-',
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 120,
-      render: (_: any, __: any, index: number) => (
-        <Space>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(index)} />
-          <Popconfirm title="确定删除此 Key?" onConfirm={() => handleDelete(index)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ]
+  if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
 
   return (
     <div>
@@ -158,15 +99,42 @@ export default function GlobalKeysTab() {
         <Button onClick={loadKeys} icon={<ReloadOutlined />}>刷新</Button>
       </div>
 
-      <Table
-        dataSource={keys}
-        columns={columns}
-        rowKey={(_, i) => String(i)}
-        loading={loading}
-        pagination={false}
-        size="small"
-        scroll={{ x: 700 }}
-      />
+      {keys.length === 0 ? (
+        <Card>
+          <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+            <div style={{ fontSize: 48, marginBottom: 16 }}>🔑</div>
+            <div>暂无全局 API Key</div>
+            <div style={{ fontSize: 12, marginTop: 8 }}>点击"添加 Key"按钮开始配置</div>
+          </div>
+        </Card>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 12 }}>
+          {keys.map((key, index) => (
+            <Card key={index} size="small" styles={{ body: { padding: '12px 16px' } }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <Tag color={key.isValid ? 'green' : 'red'} style={{ margin: 0 }}>{key.isValid ? '有效' : '无效'}</Tag>
+                    <code style={{ fontSize: 12, color: '#999' }}>{maskKey(key.apiKey || '')}</code>
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{key.model || '-'}</div>
+                  <div style={{ fontSize: 11, color: '#666', wordBreak: 'break-all' }}>
+                    {key.baseUrl && <><span style={{ color: '#999' }}>URL: </span><code>{key.baseUrl}</code><br /></>}
+                    {key.smallModel && <><span style={{ color: '#999' }}>小模型: </span>{key.smallModel}<br /></>}
+                    {key.memo && <><span style={{ color: '#999' }}>备注: </span>{key.memo}</>}
+                  </div>
+                </div>
+                <Space size={4}>
+                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(index)} />
+                  <Popconfirm title="确定删除此 Key?" onConfirm={() => handleDelete(index)}>
+                    <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </Space>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
 
       <Modal
         title={editingIndex !== null ? '编辑全局 API Key' : '添加全局 API Key'}
@@ -191,9 +159,6 @@ export default function GlobalKeysTab() {
           </Form.Item>
           <Form.Item name="memo" label="备注">
             <Input placeholder="备注说明" />
-          </Form.Item>
-          <Form.Item name="isValid" label="启用" valuePropName="checked" initialValue={true}>
-            <input type="checkbox" />
           </Form.Item>
         </Form>
       </Modal>

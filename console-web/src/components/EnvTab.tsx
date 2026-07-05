@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Card, Table, Button, Space, Modal, Form, Input, Popconfirm, message } from 'antd'
+import { Card, Button, Space, Modal, Form, Input, Popconfirm, message, Tag } from 'antd'
 import { PlusOutlined, EditOutlined, DeleteOutlined, SaveOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import { IConfig } from '../types'
@@ -17,7 +17,6 @@ interface EnvItem {
 
 export default function EnvTab({ clientId, config, onRefresh }: Props) {
   const [envs, setEnvs] = useState<EnvItem[]>(() => {
-    // Extract envs from config (stored as 'envs' in the API response)
     const raw = (config as any).envs || (config as any).envVars || (config as any).env || {}
     if (typeof raw === 'object' && !Array.isArray(raw)) {
       return Object.entries(raw).map(([key, value]) => ({ key, value: String(value) }))
@@ -48,7 +47,6 @@ export default function EnvTab({ clientId, config, onRefresh }: Props) {
     if (editingIndex !== null) {
       newEnvs[editingIndex] = values
     } else {
-      // Check for duplicate key
       if (newEnvs.some(e => e.key === values.key)) {
         message.error('变量名已存在')
         return
@@ -82,59 +80,43 @@ export default function EnvTab({ clientId, config, onRefresh }: Props) {
     }
   }
 
-  const columns = [
-    {
-      title: '变量名',
-      dataIndex: 'key',
-      key: 'key',
-      render: (v: string) => <code>{v}</code>,
-    },
-    {
-      title: '值',
-      dataIndex: 'value',
-      key: 'value',
-      ellipsis: true,
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 120,
-      render: (_: any, __: any, index: number) => (
-        <Space>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(index)} />
-          <Popconfirm title="确定删除?" onConfirm={() => handleDelete(index)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ]
-
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
         <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>添加变量</Button>
-        <Button
-          type="primary"
-          icon={<SaveOutlined />}
-          onClick={handleSaveAll}
-          loading={saving}
-          disabled={!dirty}
-        >
-          保存全部
-        </Button>
+        <Button type="primary" icon={<SaveOutlined />} onClick={handleSaveAll} loading={saving} disabled={!dirty}>保存全部</Button>
       </div>
 
-      <Card>
-        <Table
-          dataSource={envs}
-          columns={columns}
-          rowKey="key"
-          pagination={false}
-          size="small"
-          locale={{ emptyText: '暂无环境变量' }}
-        />
-      </Card>
+      {envs.length === 0 ? (
+        <Card>
+          <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+            <div style={{ fontSize: 48, marginBottom: 16 }}>🔧</div>
+            <div>暂无环境变量</div>
+            <div style={{ fontSize: 12, marginTop: 8 }}>点击"添加变量"按钮开始配置</div>
+          </div>
+        </Card>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12 }}>
+          {envs.map((env, index) => (
+            <Card key={env.key} size="small" styles={{ body: { padding: '10px 14px' } }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <Tag color="blue" style={{ marginBottom: 4 }}>{env.key}</Tag>
+                  <div style={{ fontSize: 12, color: '#999', wordBreak: 'break-all', lineHeight: 1.6 }}>
+                    {env.value || <span style={{ color: '#666' }}>(空值)</span>}
+                  </div>
+                </div>
+                <Space size={4}>
+                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(index)} />
+                  <Popconfirm title="确定删除?" onConfirm={() => handleDelete(index)}>
+                    <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </Space>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
 
       <Modal
         title={editingIndex !== null ? '编辑环境变量' : '添加环境变量'}

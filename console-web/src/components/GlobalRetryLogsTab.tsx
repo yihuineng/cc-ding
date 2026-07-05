@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Table, Button, Space, Modal, Form, Input, Tag, Popconfirm, message, Tooltip } from 'antd'
+import { Card, Button, Space, Modal, Form, Input, Tag, Popconfirm, message, Tooltip } from 'antd'
 import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 
@@ -85,45 +85,7 @@ export default function GlobalRetryLogsTab() {
     keywords,
   }))
 
-  const columns = [
-    {
-      title: 'Base URL',
-      dataIndex: 'baseUrl',
-      key: 'baseUrl',
-      ellipsis: true,
-      render: (v: string) => <code style={{ fontSize: 11 }}>{v}</code>,
-    },
-    {
-      title: '重试关键词',
-      dataIndex: 'keywords',
-      key: 'keywords',
-      render: (keywords: string[]) => (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-          {keywords.map((kw, i) => (
-            <Tooltip key={i} title={kw}>
-              <Tag color="blue" style={{ marginBottom: 2 }}>
-                {kw.length > 30 ? kw.slice(0, 30) + '...' : kw}
-              </Tag>
-            </Tooltip>
-          ))}
-          {keywords.length === 0 && <span style={{ color: '#999' }}>无</span>}
-        </div>
-      ),
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 120,
-      render: (_: any, record: RetryLogEntry) => (
-        <Space>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record.baseUrl)} />
-          <Popconfirm title={`确定删除 ${record.baseUrl} 的 retryLogs?`} onConfirm={() => handleDelete(record.baseUrl)}>
-            <Button size="small" danger icon={<DeleteOutlined />} />
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ]
+  if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
 
   return (
     <div>
@@ -138,15 +100,45 @@ export default function GlobalRetryLogsTab() {
         </Space>
       </div>
 
-      <Table
-        dataSource={entries}
-        columns={columns}
-        rowKey="baseUrl"
-        loading={loading}
-        pagination={false}
-        size="small"
-        scroll={{ x: 500 }}
-      />
+      {entries.length === 0 ? (
+        <Card>
+          <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+            <div style={{ fontSize: 48, marginBottom: 16 }}>🔄</div>
+            <div>暂无 retryLogs 配置</div>
+            <div style={{ fontSize: 12, marginTop: 8 }}>点击"添加 Base URL"按钮开始配置</div>
+          </div>
+        </Card>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(420px, 1fr))', gap: 12 }}>
+          {entries.map(entry => (
+            <Card key={entry.baseUrl} size="small" styles={{ body: { padding: '12px 16px' } }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ marginBottom: 8 }}>
+                    <code style={{ fontSize: 12, color: '#00ff9d', wordBreak: 'break-all' }}>{entry.baseUrl}</code>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {entry.keywords.map((kw, i) => (
+                      <Tooltip key={i} title={kw}>
+                        <Tag color="blue" style={{ marginBottom: 2 }}>
+                          {kw.length > 30 ? kw.slice(0, 30) + '...' : kw}
+                        </Tag>
+                      </Tooltip>
+                    ))}
+                    {entry.keywords.length === 0 && <span style={{ color: '#999', fontSize: 12 }}>无关键词</span>}
+                  </div>
+                </div>
+                <Space size={4}>
+                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(entry.baseUrl)} />
+                  <Popconfirm title={`确定删除 ${entry.baseUrl} 的 retryLogs?`} onConfirm={() => handleDelete(entry.baseUrl)}>
+                    <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </Space>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
 
       <Modal
         title={editingBaseUrl ? '编辑 retryLogs' : '添加 retryLogs'}
