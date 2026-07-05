@@ -148,7 +148,7 @@ export default function GlobalKeysTab() {
           <Form.Item name="apiKey" label="API Key" rules={[{ required: true, message: '请输入 Key' }]}>
             <Input.Password placeholder="sk-xxx..." />
           </Form.Item>
-          <Form.Item name="baseUrl" label="Base URL">
+          <Form.Item name="baseUrl" label="Base URL" rules={[{ required: true, message: '请输入 Base URL' }]}>
             <Input placeholder="https://api.anthropic.com" />
           </Form.Item>
           <Form.Item name="model" label="模型" rules={[{ required: true, message: '请输入模型名' }]}>

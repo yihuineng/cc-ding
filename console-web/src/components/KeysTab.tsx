@@ -157,7 +157,7 @@ export default function KeysTab({ clientId }: Props) {
           <Form.Item name="smallModel" label="小模型">
             <Input placeholder="claude-haiku-..." />
           </Form.Item>
-          <Form.Item name="baseUrl" label="Base URL">
+          <Form.Item name="baseUrl" label="Base URL" rules={[{ required: true, message: '请输入 Base URL' }]}>
             <Input placeholder="https://api.anthropic.com" />
           </Form.Item>
           <Form.Item name="remark" label="备注">
