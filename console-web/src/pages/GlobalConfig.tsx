@@ -5,6 +5,8 @@ import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, DeleteOutlined, ReloadOu
 import Editor, { type OnMount } from '@monaco-editor/react'
 import { api } from '../api/client'
 import { IGlobalConfig, IRemoteConsole } from '../types'
+import GlobalKeysTab from '../components/GlobalKeysTab'
+import GlobalRetryLogsTab from '../components/GlobalRetryLogsTab'
 
 const { Panel } = Collapse
 
@@ -503,6 +505,16 @@ export default function GlobalConfig() {
               </Spin>
             </div>
           ),
+        },
+        {
+          key: 'apikeys',
+          label: '🔑 全局 API Keys',
+          children: <GlobalKeysTab />,
+        },
+        {
+          key: 'retrylogs',
+          label: '🔄 重试日志',
+          children: <GlobalRetryLogsTab />,
         },
       ]} />
     </div>
