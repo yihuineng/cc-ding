@@ -8,8 +8,12 @@ interface RetryLogEntry {
   keywords: string[]
 }
 
+interface Props {
+  remoteUrl?: string
+}
+
 /** 全局 retryLogs 管理 Tab */
-export default function GlobalRetryLogsTab() {
+export default function GlobalRetryLogsTab({ remoteUrl }: Props) {
   const [retryLogs, setRetryLogs] = useState<Record<string, string[]>>({})
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
@@ -20,7 +24,9 @@ export default function GlobalRetryLogsTab() {
   const loadRetryLogs = async () => {
     setLoading(true)
     try {
-      const data = await api.getGlobalRetryLogs()
+      const data = remoteUrl
+        ? await api.getRemoteGlobalRetryLogs(remoteUrl)
+        : await api.getGlobalRetryLogs()
       setRetryLogs(data.retryLogs || {})
     } catch (e: any) {
       message.error(e.message)
@@ -29,7 +35,7 @@ export default function GlobalRetryLogsTab() {
     }
   }
 
-  useEffect(() => { loadRetryLogs() }, [])
+  useEffect(() => { loadRetryLogs() }, [remoteUrl])
 
   const openAdd = () => {
     setEditingBaseUrl(null)
@@ -56,7 +62,11 @@ export default function GlobalRetryLogsTab() {
         .filter(Boolean)
       const newRetryLogs = { ...retryLogs }
       newRetryLogs[values.baseUrl] = keywords
-      await api.putGlobalRetryLogs(newRetryLogs)
+      if (remoteUrl) {
+        await api.putRemoteGlobalRetryLogs(remoteUrl, newRetryLogs)
+      } else {
+        await api.putGlobalRetryLogs(newRetryLogs)
+      }
       setRetryLogs(newRetryLogs)
       message.success(editingBaseUrl ? '已更新' : '已添加')
       setModalOpen(false)
@@ -72,7 +82,11 @@ export default function GlobalRetryLogsTab() {
     try {
       const newRetryLogs = { ...retryLogs }
       delete newRetryLogs[baseUrl]
-      await api.putGlobalRetryLogs(newRetryLogs)
+      if (remoteUrl) {
+        await api.putRemoteGlobalRetryLogs(remoteUrl, newRetryLogs)
+      } else {
+        await api.putGlobalRetryLogs(newRetryLogs)
+      }
       setRetryLogs(newRetryLogs)
       message.success('已删除')
     } catch (e: any) {

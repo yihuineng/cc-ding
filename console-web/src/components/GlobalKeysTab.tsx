@@ -4,8 +4,12 @@ import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined } from '@ant
 import { api } from '../api/client'
 import { IApiKey } from '../types'
 
+interface Props {
+  remoteUrl?: string
+}
+
 /** 全局 API Key 管理 Tab */
-export default function GlobalKeysTab() {
+export default function GlobalKeysTab({ remoteUrl }: Props) {
   const [keys, setKeys] = useState<IApiKey[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
@@ -16,7 +20,9 @@ export default function GlobalKeysTab() {
   const loadKeys = async () => {
     setLoading(true)
     try {
-      const data = await api.getGlobalApiKeys()
+      const data = remoteUrl
+        ? await api.getRemoteGlobalApiKeys(remoteUrl)
+        : await api.getGlobalApiKeys()
       setKeys(data.apiKeys || [])
     } catch (e: any) {
       message.error(e.message)
@@ -25,7 +31,7 @@ export default function GlobalKeysTab() {
     }
   }
 
-  useEffect(() => { loadKeys() }, [])
+  useEffect(() => { loadKeys() }, [remoteUrl])
 
   const openAdd = () => {
     setEditingIndex(null)
@@ -44,10 +50,18 @@ export default function GlobalKeysTab() {
     try {
       const values = await form.validateFields()
       if (editingIndex !== null) {
-        await api.updateGlobalApiKey(editingIndex, values)
+        if (remoteUrl) {
+          await api.updateRemoteGlobalApiKey(remoteUrl, editingIndex, values)
+        } else {
+          await api.updateGlobalApiKey(editingIndex, values)
+        }
         message.success('Key 已更新')
       } else {
-        await api.addGlobalApiKey(values)
+        if (remoteUrl) {
+          await api.addRemoteGlobalApiKey(remoteUrl, values)
+        } else {
+          await api.addGlobalApiKey(values)
+        }
         message.success('Key 已添加')
       }
       setModalOpen(false)
@@ -62,7 +76,11 @@ export default function GlobalKeysTab() {
 
   const handleDelete = async (index: number) => {
     try {
-      await api.deleteGlobalApiKey(index)
+      if (remoteUrl) {
+        await api.deleteRemoteGlobalApiKey(remoteUrl, index)
+      } else {
+        await api.deleteGlobalApiKey(index)
+      }
       message.success('Key 已删除')
       loadKeys()
     } catch (e: any) {
@@ -72,7 +90,9 @@ export default function GlobalKeysTab() {
 
   const handleReset = async () => {
     try {
-      const data: any = await api.resetGlobalApiKeys()
+      const data: any = remoteUrl
+        ? await api.resetRemoteGlobalApiKeys(remoteUrl)
+        : await api.resetGlobalApiKeys()
       message.success(data.message || 'Keys 已重置')
       loadKeys()
     } catch (e: any) {

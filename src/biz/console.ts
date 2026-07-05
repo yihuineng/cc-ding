@@ -1787,6 +1787,62 @@ async function handlePutRemoteUpdatePkgUrl(req: http.IncomingMessage, res: http.
   await proxyRemoteGlobal(rc, 'PUT', '/api/global/update-pkg-url', req, res, '更新远程更新包 URL');
 }
 
+/** GET /api/remote/global/apikeys?url=... */
+async function handleGetRemoteGlobalApiKeys(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const rc = getRemoteConsoleFromQuery(req);
+  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+  await proxyRemoteGlobal(rc, 'GET', '/api/global/apikeys', req, res, '获取远程全局 API Keys');
+}
+
+/** POST /api/remote/global/apikeys?url=... */
+async function handleAddRemoteGlobalApiKey(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const rc = getRemoteConsoleFromQuery(req);
+  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+  await proxyRemoteGlobal(rc, 'POST', '/api/global/apikeys', req, res, '添加远程全局 API Key');
+}
+
+/** PUT /api/remote/global/apikeys/:index?url=... */
+async function handleUpdateRemoteGlobalApiKey(req: http.IncomingMessage, res: http.ServerResponse, index: number): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const rc = getRemoteConsoleFromQuery(req);
+  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+  await proxyRemoteGlobal(rc, 'PUT', `/api/global/apikeys/${index}`, req, res, '更新远程全局 API Key');
+}
+
+/** DELETE /api/remote/global/apikeys/:index?url=... */
+async function handleDeleteRemoteGlobalApiKey(req: http.IncomingMessage, res: http.ServerResponse, index: number): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const rc = getRemoteConsoleFromQuery(req);
+  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+  await proxyRemoteGlobal(rc, 'DELETE', `/api/global/apikeys/${index}`, req, res, '删除远程全局 API Key');
+}
+
+/** POST /api/remote/global/apikeys/reset?url=... */
+async function handleResetRemoteGlobalApiKeys(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const rc = getRemoteConsoleFromQuery(req);
+  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+  await proxyRemoteGlobal(rc, 'POST', '/api/global/apikeys/reset', req, res, '重置远程全局 API Keys');
+}
+
+/** GET /api/remote/global/retrylogs?url=... */
+async function handleGetRemoteGlobalRetryLogs(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const rc = getRemoteConsoleFromQuery(req);
+  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+  await proxyRemoteGlobal(rc, 'GET', '/api/global/retrylogs', req, res, '获取远程全局 retryLogs');
+}
+
+/** PUT /api/remote/global/retrylogs?url=... */
+async function handlePutRemoteGlobalRetryLogs(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const rc = getRemoteConsoleFromQuery(req);
+  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+  await proxyRemoteGlobal(rc, 'PUT', '/api/global/retrylogs', req, res, '更新远程全局 retryLogs');
+}
+
 // 需要从 common.ts 导入
 function projUtil() {
   const { projUtil: pu } = require('../common');
@@ -2500,6 +2556,48 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // PUT /api/remote/global/update-pkg-url?url=...
   if (pathname === '/api/remote/global/update-pkg-url' && req.method === 'PUT') {
     await handlePutRemoteUpdatePkgUrl(req, res);
+    return;
+  }
+
+  // 远程全局 API Key 路由
+  const remoteGlobalApiKeysMatch = pathname.match(/^\/api\/remote\/global\/apikeys(?:\/(\d+))?(?:\/reset)?$/);
+  const remoteGlobalApiKeyIndexMatch = pathname.match(/^\/api\/remote\/global\/apikeys\/(\d+)$/);
+  const remoteGlobalApiKeyResetMatch = pathname === '/api/remote/global/apikeys/reset';
+  const remoteGlobalRetryLogsMatch = pathname === '/api/remote/global/retrylogs';
+
+  // GET /api/remote/global/apikeys?url=...
+  if (remoteGlobalApiKeysMatch && req.method === 'GET' && !remoteGlobalApiKeyIndexMatch && !remoteGlobalApiKeyResetMatch && req.url?.includes('url=')) {
+    await handleGetRemoteGlobalApiKeys(req, res);
+    return;
+  }
+  // POST /api/remote/global/apikeys?url=...
+  if (remoteGlobalApiKeysMatch && req.method === 'POST' && !remoteGlobalApiKeyIndexMatch && !remoteGlobalApiKeyResetMatch && req.url?.includes('url=')) {
+    await handleAddRemoteGlobalApiKey(req, res);
+    return;
+  }
+  // PUT /api/remote/global/apikeys/:index?url=...
+  if (remoteGlobalApiKeyIndexMatch && req.method === 'PUT') {
+    await handleUpdateRemoteGlobalApiKey(req, res, parseInt(remoteGlobalApiKeyIndexMatch[1], 10));
+    return;
+  }
+  // DELETE /api/remote/global/apikeys/:index?url=...
+  if (remoteGlobalApiKeyIndexMatch && req.method === 'DELETE') {
+    await handleDeleteRemoteGlobalApiKey(req, res, parseInt(remoteGlobalApiKeyIndexMatch[1], 10));
+    return;
+  }
+  // POST /api/remote/global/apikeys/reset?url=...
+  if (remoteGlobalApiKeyResetMatch && req.method === 'POST') {
+    await handleResetRemoteGlobalApiKeys(req, res);
+    return;
+  }
+  // GET /api/remote/global/retrylogs?url=...
+  if (remoteGlobalRetryLogsMatch && req.method === 'GET') {
+    await handleGetRemoteGlobalRetryLogs(req, res);
+    return;
+  }
+  // PUT /api/remote/global/retrylogs?url=...
+  if (remoteGlobalRetryLogsMatch && req.method === 'PUT') {
+    await handlePutRemoteGlobalRetryLogs(req, res);
     return;
   }
 

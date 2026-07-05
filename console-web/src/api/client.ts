@@ -197,6 +197,40 @@ export const api = {
       body: JSON.stringify({ retryLogs }),
     }),
 
+  // ── Remote Global API Keys ──
+  getRemoteGlobalApiKeys: (url: string) =>
+    request<{ apiKeys: IApiKey[]; resetTime: string }>(`/api/remote/global/apikeys?url=${encodeURIComponent(url)}`),
+
+  addRemoteGlobalApiKey: (url: string, key: Partial<IApiKey>) =>
+    request(`/api/remote/global/apikeys?url=${encodeURIComponent(url)}`, {
+      method: 'POST',
+      body: JSON.stringify(key),
+    }),
+
+  updateRemoteGlobalApiKey: (url: string, index: number, key: Partial<IApiKey>) =>
+    request(`/api/remote/global/apikeys/${index}?url=${encodeURIComponent(url)}`, {
+      method: 'PUT',
+      body: JSON.stringify(key),
+    }),
+
+  deleteRemoteGlobalApiKey: (url: string, index: number) =>
+    request(`/api/remote/global/apikeys/${index}?url=${encodeURIComponent(url)}`, {
+      method: 'DELETE',
+    }),
+
+  resetRemoteGlobalApiKeys: (url: string) =>
+    request(`/api/remote/global/apikeys/reset?url=${encodeURIComponent(url)}`, { method: 'POST' }),
+
+  // ── Remote Global RetryLogs ──
+  getRemoteGlobalRetryLogs: (url: string) =>
+    request<{ retryLogs: Record<string, string[]> }>(`/api/remote/global/retrylogs?url=${encodeURIComponent(url)}`),
+
+  putRemoteGlobalRetryLogs: (url: string, retryLogs: Record<string, string[]>) =>
+    request(`/api/remote/global/retrylogs?url=${encodeURIComponent(url)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ retryLogs }),
+    }),
+
   // ── Batch Operations ──
   batchUpdate: () =>
     request('/api/batch/update', { method: 'POST' }),
