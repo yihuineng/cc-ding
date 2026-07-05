@@ -335,7 +335,6 @@ export default function Clients() {
                   </Button>
                 </Dropdown>
                 <Button size="small" icon={<SettingOutlined />} onClick={() => { setRemoteConfigUrl(url); setRemoteConfigTab('apikeys'); setRemoteConfigModalOpen(true) }}>全局配置</Button>
-                <Button size="small" icon={<ReloadOutlined />} onClick={() => loadData(true)}>刷新</Button>
                 <Button
                   type="primary"
                   size="small"
