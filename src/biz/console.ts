@@ -1260,6 +1260,171 @@ async function handleResetApiKeys(req: http.IncomingMessage, res: http.ServerRes
   }
 }
 
+// ==================== 全局 API Key 管理 ====================
+
+/** 读取全局 config.json 中的 apiKeyCfg */
+function readGlobalApiKeyCfg(): any {
+  try {
+    if (!fs.existsSync(GLOBAL_CONFIG_PATH)) return undefined;
+    const raw = JSON.parse(fs.readFileSync(GLOBAL_CONFIG_PATH, 'utf-8'));
+    return raw.apiKeyCfg;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 保存 apiKeyCfg 到全局 config.json（仅更新 apiKeyCfg 字段，不影响其他配置） */
+function writeGlobalApiKeyCfg(apiKeyCfg: any): void {
+  const globalCfg = fs.existsSync(GLOBAL_CONFIG_PATH)
+    ? fileUtil.getJSON(GLOBAL_CONFIG_PATH) as any
+    : {};
+  globalCfg.apiKeyCfg = apiKeyCfg;
+  atomicWrite(GLOBAL_CONFIG_PATH, JSON.stringify(globalCfg, null, 2));
+}
+
+/** GET /api/global/apikeys — 获取全局 API Key 列表（mask 密钥） */
+async function handleGetGlobalApiKeys(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const apiKeyCfg = readGlobalApiKeyCfg();
+  if (!apiKeyCfg) {
+    jsonResponse(res, 200, { apiKeys: [], resetTime: '' });
+    return;
+  }
+  const keys = (apiKeyCfg.modelSettings || []).map((setting: any, index: number) => ({
+    index,
+    isValid: setting.isValid,
+    apiKey: maskSecret(setting.apiKey),
+    baseUrl: setting.baseUrl,
+    model: setting.model,
+    smallModel: setting.smallModel || '',
+    memo: setting.memo || '',
+    retryLogs: apiKeyCfg.retryLogs || {},
+  }));
+  jsonResponse(res, 200, { apiKeys: keys, resetTime: apiKeyCfg.resetTime || '' });
+}
+
+/** POST /api/global/apikeys — 添加全局 API Key */
+async function handleAddGlobalApiKey(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  try {
+    const body = await readBody(req);
+    const data = JSON.parse(body || '{}');
+    let apiKeyCfg = readGlobalApiKeyCfg() || { modelSettings: [] };
+    if (!apiKeyCfg.modelSettings) apiKeyCfg.modelSettings = [];
+
+    const newKey: IClaudeSetting = {
+      isValid: data.isValid !== false,
+      apiKey: data.apiKey || '',
+      baseUrl: data.baseUrl || 'https://api.anthropic.com',
+      model: data.model || 'claude-sonnet-4-20250514',
+      smallModel: data.smallModel || '',
+      memo: data.memo || '',
+    };
+    apiKeyCfg.modelSettings.push(newKey);
+    writeGlobalApiKeyCfg(apiKeyCfg);
+    jsonResponse(res, 201, { message: '全局 API Key 已添加' });
+  } catch (err) {
+    jsonError(res, 400, '请求格式错误');
+  }
+}
+
+/** PUT /api/global/apikeys/:index — 更新全局 API Key */
+async function handleUpdateGlobalApiKey(req: http.IncomingMessage, res: http.ServerResponse, index: number): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  try {
+    const body = await readBody(req);
+    const data = JSON.parse(body || '{}');
+    const apiKeyCfg = readGlobalApiKeyCfg();
+    if (!apiKeyCfg?.modelSettings) {
+      jsonError(res, 404, '全局 API Key 配置不存在');
+      return;
+    }
+    if (index < 0 || index >= apiKeyCfg.modelSettings.length) {
+      jsonError(res, 404, 'API Key 索引不存在');
+      return;
+    }
+    const s = apiKeyCfg.modelSettings[index];
+    if (data.apiKey !== undefined) s.apiKey = data.apiKey;
+    if (data.baseUrl !== undefined) s.baseUrl = data.baseUrl;
+    if (data.model !== undefined) s.model = data.model;
+    if (data.smallModel !== undefined) s.smallModel = data.smallModel;
+    if (data.memo !== undefined) s.memo = data.memo;
+    if (data.isValid !== undefined) s.isValid = data.isValid;
+    writeGlobalApiKeyCfg(apiKeyCfg);
+    jsonResponse(res, 200, { message: '全局 API Key 已更新' });
+  } catch (err) {
+    jsonError(res, 400, '请求格式错误');
+  }
+}
+
+/** DELETE /api/global/apikeys/:index — 删除全局 API Key */
+async function handleDeleteGlobalApiKey(req: http.IncomingMessage, res: http.ServerResponse, index: number): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  try {
+    const apiKeyCfg = readGlobalApiKeyCfg();
+    if (!apiKeyCfg?.modelSettings) {
+      jsonError(res, 404, '全局 API Key 配置不存在');
+      return;
+    }
+    if (index < 0 || index >= apiKeyCfg.modelSettings.length) {
+      jsonError(res, 404, 'API Key 索引不存在');
+      return;
+    }
+    apiKeyCfg.modelSettings.splice(index, 1);
+    writeGlobalApiKeyCfg(apiKeyCfg);
+    jsonResponse(res, 200, { message: '全局 API Key 已删除' });
+  } catch (err) {
+    jsonError(res, 400, '请求格式错误');
+  }
+}
+
+/** POST /api/global/apikeys/reset — 重置全局 API Key（全部标记为有效） */
+async function handleResetGlobalApiKeys(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  try {
+    const apiKeyCfg = readGlobalApiKeyCfg();
+    if (!apiKeyCfg) {
+      jsonError(res, 404, '全局 API Key 配置不存在');
+      return;
+    }
+    let resetCount = 0;
+    for (const s of apiKeyCfg.modelSettings || []) {
+      if (!s.isValid) { s.isValid = true; resetCount++; }
+    }
+    apiKeyCfg.resetTime = dateUtil.mm(Date.now()).format('YYYY-MM-DD HH:mm:ss');
+    writeGlobalApiKeyCfg(apiKeyCfg);
+    jsonResponse(res, 200, { message: `全局 API Key 已重置（${resetCount} 个重新启用）`, resetTime: apiKeyCfg.resetTime });
+  } catch (err) {
+    jsonError(res, 500, '重置失败');
+  }
+}
+
+/** GET /api/global/retrylogs — 获取全局 retryLogs 配置 */
+async function handleGetGlobalRetryLogs(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const apiKeyCfg = readGlobalApiKeyCfg();
+  jsonResponse(res, 200, { retryLogs: apiKeyCfg?.retryLogs || {} });
+}
+
+/** PUT /api/global/retrylogs — 更新全局 retryLogs 配置 */
+async function handlePutGlobalRetryLogs(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  try {
+    const body = await readBody(req);
+    const data = JSON.parse(body || '{}');
+    if (typeof data.retryLogs !== 'object' || data.retryLogs === null) {
+      jsonError(res, 400, 'retryLogs 格式错误，应为 { baseUrl: string[] } 对象');
+      return;
+    }
+    const apiKeyCfg = readGlobalApiKeyCfg() || { modelSettings: [] };
+    apiKeyCfg.retryLogs = data.retryLogs;
+    writeGlobalApiKeyCfg(apiKeyCfg);
+    jsonResponse(res, 200, { message: '全局 retryLogs 已保存' });
+  } catch (err) {
+    jsonError(res, 400, '请求格式错误');
+  }
+}
+
 /** GET /api/clients/:id/files */
 async function handleGetClientFile(req: http.IncomingMessage, res: http.ServerResponse, clientId: string, name: string): Promise<void> {
   if (!requireAuth(req, res)) return;
@@ -1305,9 +1470,20 @@ async function handlePutClientFile(req: http.IncomingMessage, res: http.ServerRe
 async function handleGetGlobalConfig(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   if (!requireAuth(req, res)) return;
 
-  const config = getGlobalConfig();
-  // 返回完整的配置结构，包括 console 和 updatePkgUrl
-  jsonResponse(res, 200, { config });
+  try {
+    const raw = fs.existsSync(GLOBAL_CONFIG_PATH)
+      ? JSON.parse(fs.readFileSync(GLOBAL_CONFIG_PATH, 'utf-8'))
+      : {};
+    // 返回完整配置：console + updatePkgUrl + apiKeyCfg
+    const config: any = {
+      console: raw.console,
+      updatePkgUrl: raw.updatePkgUrl,
+    };
+    if (raw.apiKeyCfg) config.apiKeyCfg = raw.apiKeyCfg;
+    jsonResponse(res, 200, { config });
+  } catch (err) {
+    jsonError(res, 500, '读取全局配置失败');
+  }
 }
 
 /** PUT /api/global/config */
@@ -1323,6 +1499,14 @@ async function handlePutGlobalConfig(req: http.IncomingMessage, res: http.Server
       authUsers: data.authUsers,
       remoteConsoles: data.remoteConsoles,
     });
+    // 同时保存 apiKeyCfg（如果前端传了）
+    if (data.apiKeyCfg !== undefined) {
+      const globalCfg = fs.existsSync(GLOBAL_CONFIG_PATH)
+        ? fileUtil.getJSON(GLOBAL_CONFIG_PATH) as any
+        : {};
+      globalCfg.apiKeyCfg = data.apiKeyCfg;
+      atomicWrite(GLOBAL_CONFIG_PATH, JSON.stringify(globalCfg, null, 2));
+    }
     jsonResponse(res, 200, { message: '全局配置已保存' });
   } catch (err) {
     jsonError(res, 400, '请求格式错误');
@@ -2238,6 +2422,54 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // PUT /api/global/update-pkg-url
   if (pathname === '/api/global/update-pkg-url' && req.method === 'PUT') {
     await handlePutUpdatePkgUrl(req, res);
+    return;
+  }
+
+  // 全局 API Key 路由
+  const globalApiKeysMatch = pathname.match(/^\/api\/global\/apikeys(?:\/(\d+))?(?:\/reset)?$/);
+  const globalApiKeyIndexMatch = pathname.match(/^\/api\/global\/apikeys\/(\d+)$/);
+  const globalApiKeyResetMatch = pathname.match(/^\/api\/global\/apikeys\/reset$/);
+  const globalRetryLogsMatch = pathname === '/api/global/retrylogs';
+
+  // GET /api/global/apikeys
+  if (globalApiKeysMatch && req.method === 'GET' && !globalApiKeyIndexMatch && !globalApiKeyResetMatch) {
+    await handleGetGlobalApiKeys(req, res);
+    return;
+  }
+
+  // POST /api/global/apikeys
+  if (globalApiKeysMatch && req.method === 'POST' && !globalApiKeyIndexMatch && !globalApiKeyResetMatch) {
+    await handleAddGlobalApiKey(req, res);
+    return;
+  }
+
+  // PUT /api/global/apikeys/:index
+  if (globalApiKeyIndexMatch && req.method === 'PUT') {
+    await handleUpdateGlobalApiKey(req, res, parseInt(globalApiKeyIndexMatch[1], 10));
+    return;
+  }
+
+  // DELETE /api/global/apikeys/:index
+  if (globalApiKeyIndexMatch && req.method === 'DELETE') {
+    await handleDeleteGlobalApiKey(req, res, parseInt(globalApiKeyIndexMatch[1], 10));
+    return;
+  }
+
+  // POST /api/global/apikeys/reset
+  if (globalApiKeyResetMatch && req.method === 'POST') {
+    await handleResetGlobalApiKeys(req, res);
+    return;
+  }
+
+  // GET /api/global/retrylogs
+  if (globalRetryLogsMatch && req.method === 'GET') {
+    await handleGetGlobalRetryLogs(req, res);
+    return;
+  }
+
+  // PUT /api/global/retrylogs
+  if (globalRetryLogsMatch && req.method === 'PUT') {
+    await handlePutGlobalRetryLogs(req, res);
     return;
   }
 
