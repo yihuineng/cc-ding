@@ -276,7 +276,9 @@ async function proxyToRemoteConsole(
   });
 
   const data = await res.json();
-  return { status: res.status, data };
+  // 远程 Console 返回 401 时映射为 502，避免前端误判为本地认证失败而清除 token
+  const mappedStatus = res.status === 401 ? 502 : res.status;
+  return { status: mappedStatus, data };
 }
 
 /** 保存全局 Console 配置 */
@@ -1497,7 +1499,7 @@ async function handleScanRemoteConsoles(req: http.IncomingMessage, res: http.Ser
           } catch {
             // Host not reachable or timeout, skip
           }
-        })()
+        })(),
       );
     }
 
