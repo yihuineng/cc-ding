@@ -1,5 +1,5 @@
 import { IClaudeSetting } from './types';
-import { getHomeDir } from './session';
+import { getHomeDir, getGlobalConfig } from './session';
 import { CheckLevel, CheckResult, settingLabel } from './api-key-manager';
 import fs from 'fs';
 import path from 'path';
@@ -155,9 +155,10 @@ export function runDoctor(clientDir: string): CheckResult[] {
     results.push(check('PASS', `conversations 共 ${config.conversations.length} 个群配置`));
   }
 
-  // ---- 3. apiKeyCfg 检查 ----
-  if (config.apiKeyCfg) {
-    const cfg = config.apiKeyCfg;
+  // ---- 3. apiKeyCfg 检查（client 维度优先，fallback 全局维度） ----
+  const effectiveApiKeyCfg = config.apiKeyCfg || (getGlobalConfig() as any)?.apiKeyCfg;
+  if (effectiveApiKeyCfg) {
+    const cfg = effectiveApiKeyCfg;
     if (cfg.resetTime) {
       results.push(check('PASS', `apiKeyCfg.resetTime: ${cfg.resetTime}`));
     }

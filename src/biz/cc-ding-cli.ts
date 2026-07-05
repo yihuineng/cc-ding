@@ -259,6 +259,16 @@ export class DingClaude {
   hashConversationId = (conversationId: string) => hashConversationId(this, conversationId);
   getConversationConfig = (conversationId: string) => getConversationConfig(this, conversationId);
 
+  /**
+   * 获取有效的 apiKeyCfg：client 维度优先，fallback 到全局维度
+   * client config.json 中的 apiKeyCfg 完全覆盖全局 config.json 中的配置
+   */
+  getApiKeyCfg = (): IConfig['apiKeyCfg'] | undefined => {
+    if (this.config.apiKeyCfg) return this.config.apiKeyCfg;
+    const globalCfg = getGlobalConfig() as any;
+    return globalCfg?.apiKeyCfg;
+  };
+
   // session - paths
   getConversationDir = (conversationId: string) => getConversationDir(this, conversationId);
   getSessionsDir = (conversationId: string) => getSessionsDir(this, conversationId);
@@ -1925,22 +1935,23 @@ export class DingClaude {
       route('/reset-apikeycfg', () => parseResetApiKeyCfgCommand(prompt), async () => {
         if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
 
-        if (!this.config.apiKeyCfg) {
+        const apiKeyCfg = this.getApiKeyCfg();
+        if (!apiKeyCfg) {
           await this.sendDingMessage({
             conversationId,
             sessionWebhook,
-            content: '⚠️ 未配置 apiKeyCfg，无需重置',
+            content: '️ 未配置 apiKeyCfg（全局和 client 均未配置），无需重置',
             msgType: 'markdown',
           });
           return;
         }
 
         resetApiKeyCfg(this);
-        const validCount = this.config.apiKeyCfg.modelSettings.filter(s => s.isValid).length;
+        const validCount = apiKeyCfg.modelSettings.filter(s => s.isValid).length;
         await this.sendDingMessage({
           conversationId,
           sessionWebhook,
-          content: `✅ apiKeyCfg 已重置\n- 有效 Key 数: ${validCount}/${this.config.apiKeyCfg.modelSettings.length}\n- 重置时间: ${this.config.apiKeyCfg.resetTime || '-'}`,
+          content: `✅ apiKeyCfg 已重置\n- 有效 Key 数: ${validCount}/${apiKeyCfg.modelSettings.length}\n- 重置时间: ${apiKeyCfg.resetTime || '-'}`,
           msgType: 'markdown',
         });
       }),
@@ -2587,7 +2598,7 @@ export class DingClaude {
         const parts: string[] = [];
         const workDir = this.getConversationDir(conversationId);
         if (infoType === 'all' || infoType === 'robot') {
-          parts.push('### 🌐 全局核心配置\n' + formatGlobalConfig(this.config));
+          parts.push('### 🌐 全局核心配置\n' + formatGlobalConfig(this.config, this.getApiKeyCfg()));
           parts.push('### 🤖 群配置信息\n' + formatConversationInfo(conversationConfig, conversationId, (uid) => userIdToPhone(this, uid), workDir));
         }
         if (infoType === 'all' || infoType === 'session') {

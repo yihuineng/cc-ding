@@ -183,6 +183,19 @@ function getGlobalConfig(): IGlobalConfigFile {
   };
 }
 
+/** 获取有效的 apiKeyCfg：client 维度优先，fallback 到全局维度 */
+function getEffectiveApiKeyCfg(clientConfig: IConfig | null): any {
+  if (clientConfig?.apiKeyCfg) return clientConfig.apiKeyCfg;
+  try {
+    const globalRaw = fs.existsSync(GLOBAL_CONFIG_PATH)
+      ? JSON.parse(fs.readFileSync(GLOBAL_CONFIG_PATH, 'utf-8'))
+      : {};
+    return globalRaw.apiKeyCfg;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 获取客户端所属的远程 Console 配置（如果是远程客户端） */
 // Token 缓存：remoteConsoleUrl -> { token, expiresAt }
 const tokenCache = new Map<string, { token: string; expiresAt: number }>();
@@ -587,8 +600,8 @@ async function handleGetClients(req: http.IncomingMessage, res: http.ServerRespo
         freedomMode: !!conv.freedomMode,
         streaming: !!conv.streaming,
       })),
-      apiKeyCount: config?.apiKeyCfg?.modelSettings?.length || 0,
-      apiKeysValid: (config?.apiKeyCfg?.modelSettings || []).filter(s => s.isValid).length,
+      apiKeyCount: getEffectiveApiKeyCfg(config)?.modelSettings?.length || 0,
+      apiKeysValid: (getEffectiveApiKeyCfg(config)?.modelSettings || []).filter((s: any) => s.isValid).length,
     };
   });
 
@@ -668,7 +681,10 @@ async function handleGetClientConfig(req: http.IncomingMessage, res: http.Server
         return conv;
       });
     }
-    if (maskedConfig.apiKeyCfg?.modelSettings) {
+    // 显示有效的 apiKeyCfg（client 维度优先，fallback 全局）
+    const effectiveApiKeyCfg = getEffectiveApiKeyCfg(maskedConfig);
+    if (effectiveApiKeyCfg?.modelSettings) {
+      maskedConfig.apiKeyCfg = effectiveApiKeyCfg;
       maskedConfig.apiKeyCfg.modelSettings = maskedConfig.apiKeyCfg.modelSettings.map((s: any) => {
         if (s.apiKey) s.apiKey = maskSecret(s.apiKey);
         return s;
@@ -1106,7 +1122,8 @@ async function handleGetApiKeys(req: http.IncomingMessage, res: http.ServerRespo
 
   try {
     const config = fileUtil.getJSON(configPath) as IConfig;
-    const keys = (config.apiKeyCfg?.modelSettings || []).map((setting, index) => ({
+    const effectiveApiKeyCfg = getEffectiveApiKeyCfg(config);
+    const keys = (effectiveApiKeyCfg?.modelSettings || []).map((setting: any, index: number) => ({
       index,
       isValid: setting.isValid,
       apiKey: maskSecret(setting.apiKey),
@@ -1116,7 +1133,7 @@ async function handleGetApiKeys(req: http.IncomingMessage, res: http.ServerRespo
       memo: setting.memo || '',
       cfuseTokenValid: true, // 社区版不支持 cfuse，固定为 true
     }));
-    jsonResponse(res, 200, { apiKeys: keys, resetTime: config.apiKeyCfg?.resetTime || '' });
+    jsonResponse(res, 200, { apiKeys: keys, resetTime: effectiveApiKeyCfg?.resetTime || '' });
   } catch (err) {
     jsonError(res, 500, '读取失败');
   }

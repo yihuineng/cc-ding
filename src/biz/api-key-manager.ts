@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import type { DingClaude } from './cc-ding-cli';
 import { IClaudeSetting } from './types';
-import { timestamp, getHomeDir } from './session';
+import { timestamp, getHomeDir, getGlobalConfig } from './session';
 import { dateUtil } from 'utils-ok';
 import { resolveSecret, isEnvRef } from './secrets';
 import { commandExists, isWindows } from './platform';
@@ -66,7 +66,7 @@ function findSettingLabel(settings: IClaudeSetting[], apiKey: string): string {
  * 返回新的 Setting，若无可用则返回 null
  */
 export function rotateApiKey(self: DingClaude, usedKey: string): IClaudeSetting | null {
-  const cfg = self.config.apiKeyCfg;
+  const cfg = self.getApiKeyCfg();
   if (!cfg) return null;
 
   const resolvedUsedKey = resolveSecret(usedKey);
@@ -84,7 +84,7 @@ export function rotateApiKey(self: DingClaude, usedKey: string): IClaudeSetting 
  * @param excludeApiKey 排除指定 apiKey（用于切换时排除当前 Key）
  */
 export function pickValidApiKey(self: DingClaude, excludeApiKey?: string): IClaudeSetting | null {
-  const cfg = self.config.apiKeyCfg;
+  const cfg = self.getApiKeyCfg();
   if (!cfg) return null;
   const resolvedExclude = excludeApiKey ? resolveSecret(excludeApiKey) : undefined;
   const validSettings = cfg.modelSettings.filter(s => s.isValid && (!resolvedExclude || resolveSecret(s.apiKey) !== resolvedExclude));
@@ -301,12 +301,13 @@ export function startupCheck(self: DingClaude): void {
       }
     } catch { /* ignore */ }
   }
-  // $ENV: 引用可解析性检查
+  // $ENV: 引用可解析性检查（apiKeyCfg 支持全局 + client 维度，client 优先）
+  const effectiveApiKeyCfg = config.apiKeyCfg || (getGlobalConfig() as any)?.apiKeyCfg;
   const envRefChecks: { value?: string; label: string }[] = [
     { value: config.clientSecret, label: 'clientSecret' },
     { value: config.defaultDingToken, label: 'defaultDingToken' },
     ...(config.conversations || []).map((c, i) => ({ value: c.dingToken, label: `conversations[${i}].dingToken` })),
-    ...(config.apiKeyCfg?.modelSettings || []).map((s, i) => ({ value: s.apiKey, label: `apiKeyCfg.modelSettings[${i}].apiKey` })),
+    ...(effectiveApiKeyCfg?.modelSettings || []).map((s: IClaudeSetting, i: number) => ({ value: s.apiKey, label: `apiKeyCfg.modelSettings[${i}].apiKey` })),
   ];
   for (const { value, label } of envRefChecks) {
     if (isEnvRef(value) && !resolveSecret(value)) {
@@ -315,8 +316,8 @@ export function startupCheck(self: DingClaude): void {
   }
 
   // ---- 3. apiKeyCfg 检查 ----
-  if (config.apiKeyCfg) {
-    const cfg = config.apiKeyCfg;
+  if (effectiveApiKeyCfg) {
+    const cfg = effectiveApiKeyCfg;
     // resetTime
     if (cfg.resetTime) {
       results.push({ level: 'PASS', message: `apiKeyCfg 上次重置时间: ${cfg.resetTime}` });

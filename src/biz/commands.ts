@@ -379,7 +379,7 @@ export function formatConversationInfo(
 /**
  * 格式化全局核心配置
  */
-export function formatGlobalConfig(cfg: IConfig): string {
+export function formatGlobalConfig(cfg: IConfig, apiKeyCfgOverride?: IConfig['apiKeyCfg']): string {
   const lines = [
     `- **clientName:** ${cfg.clientName || '-'}`,
     `- **model:** ${cfg.model || '(默认)'}`,
@@ -392,10 +392,11 @@ export function formatGlobalConfig(cfg: IConfig): string {
   if (cfg.defaultDingToken) lines.push(`- **defaultDingToken:** ${cfg.defaultDingToken.substring(0, 8)}...`);
   if (cfg.owner) lines.push(`- **owner:** ${cfg.owner}`);
   if (cfg.whiteUserList?.length) lines.push(`- **全局白名单:** ${cfg.whiteUserList.join(', ')}`);
-  if (cfg.apiKeyCfg) {
-    const validCount = cfg.apiKeyCfg.modelSettings.filter(s => s.isValid).length;
-    lines.push(`- **apiKeyCfg:** ${validCount}/${cfg.apiKeyCfg.modelSettings.length} 有效`);
-    lines.push(`  - **最近重置:** ${cfg.apiKeyCfg.resetTime || '-'}`);
+  const effectiveApiKeyCfg = apiKeyCfgOverride ?? cfg.apiKeyCfg;
+  if (effectiveApiKeyCfg) {
+    const validCount = effectiveApiKeyCfg.modelSettings.filter(s => s.isValid).length;
+    lines.push(`- **apiKeyCfg:** ${validCount}/${effectiveApiKeyCfg.modelSettings.length} 有效`);
+    lines.push(`  - **最近重置:** ${effectiveApiKeyCfg.resetTime || '-'}`);
   }
   lines.push(`- **enableMsgToUser:** ${cfg.enableMsgToUser ?? false} (私聊消息开关)`);
   return lines.join('\n');

@@ -54,11 +54,12 @@ export function resolveClaudeSettingsPath(
   }
 
   // apiKeyCfg 管理的 API Key 轮换: 使用 settings-ding.json
-  if (self.config.apiKeyCfg) {
+  const apiKeyCfg = self.getApiKeyCfg();
+  if (apiKeyCfg) {
     const savedApiKey = readApiKeyFromSettings(dingGroupDir);
     let currentSetting: IClaudeSetting | null = null;
     if (savedApiKey) {
-      currentSetting = self.config.apiKeyCfg.modelSettings.find(s => resolveSecret(s.apiKey) === savedApiKey && s.isValid) || null;
+      currentSetting = apiKeyCfg.modelSettings.find(s => resolveSecret(s.apiKey) === savedApiKey && s.isValid) || null;
     }
     if (!currentSetting) {
       currentSetting = pickValidApiKey(self);
@@ -69,7 +70,7 @@ export function resolveClaudeSettingsPath(
   }
 
   // 不传 settings
-  if (self.config.apiKeyCfg) {
+  if (apiKeyCfg) {
     return undefined;
   }
 
@@ -897,15 +898,16 @@ export async function executeClaudeQuery(
   }
   // 从 settings-ding.json 恢复上次使用的 Model Setting
   let currentSetting: IClaudeSetting | null = null;
+  const apiKeyCfg = self.getApiKeyCfg();
   const savedApiKey = readApiKeyFromSettings(dingGroupDir);
-  if (savedApiKey && self.config.apiKeyCfg) {
-    currentSetting = self.config.apiKeyCfg.modelSettings.find(s => resolveSecret(s.apiKey) === savedApiKey && s.isValid) || null;
+  if (savedApiKey && apiKeyCfg) {
+    currentSetting = apiKeyCfg.modelSettings.find(s => resolveSecret(s.apiKey) === savedApiKey && s.isValid) || null;
     if (currentSetting) {
       console.log(`[${timestamp()}] 从 settings-ding.json 恢复 Model Setting: ${settingLabel(currentSetting)}`);
     }
   }
   const forceSettingsPath = getForceEnabledSettingsPath(dingGroupDir);
-  if (!forceSettingsPath && self.config.apiKeyCfg) {
+  if (!forceSettingsPath && apiKeyCfg) {
     // 使用 API Key 模式
     currentSetting = pickValidApiKey(self);
     if (!currentSetting) {
@@ -1106,7 +1108,7 @@ export async function executeClaudeQuery(
       if (err instanceof RetryableApiError) {
         totalRetries++; retryStartTime = retryStartTime || Date.now();
         // 配额耗尽 (429): 尝试切换/轮换 Key
-        if (isQuotaExhaustedError(err.output) && self.config.apiKeyCfg) {
+        if (isQuotaExhaustedError(err.output) && apiKeyCfg) {
           retryHistory.push(`[${timestamp()}] 429 配额耗尽，尝试轮换 Key`);
           if (currentSetting) {
             // API Key 配额耗尽/不稳定 → 轮换 Key
@@ -1126,7 +1128,7 @@ export async function executeClaudeQuery(
           // 422 TPM 限流快速失败：累计计数，超过阈值则轮换 Key 或放弃
           consecutiveFastFail++;
           if (consecutiveFastFail >= MAX_FAST_FAIL) {
-            if (currentSetting && self.config.apiKeyCfg) {
+            if (currentSetting && apiKeyCfg) {
               const newSetting = rotateApiKey(self, currentSetting.apiKey);
               if (newSetting) {
                 currentSetting = newSetting;
@@ -1251,7 +1253,7 @@ export async function executeClaudeQuery(
       }
       // retryLogs 关键词匹配：按 baseUrl 查找可重试报错关键词，随机间隔 1-2 分钟后发送"继续"重试
       const errWithOutput = err as Error & { combinedOutput?: string };
-      const retryLogs = currentSetting ? self.config.apiKeyCfg?.retryLogs?.[currentSetting.baseUrl] : undefined;
+      const retryLogs = currentSetting ? apiKeyCfg?.retryLogs?.[currentSetting.baseUrl] : undefined;
       if (retryLogs?.length && errWithOutput.combinedOutput) {
         const matched = retryLogs.find(kw => errWithOutput.combinedOutput!.includes(kw));
         if (matched) {
