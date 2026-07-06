@@ -25,6 +25,7 @@ export default function Clients() {
   const [remoteConsoles, setRemoteConsoles] = useState<IRemoteConsole[]>([])
   const [remoteStatuses, setRemoteStatuses] = useState<Record<string, IStatus>>({})
   const [loading, setLoading] = useState(true)
+  const [refreshLoading, setRefreshLoading] = useState(false)
   const [batchLoading, setBatchLoading] = useState(false)
   const [machineLoading, setMachineLoading] = useState(false)
   const [createModalOpen, setCreateModalOpen] = useState(false)
@@ -270,7 +271,18 @@ export default function Clients() {
               批量 <DownOutlined />
             </Button>
           </Dropdown>
-          <Button size="small" icon={<ReloadOutlined />} onClick={() => loadData(true)}>刷新</Button>
+          <Button size="small" icon={<ReloadOutlined />} loading={refreshLoading} onClick={async () => {
+            setRefreshLoading(true)
+            try {
+              homeCache.invalidate()
+              await loadData()
+              message.success('刷新成功')
+            } catch (e: any) {
+              message.error(e.message || '刷新失败')
+            } finally {
+              setRefreshLoading(false)
+            }
+          }}>刷新</Button>
           <Button size="small" onClick={() => { localStorage.clear(); navigate('/login') }}>退出</Button>
         </Space>
       </div>

@@ -1527,6 +1527,15 @@ async function handlePutUpdatePkgUrl(req: http.IncomingMessage, res: http.Server
   }
 }
 
+/** GET /api/ping - 公开端点，用于局域网扫描发现（无需认证） */
+async function handlePing(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  jsonResponse(res, 200, {
+    name: 'cc-ding-console',
+    version: projUtil().getPkgVersion(),
+    hostname: require('os').hostname(),
+  });
+}
+
 /** GET /api/status */
 async function handleGetStatus(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   if (!requireAuth(req, res)) return;
@@ -1630,7 +1639,7 @@ async function handleScanRemoteConsoles(req: http.IncomingMessage, res: http.Ser
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-            const response = await fetch(`http://${ip}:${port}/api/status`, {
+            const response = await fetch(`http://${ip}:${port}/api/ping`, {
               signal: controller.signal,
               headers: { 'Content-Type': 'application/json' },
             });
@@ -1638,18 +1647,17 @@ async function handleScanRemoteConsoles(req: http.IncomingMessage, res: http.Ser
             clearTimeout(timeoutId);
 
             if (response.ok) {
-              const statusData = await response.json();
-              const status = statusData.status || statusData;
+              const pingData = await response.json();
 
               // Check if it's a cc-ding console
-              if (status.ccDingVersion) {
+              if (pingData.name === 'cc-ding-console') {
                 const url = `http://${ip}:${port}`;
                 // Skip if already configured
                 if (!configuredUrls.has(url)) {
                   discovered.push({
                     url,
-                    hostname: status.hostname || ip,
-                    ccDingVersion: status.ccDingVersion,
+                    hostname: pingData.hostname || ip,
+                    ccDingVersion: pingData.version || '',
                   });
                 }
               }
@@ -2466,6 +2474,12 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // POST /api/change-password
   if (pathname === '/api/change-password' && req.method === 'POST') {
     await handleChangePassword(req, res);
+    return;
+  }
+
+  // GET /api/ping - 公开端点，用于局域网扫描
+  if (pathname === '/api/ping' && req.method === 'GET') {
+    await handlePing(req, res);
     return;
   }
 
