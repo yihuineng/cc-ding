@@ -138,6 +138,7 @@ export default function Clients() {
   // ── Batch operations ──
   const batchMenuItems: MenuProps['items'] = [
     { key: 'restart-all', icon: <RedoOutlined />, label: '重启全部 Client' },
+    { key: 'reload-all-config', icon: <ReloadOutlined />, label: '重载全部配置' },
     { key: 'update-all', icon: <ThunderboltOutlined />, label: '更新全部 cc-ding' },
     { key: 'restart-consoles', icon: <ToolOutlined />, label: '重启全部 Console' },
   ]
@@ -148,6 +149,9 @@ export default function Clients() {
       if (key === 'restart-all') {
         await api.batchRestart()
         message.success('正在重启全部 Client...')
+      } else if (key === 'reload-all-config') {
+        await api.batchReloadConfig()
+        message.success('正在重载全部配置...')
       } else if (key === 'update-all') {
         await api.batchUpdate()
         message.success('正在更新全部 cc-ding...')
@@ -167,6 +171,7 @@ export default function Clients() {
   // ── Machine operations (per remote group) ──
   const getMachineMenuItems = (url: string): MenuProps['items'] => [
     { key: `restart-machine-${url}`, icon: <RedoOutlined />, label: '重启机器 Client' },
+    { key: `reload-machine-config-${url}`, icon: <ReloadOutlined />, label: '重载配置' },
     { key: `update-machine-${url}`, icon: <ThunderboltOutlined />, label: '更新 cc-ding' },
     { key: `restart-console-${url}`, icon: <ToolOutlined />, label: '重启 Console' },
   ]
@@ -177,6 +182,9 @@ export default function Clients() {
       if (key.startsWith('restart-machine-')) {
         await api.machineRestart(url)
         message.success(`正在重启 ${url} 的 Client...`)
+      } else if (key.startsWith('reload-machine-config-')) {
+        await api.machineReloadConfig(url)
+        message.success(`正在重载 ${url} 的配置...`)
       } else if (key.startsWith('update-machine-')) {
         await api.updateRemote(url)
         message.success(`正在更新 ${url} 的 cc-ding...`)
@@ -196,6 +204,7 @@ export default function Clients() {
   // ── Local machine operations ──
   const localMachineMenuItems: MenuProps['items'] = [
     { key: 'restart-local', icon: <RedoOutlined />, label: '重启全部 Client' },
+    { key: 'reload-local-config', icon: <ReloadOutlined />, label: '重载配置' },
     { key: 'update-local', icon: <ThunderboltOutlined />, label: '更新 cc-ding' },
     { key: 'restart-local-console', icon: <ToolOutlined />, label: '重启 Console' },
   ]
@@ -206,6 +215,9 @@ export default function Clients() {
       if (key === 'restart-local') {
         await api.machineRestart()
         message.success('正在重启本地 Client...')
+      } else if (key === 'reload-local-config') {
+        await api.machineReloadConfig()
+        message.success('正在重载本地配置...')
       } else if (key === 'update-local') {
         await api.updateLocal()
         message.success('正在更新 cc-ding...')

@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Tabs, Button, Space, Tag, message, Popconfirm } from 'antd'
-import { ArrowLeftOutlined, StopOutlined, ReloadOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, StopOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import { IConfig } from '../types'
 import ConfigTab from '../components/ConfigTab'
@@ -58,6 +58,19 @@ export default function ClientDetail() {
     }
   }
 
+  const handleReloadConfig = async () => {
+    if (!clientId) return
+    setActionLoading(true)
+    try {
+      await api.reloadConfig(clientId)
+      message.success('配置已重载')
+    } catch (e: any) {
+      message.error(e.message || '重载失败')
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
   if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
   if (!config) return <div style={{ padding: 24 }}>配置加载失败</div>
 
@@ -70,6 +83,7 @@ export default function ClientDetail() {
           <Tag color="green">在线</Tag>
         </Space>
         <Space>
+          <Button icon={<SyncOutlined />} onClick={handleReloadConfig} loading={actionLoading}>重载配置</Button>
           <Popconfirm title="确定停止此客户端?" onConfirm={handleStop}>
             <Button danger icon={<StopOutlined />} loading={actionLoading}>停止</Button>
           </Popconfirm>

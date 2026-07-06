@@ -251,9 +251,15 @@ export const api = {
   batchConsoleRestart: () =>
     request('/api/batch/console-restart', { method: 'POST' }),
 
+  batchReloadConfig: () =>
+    request('/api/batch/reload-config', { method: 'POST' }),
+
   // ── Machine Operations ──
   machineRestart: (url?: string) =>
     request(`/api/machine/restart${url ? `?url=${encodeURIComponent(url)}` : ''}`, { method: 'POST' }),
+
+  machineReloadConfig: (url?: string) =>
+    request(`/api/machine/reload-config${url ? `?url=${encodeURIComponent(url)}` : ''}`, { method: 'POST' }),
 
   consoleRestart: () =>
     request('/api/console/restart', { method: 'POST' }),

@@ -2130,6 +2130,52 @@ async function handleBatchRestart(req: http.IncomingMessage, res: http.ServerRes
   });
 }
 
+/** POST /api/batch/reload-config — 一键重载所有机器 client 配置 */
+async function handleBatchReloadConfig(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  const results: Array<{ clientId: string; url: string; success: boolean; message: string }> = [];
+  const globalCfg = getGlobalConfig();
+  const remoteConsoles = globalCfg.console?.remoteConsoles || [];
+
+  // 本地重载
+  const localClientNames = getCcDingClientProcessNames();
+  for (const name of localClientNames) {
+    const clientId = name.replace(/^cc-ding-/, '');
+    const result = sendReloadSignal(clientId);
+    results.push({
+      clientId,
+      url: 'local',
+      success: result.success,
+      message: result.success ? '已发送重载信号' : (result.error || '重载失败'),
+    });
+  }
+
+  // 远程重载（并行）
+  const remotePromises = remoteConsoles.map(async (rc) => {
+    try {
+      const { status, data } = await proxyToRemoteConsole(rc, 'POST', '/api/machine/reload-config?url=local', '');
+      if (status === 200 && Array.isArray(data.results)) {
+        return data.results.map((r: any) => ({ ...r, url: rc.url }));
+      }
+      return [{ clientId: '*', url: rc.url, success: false, message: data.error || `HTTP ${status}` }];
+    } catch (err) {
+      return [{ clientId: '*', url: rc.url, success: false, message: err instanceof Error ? err.message : String(err) }];
+    }
+  });
+
+  const remoteResults = await Promise.all(remotePromises);
+  for (const arr of remoteResults) {
+    results.push(...arr);
+  }
+
+  const successCount = results.filter(r => r.success).length;
+  jsonResponse(res, 200, {
+    message: `重载配置完成：${successCount}/${results.length} 成功`,
+    results,
+  });
+}
+
 /** POST /api/machine/restart?url=local|<remoteUrl> — 重启单台机器的所有 client */
 /** POST /api/machine/restart?url=local|<remoteUrl> — 重启单台机器的 client/console/全部 */
 async function handleMachineRestart(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -2230,6 +2276,54 @@ async function handleMachineRestart(req: http.IncomingMessage, res: http.ServerR
       jsonResponse(res, 200, { ...data, remoteUrl: rc.url });
     } catch (err) {
       jsonError(res, 500, `远程重启失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+/** POST /api/machine/reload-config?url=local|<remoteUrl> — 重载单台机器所有 client 配置 */
+async function handleMachineReloadConfig(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  const urlParam = query_safe(req, 'url');
+  const isLocal = !urlParam || urlParam === 'local';
+
+  const results: Array<{ clientId: string; success: boolean; message: string }> = [];
+
+  if (isLocal) {
+    const clientNames = getCcDingClientProcessNames();
+    if (clientNames.length === 0) {
+      results.push({ clientId: '*', success: true, message: '无 client 进程' });
+    } else {
+      for (const name of clientNames) {
+        const clientId = name.replace(/^cc-ding-/, '');
+        const result = sendReloadSignal(clientId);
+        results.push({
+          clientId,
+          success: result.success,
+          message: result.success ? '已发送重载信号' : (result.error || '重载失败'),
+        });
+      }
+    }
+    const successCount = results.filter(r => r.success).length;
+    jsonResponse(res, 200, {
+      message: `重载配置完成：${successCount}/${results.length} 成功`,
+      results,
+    });
+  } else {
+    const globalCfg = getGlobalConfig();
+    const remoteConsoles = globalCfg.console?.remoteConsoles || [];
+    const rc = remoteConsoles.find(r => r.url === urlParam);
+    if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
+
+    try {
+      const { status, data } = await proxyToRemoteConsole(rc, 'POST', '/api/machine/reload-config?url=local', '');
+      if (status !== 200) {
+        jsonError(res, status, data.error || '远程重载失败');
+        return;
+      }
+      jsonResponse(res, 200, { ...data, remoteUrl: rc.url });
+    } catch (err) {
+      jsonError(res, 500, `远程重载失败: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
@@ -2556,9 +2650,21 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
     return;
   }
 
+  // POST /api/batch/reload-config — 一键重载所有机器 client 配置
+  if (pathname === '/api/batch/reload-config' && req.method === 'POST') {
+    await handleBatchReloadConfig(req, res);
+    return;
+  }
+
   // POST /api/machine/restart?url=... — 重启单台机器的所有 client
   if (pathname === '/api/machine/restart' && req.method === 'POST') {
     await handleMachineRestart(req, res);
+    return;
+  }
+
+  // POST /api/machine/reload-config?url=... — 重载单台机器所有 client 配置
+  if (pathname === '/api/machine/reload-config' && req.method === 'POST') {
+    await handleMachineReloadConfig(req, res);
     return;
   }
 
