@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Card, Button, Space, Tag, Modal, Form, Input, Popconfirm, message, Tooltip } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Card, Button, Space, Modal, Form, Input, Popconfirm, message } from 'antd'
+import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import { IApiKey } from '../types'
 
@@ -42,6 +42,19 @@ export default function KeysTab({ clientId }: Props) {
     setModalOpen(true)
   }
 
+  const openCopy = (index: number) => {
+    const src = keys[index]
+    setEditingIndex(null)
+    form.resetFields()
+    form.setFieldsValue({
+      model: src.model,
+      smallModel: src.smallModel,
+      baseUrl: src.baseUrl,
+      remark: src.remark,
+    })
+    setModalOpen(true)
+  }
+
   const handleSave = async () => {
     setSaving(true)
     try {
@@ -73,16 +86,6 @@ export default function KeysTab({ clientId }: Props) {
     }
   }
 
-  const handleReset = async () => {
-    try {
-      await api.resetApiKeys(clientId)
-      message.success('Keys 已重置')
-      loadKeys()
-    } catch (e: any) {
-      message.error(e.message || '重置失败')
-    }
-  }
-
   const maskKey = (key: string) => {
     if (key.length <= 8) return key
     return key.slice(0, 4) + '****' + key.slice(-4)
@@ -93,12 +96,7 @@ export default function KeysTab({ clientId }: Props) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
-        <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>添加 Key</Button>
-          <Popconfirm title="确定重置所有 Key 状态为有效?" onConfirm={handleReset}>
-            <Button icon={<ReloadOutlined />}>重置状态</Button>
-          </Popconfirm>
-        </Space>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>添加 Key</Button>
         <Button onClick={loadKeys} icon={<ReloadOutlined />}>刷新</Button>
       </div>
 
@@ -111,13 +109,12 @@ export default function KeysTab({ clientId }: Props) {
           </div>
         </Card>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(380px, 100%), 1fr))', gap: 12 }}>
           {keys.map((key, index) => (
             <Card key={index} size="small" styles={{ body: { padding: '12px 16px' } }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                    <Tag color={key.isValid ? 'green' : 'red'} style={{ margin: 0 }}>{key.isValid ? '有效' : '无效'}</Tag>
+                  <div style={{ marginBottom: 6 }}>
                     <code style={{ fontSize: 12, color: '#999' }}>{maskKey(key.key || '')}</code>
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{key.model || '-'}</div>
@@ -128,6 +125,7 @@ export default function KeysTab({ clientId }: Props) {
                   </div>
                 </div>
                 <Space size={4}>
+                  <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => openCopy(index)} />
                   <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(index)} />
                   <Popconfirm title="确定删除此 Key?" onConfirm={() => handleDelete(index)}>
                     <Button size="small" type="text" danger icon={<DeleteOutlined />} />

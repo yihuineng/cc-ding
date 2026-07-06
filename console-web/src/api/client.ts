@@ -128,9 +128,6 @@ export const api = {
       method: 'DELETE',
     }),
 
-  resetApiKeys: (clientId: string) =>
-    request(`/api/clients/${enc(clientId)}/apikeys/reset`, { method: 'POST' }),
-
   // ── Files (auxiliary JSON) ──
   getFile: (clientId: string, name: string) =>
     request<any>(`/api/clients/${enc(clientId)}/files?name=${encodeURIComponent(name)}`),
@@ -185,7 +182,7 @@ export const api = {
     }),
 
   // ─ Global API Keys ──
-  getGlobalApiKeys: () => request<{ apiKeys: IApiKey[]; resetTime: string }>('/api/global/apikeys'),
+  getGlobalApiKeys: () => request<{ apiKeys: IApiKey[] }>('/api/global/apikeys'),
 
   addGlobalApiKey: (key: Partial<IApiKey>) =>
     request('/api/global/apikeys', {
@@ -204,9 +201,6 @@ export const api = {
       method: 'DELETE',
     }),
 
-  resetGlobalApiKeys: () =>
-    request('/api/global/apikeys/reset', { method: 'POST' }),
-
   // ── Global RetryLogs ──
   getGlobalRetryLogs: () => request<{ retryLogs: Record<string, string[]> }>('/api/global/retrylogs'),
 
@@ -218,7 +212,7 @@ export const api = {
 
   // ── Remote Global API Keys ──
   getRemoteGlobalApiKeys: (url: string) =>
-    request<{ apiKeys: IApiKey[]; resetTime: string }>(`/api/remote/global/apikeys?url=${encodeURIComponent(url)}`),
+    request<{ apiKeys: IApiKey[] }>(`/api/remote/global/apikeys?url=${encodeURIComponent(url)}`),
 
   addRemoteGlobalApiKey: (url: string, key: Partial<IApiKey>) =>
     request(`/api/remote/global/apikeys?url=${encodeURIComponent(url)}`, {
@@ -236,9 +230,6 @@ export const api = {
     request(`/api/remote/global/apikeys/${index}?url=${encodeURIComponent(url)}`, {
       method: 'DELETE',
     }),
-
-  resetRemoteGlobalApiKeys: (url: string) =>
-    request(`/api/remote/global/apikeys/reset?url=${encodeURIComponent(url)}`, { method: 'POST' }),
 
   // ── Remote Global RetryLogs ──
   getRemoteGlobalRetryLogs: (url: string) =>

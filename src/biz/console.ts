@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
-import { fileUtil, dateUtil } from 'utils-ok';
+import { fileUtil } from 'utils-ok';
 import { spawnCommand, commandExists, isWindows } from './platform';
 import { getHomeDir } from './session';
 import { isEnvRef } from './secrets';
@@ -1133,7 +1133,7 @@ async function handleGetApiKeys(req: http.IncomingMessage, res: http.ServerRespo
       memo: setting.memo || '',
       cfuseTokenValid: true, // 社区版不支持 cfuse，固定为 true
     }));
-    jsonResponse(res, 200, { apiKeys: keys, resetTime: effectiveApiKeyCfg?.resetTime || '' });
+    jsonResponse(res, 200, { apiKeys: keys });
   } catch (err) {
     jsonError(res, 500, '读取失败');
   }
@@ -1234,32 +1234,6 @@ async function handleDeleteApiKey(req: http.IncomingMessage, res: http.ServerRes
   }
 }
 
-/** POST /api/clients/:id/apikeys/reset */
-async function handleResetApiKeys(req: http.IncomingMessage, res: http.ServerResponse, clientId: string): Promise<void> {
-  if (!requireAuth(req, res)) return;
-
-  const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
-  if (!fs.existsSync(configPath)) {
-    jsonError(res, 404, '客户端配置不存在');
-    return;
-  }
-
-  try {
-    const config = fileUtil.getJSON(configPath) as IConfig;
-    if (config.apiKeyCfg?.modelSettings) {
-      for (const setting of config.apiKeyCfg.modelSettings) {
-        setting.isValid = true;
-      }
-      config.apiKeyCfg.resetTime = dateUtil.mm(Date.now()).format('YYYY-MM-DD HH:mm:ss');
-    }
-    backupFile(configPath);
-    atomicWrite(configPath, JSON.stringify(config, null, 2));
-    jsonResponse(res, 200, { message: 'API Key 已全部重置为有效' });
-  } catch (err) {
-    jsonError(res, 500, '重置失败');
-  }
-}
-
 // ==================== 全局 API Key 管理 ====================
 
 /** 读取全局 config.json 中的 apiKeyCfg */
@@ -1287,7 +1261,7 @@ async function handleGetGlobalApiKeys(req: http.IncomingMessage, res: http.Serve
   if (!requireAuth(req, res)) return;
   const apiKeyCfg = readGlobalApiKeyCfg();
   if (!apiKeyCfg) {
-    jsonResponse(res, 200, { apiKeys: [], resetTime: '' });
+    jsonResponse(res, 200, { apiKeys: [] });
     return;
   }
   const keys = (apiKeyCfg.modelSettings || []).map((setting: any, index: number) => ({
@@ -1300,7 +1274,7 @@ async function handleGetGlobalApiKeys(req: http.IncomingMessage, res: http.Serve
     memo: setting.memo || '',
     retryLogs: apiKeyCfg.retryLogs || {},
   }));
-  jsonResponse(res, 200, { apiKeys: keys, resetTime: apiKeyCfg.resetTime || '' });
+  jsonResponse(res, 200, { apiKeys: keys });
 }
 
 /** POST /api/global/apikeys — 添加全局 API Key */
@@ -1309,7 +1283,7 @@ async function handleAddGlobalApiKey(req: http.IncomingMessage, res: http.Server
   try {
     const body = await readBody(req);
     const data = JSON.parse(body || '{}');
-    let apiKeyCfg = readGlobalApiKeyCfg() || { modelSettings: [] };
+    const apiKeyCfg = readGlobalApiKeyCfg() || { modelSettings: [] };
     if (!apiKeyCfg.modelSettings) apiKeyCfg.modelSettings = [];
 
     const newKey: IClaudeSetting = {
@@ -1375,27 +1349,6 @@ async function handleDeleteGlobalApiKey(req: http.IncomingMessage, res: http.Ser
     jsonResponse(res, 200, { message: '全局 API Key 已删除' });
   } catch (err) {
     jsonError(res, 400, '请求格式错误');
-  }
-}
-
-/** POST /api/global/apikeys/reset — 重置全局 API Key（全部标记为有效） */
-async function handleResetGlobalApiKeys(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-  if (!requireAuth(req, res)) return;
-  try {
-    const apiKeyCfg = readGlobalApiKeyCfg();
-    if (!apiKeyCfg) {
-      jsonError(res, 404, '全局 API Key 配置不存在');
-      return;
-    }
-    let resetCount = 0;
-    for (const s of apiKeyCfg.modelSettings || []) {
-      if (!s.isValid) { s.isValid = true; resetCount++; }
-    }
-    apiKeyCfg.resetTime = dateUtil.mm(Date.now()).format('YYYY-MM-DD HH:mm:ss');
-    writeGlobalApiKeyCfg(apiKeyCfg);
-    jsonResponse(res, 200, { message: `全局 API Key 已重置（${resetCount} 个重新启用）`, resetTime: apiKeyCfg.resetTime });
-  } catch (err) {
-    jsonError(res, 500, '重置失败');
   }
 }
 
@@ -1817,14 +1770,6 @@ async function handleDeleteRemoteGlobalApiKey(req: http.IncomingMessage, res: ht
   const rc = getRemoteConsoleFromQuery(req);
   if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
   await proxyRemoteGlobal(rc, 'DELETE', `/api/global/apikeys/${index}`, req, res, '删除远程全局 API Key');
-}
-
-/** POST /api/remote/global/apikeys/reset?url=... */
-async function handleResetRemoteGlobalApiKeys(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-  if (!requireAuth(req, res)) return;
-  const rc = getRemoteConsoleFromQuery(req);
-  if (!rc) { jsonError(res, 404, '远程 Console 未配置'); return; }
-  await proxyRemoteGlobal(rc, 'POST', '/api/global/apikeys/reset', req, res, '重置远程全局 API Keys');
 }
 
 /** GET /api/remote/global/retrylogs?url=... */
@@ -2407,9 +2352,8 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   const clientPm2RestartMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/pm2\/restart$/);
   const clientStartMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/start$/);
   const clientStopMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/stop$/);
-  const clientApiKeysMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys(?:\/(\d+))?(?:\/reset)?$/);
+  const clientApiKeysMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys(?:\/(\d+))?$/);
   const clientApiKeyIndexMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys\/(\d+)$/);
-  const clientApiKeyResetMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/apikeys\/reset$/);
   const clientFilesMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/files$/);
   const clientIdMatch = pathname.match(/^\/api\/clients\/([^\/]+)$/);
   const clientConvMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations$/);
@@ -2482,19 +2426,18 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   }
 
   // 全局 API Key 路由
-  const globalApiKeysMatch = pathname.match(/^\/api\/global\/apikeys(?:\/(\d+))?(?:\/reset)?$/);
+  const globalApiKeysMatch = pathname.match(/^\/api\/global\/apikeys(?:\/(\d+))?$/);
   const globalApiKeyIndexMatch = pathname.match(/^\/api\/global\/apikeys\/(\d+)$/);
-  const globalApiKeyResetMatch = pathname.match(/^\/api\/global\/apikeys\/reset$/);
   const globalRetryLogsMatch = pathname === '/api/global/retrylogs';
 
   // GET /api/global/apikeys
-  if (globalApiKeysMatch && req.method === 'GET' && !globalApiKeyIndexMatch && !globalApiKeyResetMatch) {
+  if (globalApiKeysMatch && req.method === 'GET' && !globalApiKeyIndexMatch) {
     await handleGetGlobalApiKeys(req, res);
     return;
   }
 
   // POST /api/global/apikeys
-  if (globalApiKeysMatch && req.method === 'POST' && !globalApiKeyIndexMatch && !globalApiKeyResetMatch) {
+  if (globalApiKeysMatch && req.method === 'POST' && !globalApiKeyIndexMatch) {
     await handleAddGlobalApiKey(req, res);
     return;
   }
@@ -2508,12 +2451,6 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // DELETE /api/global/apikeys/:index
   if (globalApiKeyIndexMatch && req.method === 'DELETE') {
     await handleDeleteGlobalApiKey(req, res, parseInt(globalApiKeyIndexMatch[1], 10));
-    return;
-  }
-
-  // POST /api/global/apikeys/reset
-  if (globalApiKeyResetMatch && req.method === 'POST') {
-    await handleResetGlobalApiKeys(req, res);
     return;
   }
 
@@ -2560,18 +2497,17 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   }
 
   // 远程全局 API Key 路由
-  const remoteGlobalApiKeysMatch = pathname.match(/^\/api\/remote\/global\/apikeys(?:\/(\d+))?(?:\/reset)?$/);
+  const remoteGlobalApiKeysMatch = pathname.match(/^\/api\/remote\/global\/apikeys(?:\/(\d+))?$/);
   const remoteGlobalApiKeyIndexMatch = pathname.match(/^\/api\/remote\/global\/apikeys\/(\d+)$/);
-  const remoteGlobalApiKeyResetMatch = pathname === '/api/remote/global/apikeys/reset';
   const remoteGlobalRetryLogsMatch = pathname === '/api/remote/global/retrylogs';
 
   // GET /api/remote/global/apikeys?url=...
-  if (remoteGlobalApiKeysMatch && req.method === 'GET' && !remoteGlobalApiKeyIndexMatch && !remoteGlobalApiKeyResetMatch && req.url?.includes('url=')) {
+  if (remoteGlobalApiKeysMatch && req.method === 'GET' && !remoteGlobalApiKeyIndexMatch && req.url?.includes('url=')) {
     await handleGetRemoteGlobalApiKeys(req, res);
     return;
   }
   // POST /api/remote/global/apikeys?url=...
-  if (remoteGlobalApiKeysMatch && req.method === 'POST' && !remoteGlobalApiKeyIndexMatch && !remoteGlobalApiKeyResetMatch && req.url?.includes('url=')) {
+  if (remoteGlobalApiKeysMatch && req.method === 'POST' && !remoteGlobalApiKeyIndexMatch && req.url?.includes('url=')) {
     await handleAddRemoteGlobalApiKey(req, res);
     return;
   }
@@ -2583,11 +2519,6 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // DELETE /api/remote/global/apikeys/:index?url=...
   if (remoteGlobalApiKeyIndexMatch && req.method === 'DELETE') {
     await handleDeleteRemoteGlobalApiKey(req, res, parseInt(remoteGlobalApiKeyIndexMatch[1], 10));
-    return;
-  }
-  // POST /api/remote/global/apikeys/reset?url=...
-  if (remoteGlobalApiKeyResetMatch && req.method === 'POST') {
-    await handleResetRemoteGlobalApiKeys(req, res);
     return;
   }
   // GET /api/remote/global/retrylogs?url=...
@@ -2756,26 +2687,26 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   }
 
   // GET /api/clients/:id/apikeys
-  if (clientApiKeysMatch && req.method === 'GET' && !clientApiKeyIndexMatch && !clientApiKeyResetMatch) {
+  if (clientApiKeysMatch && req.method === 'GET' && !clientApiKeyIndexMatch) {
     await handleGetApiKeys(req, res, clientApiKeysMatch[1]);
     return;
   }
 
   // POST /api/clients/:id/apikeys
-  if (clientApiKeysMatch && req.method === 'POST' && !clientApiKeyIndexMatch && !clientApiKeyResetMatch) {
+  if (clientApiKeysMatch && req.method === 'POST' && !clientApiKeyIndexMatch) {
     await handleAddApiKey(req, res, clientApiKeysMatch[1]);
     return;
   }
 
   // DELETE /api/clients/:id/apikeys
-  if (clientApiKeysMatch && req.method === 'DELETE' && !clientApiKeyIndexMatch && !clientApiKeyResetMatch) {
+  if (clientApiKeysMatch && req.method === 'DELETE' && !clientApiKeyIndexMatch) {
     // DELETE 不带 index 时，不支持
     jsonError(res, 400, '请指定 API Key 索引');
     return;
   }
 
   // PUT /api/clients/:id/apikeys (不推荐，使用 POST 或 PATCH)
-  if (clientApiKeysMatch && req.method === 'PUT' && !clientApiKeyIndexMatch && !clientApiKeyResetMatch) {
+  if (clientApiKeysMatch && req.method === 'PUT' && !clientApiKeyIndexMatch) {
     jsonError(res, 400, '请使用 POST 添加 API Key');
     return;
   }
@@ -2789,12 +2720,6 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // DELETE /api/clients/:id/apikeys/:index
   if (clientApiKeyIndexMatch && req.method === 'DELETE') {
     await handleDeleteApiKey(req, res, clientApiKeyIndexMatch[1], parseInt(clientApiKeyIndexMatch[2], 10));
-    return;
-  }
-
-  // POST /api/clients/:id/apikeys/reset
-  if (clientApiKeyResetMatch && req.method === 'POST') {
-    await handleResetApiKeys(req, res, clientApiKeyResetMatch[1]);
     return;
   }
 

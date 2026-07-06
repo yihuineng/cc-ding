@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Button, Space, Tag, Typography, Row, Col, Card, message,
-  Dropdown, Modal, Form, Input, Popconfirm, Select, Tabs,
+  Dropdown, Modal, Form, Input, Popconfirm, Tabs,
 } from 'antd'
 import type { MenuProps } from 'antd'
 import {
@@ -138,7 +138,7 @@ export default function Clients() {
   // ── Batch operations ──
   const batchMenuItems: MenuProps['items'] = [
     { key: 'restart-all', icon: <RedoOutlined />, label: '重启全部 Client' },
-    { key: 'update-all', icon: <ThunderboltOutlined />, label: '更新全部机器' },
+    { key: 'update-all', icon: <ThunderboltOutlined />, label: '更新全部 cc-ding' },
     { key: 'restart-consoles', icon: <ToolOutlined />, label: '重启全部 Console' },
   ]
 
@@ -150,7 +150,7 @@ export default function Clients() {
         message.success('正在重启全部 Client...')
       } else if (key === 'update-all') {
         await api.batchUpdate()
-        message.success('正在更新全部机器...')
+        message.success('正在更新全部 cc-ding...')
       } else if (key === 'restart-consoles') {
         await api.batchConsoleRestart()
         message.success('正在重启全部 Console...')
@@ -167,7 +167,7 @@ export default function Clients() {
   // ── Machine operations (per remote group) ──
   const getMachineMenuItems = (url: string): MenuProps['items'] => [
     { key: `restart-machine-${url}`, icon: <RedoOutlined />, label: '重启机器 Client' },
-    { key: `update-machine-${url}`, icon: <ThunderboltOutlined />, label: '更新机器' },
+    { key: `update-machine-${url}`, icon: <ThunderboltOutlined />, label: '更新 cc-ding' },
     { key: `restart-console-${url}`, icon: <ToolOutlined />, label: '重启 Console' },
   ]
 
@@ -179,7 +179,7 @@ export default function Clients() {
         message.success(`正在重启 ${url} 的 Client...`)
       } else if (key.startsWith('update-machine-')) {
         await api.updateRemote(url)
-        message.success(`正在更新 ${url}...`)
+        message.success(`正在更新 ${url} 的 cc-ding...`)
       } else if (key.startsWith('restart-console-')) {
         await api.remoteConsoleRestart(url)
         message.success(`正在重启 ${url} 的 Console...`)
@@ -281,7 +281,7 @@ export default function Clients() {
               type="primary"
               size="small"
               icon={<PlusOutlined />}
-              onClick={() => setCreateModalOpen(true)}
+              onClick={() => { setCreateTarget('local'); setCreateModalOpen(true) }}
             >
               新建 Client
             </Button>
@@ -341,7 +341,7 @@ export default function Clients() {
                   type="primary"
                   size="small"
                   icon={<PlusOutlined />}
-                  onClick={() => setCreateModalOpen(true)}
+                  onClick={() => { setCreateTarget(url); setCreateModalOpen(true) }}
                 >
                   新建 Client
                 </Button>
@@ -397,7 +397,7 @@ export default function Clients() {
 
       {/* Create Client Modal */}
       <Modal
-        title="新建 Client"
+        title={`新建 Client — ${createTarget === 'local' ? '本机 (MB.LOCAL)' : (remoteConsoles.find(rc => rc.url === createTarget)?.hostname || createTarget)}`}
         open={createModalOpen}
         onCancel={() => { setCreateModalOpen(false); createForm.resetFields(); setCreateTarget('local') }}
         onOk={() => handleCreateClient()}
@@ -405,16 +405,6 @@ export default function Clients() {
         destroyOnClose
       >
         <Form form={createForm} layout="vertical" style={{ marginTop: 16 }}>
-          <Form.Item name="target" label="目标机器" initialValue="local">
-            <Select onChange={setCreateTarget}>
-              <Select.Option value="local">本机 (MB.LOCAL)</Select.Option>
-              {remoteConsoles.map(rc => (
-                <Select.Option key={rc.url} value={rc.url}>
-                   {rc.hostname || rc.url}
-                </Select.Option>
-              ))}
-            </Select>
-          </Form.Item>
           <Form.Item name="clientId" label="Client ID" rules={[{ required: true, message: '请输入 Client ID' }]}>
             <Input placeholder="唯一标识符" />
           </Form.Item>

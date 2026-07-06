@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Card, Button, Space, Tag, Modal, Form, Input, Popconfirm, message, Tooltip } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons'
+import { Card, Button, Space, Modal, Form, Input, Popconfirm, message, Switch } from 'antd'
+import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import { IApiKey } from '../types'
 
@@ -16,6 +16,7 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [saving, setSaving] = useState(false)
   const [form] = Form.useForm()
+  const [togglingIndex, setTogglingIndex] = useState<number | null>(null)
 
   const loadKeys = async () => {
     setLoading(true)
@@ -42,6 +43,20 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
   const openEdit = (index: number) => {
     setEditingIndex(index)
     form.setFieldsValue(keys[index])
+    setModalOpen(true)
+  }
+
+  const openCopy = (index: number) => {
+    const src = keys[index]
+    setEditingIndex(null)
+    form.resetFields()
+    form.setFieldsValue({
+      baseUrl: src.baseUrl,
+      model: src.model,
+      smallModel: src.smallModel,
+      memo: src.memo,
+      isValid: src.isValid,
+    })
     setModalOpen(true)
   }
 
@@ -88,15 +103,21 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
     }
   }
 
-  const handleReset = async () => {
+  const handleToggleValid = async (index: number, currentValid: boolean) => {
+    setTogglingIndex(index)
     try {
-      const data: any = remoteUrl
-        ? await api.resetRemoteGlobalApiKeys(remoteUrl)
-        : await api.resetGlobalApiKeys()
-      message.success(data.message || 'Keys 已重置')
-      loadKeys()
+      const newValid = !currentValid
+      if (remoteUrl) {
+        await api.updateRemoteGlobalApiKey(remoteUrl, index, { isValid: newValid })
+      } else {
+        await api.updateGlobalApiKey(index, { isValid: newValid })
+      }
+      setKeys(prev => prev.map((k, i) => i === index ? { ...k, isValid: newValid } : k))
+      message.success(newValid ? 'Key 已启用' : 'Key 已禁用')
     } catch (e: any) {
-      message.error(e.message || '重置失败')
+      message.error(e.message || '操作失败')
+    } finally {
+      setTogglingIndex(null)
     }
   }
 
@@ -110,12 +131,7 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
-        <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>添加 Key</Button>
-          <Popconfirm title="确定重置所有 Key 状态为有效?" onConfirm={handleReset}>
-            <Button icon={<ReloadOutlined />}>重置状态</Button>
-          </Popconfirm>
-        </Space>
+        <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>添加 Key</Button>
         <Button onClick={loadKeys} icon={<ReloadOutlined />}>刷新</Button>
       </div>
 
@@ -128,13 +144,12 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
           </div>
         </Card>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(380px, 100%), 1fr))', gap: 12 }}>
           {keys.map((key, index) => (
-            <Card key={index} size="small" styles={{ body: { padding: '12px 16px' } }}>
+            <Card key={index} size="small" styles={{ body: { padding: '12px 16px' } }} style={{ opacity: key.isValid ? 1 : 0.6 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                    <Tag color={key.isValid ? 'green' : 'red'} style={{ margin: 0 }}>{key.isValid ? '有效' : '无效'}</Tag>
+                  <div style={{ marginBottom: 6 }}>
                     <code style={{ fontSize: 12, color: '#999' }}>{maskKey(key.apiKey || '')}</code>
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{key.model || '-'}</div>
@@ -144,7 +159,16 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
                     {key.memo && <><span style={{ color: '#999' }}>备注: </span>{key.memo}</>}
                   </div>
                 </div>
-                <Space size={4}>
+                <Space size={4} align="start">
+                  <Switch
+                    size="small"
+                    checked={key.isValid}
+                    loading={togglingIndex === index}
+                    onChange={() => handleToggleValid(index, key.isValid)}
+                    checkedChildren="启用"
+                    unCheckedChildren="禁用"
+                  />
+                  <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => openCopy(index)} />
                   <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(index)} />
                   <Popconfirm title="确定删除此 Key?" onConfirm={() => handleDelete(index)}>
                     <Button size="small" type="text" danger icon={<DeleteOutlined />} />
@@ -164,7 +188,7 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
         confirmLoading={saving}
         destroyOnClose
       >
-        <Form form={form} layout="vertical" style={{ marginTop: 16 }}>
+        <Form form={form} layout="vertical" style={{ marginTop: 16 }} initialValues={{ isValid: true }}>
           <Form.Item name="apiKey" label="API Key" rules={[{ required: true, message: '请输入 Key' }]}>
             <Input.Password placeholder="sk-xxx..." />
           </Form.Item>
@@ -179,6 +203,9 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
           </Form.Item>
           <Form.Item name="memo" label="备注">
             <Input placeholder="备注说明" />
+          </Form.Item>
+          <Form.Item name="isValid" label="启用状态" valuePropName="checked">
+            <Switch checkedChildren="有效" unCheckedChildren="无效" />
           </Form.Item>
         </Form>
       </Modal>
