@@ -55,7 +55,7 @@ export function resolveClaudeSettingsPath(
 
   // apiKeyCfg 管理的 API Key 轮换: 使用 settings-ding.json
   const apiKeyCfg = self.getApiKeyCfg();
-  if (apiKeyCfg) {
+  if (apiKeyCfg?.modelSettings?.length) {
     const savedApiKey = readApiKeyFromSettings(dingGroupDir);
     let currentSetting: IClaudeSetting | null = null;
     if (savedApiKey) {
@@ -900,7 +900,7 @@ export async function executeClaudeQuery(
   let currentSetting: IClaudeSetting | null = null;
   const apiKeyCfg = self.getApiKeyCfg();
   const savedApiKey = readApiKeyFromSettings(dingGroupDir);
-  if (savedApiKey && apiKeyCfg) {
+  if (savedApiKey && apiKeyCfg?.modelSettings?.length) {
     currentSetting = apiKeyCfg.modelSettings.find(s => resolveSecret(s.apiKey) === savedApiKey && s.isValid) || null;
     if (currentSetting) {
       console.log(`[${timestamp()}] 从 settings-ding.json 恢复 Model Setting: ${settingLabel(currentSetting)}`);

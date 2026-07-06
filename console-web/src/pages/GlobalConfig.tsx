@@ -1,12 +1,13 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Tabs, Form, Input, InputNumber, Button, Card, Space, Popconfirm, message, Spin, Tag, Collapse, Progress } from 'antd'
-import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, DownOutlined, ScanOutlined } from '@ant-design/icons'
-import Editor, { type OnMount } from '@monaco-editor/react'
+import { Tabs, Form, Input, InputNumber, Button, Card, Space, Popconfirm, message, Spin, Tag, Collapse, Progress, Modal, Tooltip } from 'antd'
+import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, DownOutlined, ScanOutlined, CodeOutlined, FileTextOutlined, FormatPainterOutlined, SelectOutlined, CopyOutlined } from '@ant-design/icons'
+import SimpleJsonEditor from '../components/SimpleJsonEditor'
 import { api } from '../api/client'
 import { IGlobalConfig, IRemoteConsole } from '../types'
 import GlobalKeysTab from '../components/GlobalKeysTab'
 import GlobalRetryLogsTab from '../components/GlobalRetryLogsTab'
+import { globalConfigTypeDefinition } from '../schema/global-config-schema'
 
 const { Panel } = Collapse
 
@@ -45,7 +46,17 @@ export default function GlobalConfig() {
   const [settingsDirty, setSettingsDirty] = useState(false)
   const [settingsValid, setSettingsValid] = useState<boolean | null>(null)
   const [settingsErrors, setSettingsErrors] = useState<string[]>([])
-  const settingsEditorRef = useRef<any>(null)
+  const settingsTextareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Raw config state
+  const [rawContent, setRawContent] = useState<string>('')
+  const [rawLoading, setRawLoading] = useState(false)
+  const [rawSaving, setRawSaving] = useState(false)
+  const [rawDirty, setRawDirty] = useState(false)
+  const [rawValid, setRawValid] = useState<boolean | null>(null)
+  const [rawErrors, setRawErrors] = useState<string[]>([])
+  const rawTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const [typeDefModalOpen, setTypeDefModalOpen] = useState(false)
 
   useEffect(() => {
     api.getGlobalConfig()
@@ -205,15 +216,44 @@ export default function GlobalConfig() {
     }
   }
 
-  const handleSettingsMount: OnMount = (editor, monaco) => {
-    settingsEditorRef.current = editor
-    monaco.languages.json.jsonDefaults.setDiagnosticsOptions({ validate: true, schemas: [] })
-    monaco.editor.onDidChangeMarkers(([uri]) => {
-      const markers = monaco.editor.getModelMarkers({ resource: uri })
-      const errors = markers.filter(m => m.severity === monaco.MarkerSeverity.Error).map(m => `第 ${m.startLineNumber} 行: ${m.message}`)
-      setSettingsErrors(errors)
-      setSettingsValid(errors.length === 0)
-    })
+  const handleSettingsValidationError = (errors: string[]) => {
+    setSettingsErrors(errors)
+    setSettingsValid(errors.length === 0)
+  }
+
+  const formatSettingsDocument = () => {
+    try {
+      const formatted = JSON.stringify(JSON.parse(settingsContent), null, 2)
+      setSettingsContent(formatted)
+      setSettingsDirty(true)
+      message.success('JSON 已格式化')
+    } catch (e) {
+      message.error('JSON 格式错误，无法格式化')
+    }
+  }
+
+  const handleSettingsSelectAll = () => {
+    if (settingsTextareaRef.current) {
+      settingsTextareaRef.current.select()
+      settingsTextareaRef.current.focus()
+      message.success('已全选')
+    }
+  }
+
+  const handleSettingsCopy = async () => {
+    if (!settingsContent) return
+    try {
+      await navigator.clipboard.writeText(settingsContent)
+      message.success('已复制到剪贴板')
+    } catch (e) {
+      const textArea = document.createElement('textarea')
+      textArea.value = settingsContent
+      document.body.appendChild(textArea)
+      textArea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textArea)
+      message.success('已复制到剪贴板')
+    }
   }
 
   const handleSaveSettings = async () => {
@@ -239,14 +279,94 @@ export default function GlobalConfig() {
     }
   }
 
+  // Raw config functions
+  const loadRawConfig = async () => {
+    setRawLoading(true)
+    try {
+      const data = await api.getGlobalRawConfig()
+      setRawContent(data.content)
+      setRawDirty(false)
+      setRawValid(true)
+      setRawErrors([])
+    } catch (e: any) {
+      message.error(e.message || '加载失败')
+    } finally {
+      setRawLoading(false)
+    }
+  }
+
+  const handleRawValidationError = (errors: string[]) => {
+    setRawErrors(errors)
+    setRawValid(errors.length === 0)
+  }
+
+  const formatRawDocument = () => {
+    try {
+      const formatted = JSON.stringify(JSON.parse(rawContent), null, 2)
+      setRawContent(formatted)
+      setRawDirty(true)
+      message.success('JSON 已格式化')
+    } catch (e) {
+      message.error('JSON 格式错误，无法格式化')
+    }
+  }
+
+  const handleRawSelectAll = () => {
+    if (rawTextareaRef.current) {
+      rawTextareaRef.current.select()
+      rawTextareaRef.current.focus()
+      message.success('已全选')
+    }
+  }
+
+  const handleRawCopy = async () => {
+    if (!rawContent) return
+    try {
+      await navigator.clipboard.writeText(rawContent)
+      message.success('已复制到剪贴板')
+    } catch (e) {
+      const textArea = document.createElement('textarea')
+      textArea.value = rawContent
+      document.body.appendChild(textArea)
+      textArea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textArea)
+      message.success('已复制到剪贴板')
+    }
+  }
+
+  const handleSaveRaw = async () => {
+    if (rawValid === false) {
+      message.error('JSON 格式或 Schema 校验失败，请修正错误后再保存')
+      return
+    }
+    setRawSaving(true)
+    try {
+      let parsed
+      try { parsed = JSON.parse(rawContent) } catch {
+        message.error('JSON 格式错误')
+        setRawSaving(false)
+        return
+      }
+      await api.putGlobalRawConfig(JSON.stringify(parsed, null, 2))
+      message.success('全局配置已保存')
+      setRawDirty(false)
+      setRawContent(JSON.stringify(parsed, null, 2))
+    } catch (e: any) {
+      message.error(e.message || '保存失败')
+    } finally {
+      setRawSaving(false)
+    }
+  }
+
   if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
   if (!config) return <div style={{ padding: 24 }}>配置加载失败</div>
 
   const remoteConsoles = config.remoteConsoles || []
 
   return (
-    <div style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
-      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
+    <div className="page-container" style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
+      <div className="page-header" style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回</Button>
         <span style={{ fontSize: 16, fontWeight: 600 }}>🌐 全局配置</span>
       </div>
@@ -256,13 +376,45 @@ export default function GlobalConfig() {
           key: 'console',
           label: '️ Console 配置',
           children: (
-            <Card>
-              <Form form={form} layout="vertical">
-                <Form.Item name="port" label="端口"><InputNumber style={{ width: 200 }} /></Form.Item>
-                <Form.Item name="host" label="Host"><Input style={{ width: 200 }} /></Form.Item>
-                <Button type="primary" icon={<SaveOutlined />} onClick={onSave}>保存</Button>
-              </Form>
-            </Card>
+            <div>
+              <Card title="服务配置" style={{ marginBottom: 16 }}>
+                <Form form={form} layout="vertical">
+                  <Form.Item name="port" label="端口"><InputNumber style={{ width: 200 }} /></Form.Item>
+                  <Form.Item name="host" label="Host"><Input style={{ width: 200 }} /></Form.Item>
+                  <Button type="primary" icon={<SaveOutlined />} onClick={onSave}>保存</Button>
+                </Form>
+              </Card>
+              <Card title="更新配置">
+                <Form layout="vertical">
+                  <Form.Item label="更新包下载地址 (updatePkgUrl)">
+                    <Input
+                      placeholder="http://192.168.3.2:39000/cc-ding/releases/cc-ding-latest.tgz"
+                      defaultValue={(config as any)?.updatePkgUrl || ''}
+                      style={{ maxWidth: 600 }}
+                    />
+                  </Form.Item>
+                  <Button
+                    type="primary"
+                    icon={<SaveOutlined />}
+                    onClick={async () => {
+                      const input = (document.querySelector('input[placeholder*="cc-ding-latest.tgz"]') as HTMLInputElement);
+                      const value = input?.value.trim() || '';
+                      try {
+                        await api.putGlobalConfig({ ...config, updatePkgUrl: value || undefined } as any);
+                        message.success('更新包地址已保存');
+                      } catch (err: any) {
+                        message.error(err.message || '保存失败');
+                      }
+                    }}
+                  >
+                    保存
+                  </Button>
+                  <div style={{ fontSize: 12, color: '#999', marginTop: 12 }}>
+                    客户端执行 <code>/reboot --update</code> 时优先从此地址下载安装包
+                  </div>
+                </Form>
+              </Card>
+            </div>
           ),
         },
         {
@@ -459,7 +611,16 @@ export default function GlobalConfig() {
                   )}
                   {settingsDirty && <Tag color="warning">未保存</Tag>}
                 </div>
-                <Space>
+                <Space wrap>
+                  <Tooltip title="格式化 JSON">
+                    <Button icon={<FormatPainterOutlined />} onClick={formatSettingsDocument} disabled={!settingsContent}>格式化</Button>
+                  </Tooltip>
+                  <Tooltip title="全选内容">
+                    <Button icon={<SelectOutlined />} onClick={handleSettingsSelectAll} disabled={!settingsContent}>全选</Button>
+                  </Tooltip>
+                  <Tooltip title="复制到剪贴板">
+                    <Button icon={<CopyOutlined />} onClick={handleSettingsCopy} disabled={!settingsContent}>复制</Button>
+                  </Tooltip>
                   <Button icon={<ReloadOutlined />} onClick={loadSettingsTpl} loading={settingsLoading}>刷新</Button>
                   <Button type="primary" icon={<SaveOutlined />} onClick={handleSaveSettings} loading={settingsSaving} disabled={!settingsDirty || settingsValid === false}>保存</Button>
                 </Space>
@@ -478,27 +639,13 @@ export default function GlobalConfig() {
               )}
 
               <Spin spinning={settingsLoading}>
-                <Card styles={{ body: { padding: 0 } }}>
-                  <Editor
-                    height="500px"
-                    defaultLanguage="json"
-                    value={settingsContent}
-                    theme="vs-dark"
-                    onChange={value => { setSettingsContent(value || ''); setSettingsDirty(true) }}
-                    onMount={handleSettingsMount}
-                    options={{
-                      minimap: { enabled: false },
-                      fontSize: 13,
-                      lineHeight: 20,
-                      scrollBeyondLastLine: false,
-                      roundedSelection: true,
-                      formatOnPaste: true,
-                      formatOnType: true,
-                      automaticLayout: true,
-                      tabSize: 2,
-                    }}
-                  />
-                </Card>
+                <SimpleJsonEditor
+                  ref={settingsTextareaRef}
+                  value={settingsContent}
+                  onChange={(value) => { setSettingsContent(value || ''); setSettingsDirty(true) }}
+                  height="500px"
+                  onValidationError={handleSettingsValidationError}
+                />
               </Spin>
             </div>
           ),
@@ -512,6 +659,80 @@ export default function GlobalConfig() {
           key: 'retrylogs',
           label: '🔄 重试日志',
           children: <GlobalRetryLogsTab />,
+        },
+        {
+          key: 'raw',
+          label: '📝 原始 config.json',
+          children: (
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, color: '#999' }}>直接编辑 ~/.cc-ding/config.json</span>
+                  {rawValid !== null && (
+                    rawValid ? <Tag icon={<CheckCircleOutlined />} color="success">JSON 有效</Tag>
+                              : <Tag icon={<CloseCircleOutlined />} color="error">JSON 无效</Tag>
+                  )}
+                  {rawDirty && <Tag color="warning">未保存</Tag>}
+                </div>
+                <Space wrap>
+                  <Tooltip title="格式化 JSON">
+                    <Button icon={<FormatPainterOutlined />} onClick={formatRawDocument} disabled={!rawContent}>格式化</Button>
+                  </Tooltip>
+                  <Tooltip title="全选内容">
+                    <Button icon={<SelectOutlined />} onClick={handleRawSelectAll} disabled={!rawContent}>全选</Button>
+                  </Tooltip>
+                  <Tooltip title="复制到剪贴板">
+                    <Button icon={<CopyOutlined />} onClick={handleRawCopy} disabled={!rawContent}>复制</Button>
+                  </Tooltip>
+                  <Button icon={<CodeOutlined />} onClick={() => setTypeDefModalOpen(true)}>类型定义</Button>
+                  <Button icon={<ReloadOutlined />} onClick={loadRawConfig} loading={rawLoading}>刷新</Button>
+                  <Button type="primary" icon={<SaveOutlined />} onClick={handleSaveRaw} loading={rawSaving} disabled={!rawDirty || rawValid === false}>保存</Button>
+                </Space>
+              </div>
+
+              {rawErrors.length > 0 && (
+                <Card size="small" style={{ marginBottom: 16, borderColor: '#ff4d4f' }}>
+                  <div style={{ color: '#ff4d4f', fontSize: 13, marginBottom: 8 }}>校验错误 ({rawErrors.length})</div>
+                  <div style={{ maxHeight: 120, overflow: 'auto', fontSize: 12 }}>
+                    {rawErrors.slice(0, 5).map((err, i) => (
+                      <div key={i} style={{ color: '#ff4d4f', marginBottom: 4 }}>{err}</div>
+                    ))}
+                    {rawErrors.length > 5 && <div style={{ color: '#999' }}>... 还有 {rawErrors.length - 5} 个错误</div>}
+                  </div>
+                </Card>
+              )}
+
+              <Spin spinning={rawLoading}>
+                <SimpleJsonEditor
+                  ref={rawTextareaRef}
+                  value={rawContent}
+                  onChange={(value) => { setRawContent(value || ''); setRawDirty(true) }}
+                  height="600px"
+                  onValidationError={handleRawValidationError}
+                />
+              </Spin>
+
+              {/* Type Definition Modal */}
+              <Modal
+                title={
+                  <span>
+                    <FileTextOutlined style={{ marginRight: 8 }} />
+                    TypeScript 类型定义
+                  </span>
+                }
+                open={typeDefModalOpen}
+                onCancel={() => setTypeDefModalOpen(false)}
+                footer={null}
+                width={800}
+              >
+                <SimpleJsonEditor
+                  value={globalConfigTypeDefinition}
+                  height="500px"
+                  readOnly={true}
+                />
+              </Modal>
+            </div>
+          ),
         },
       ]} />
     </div>

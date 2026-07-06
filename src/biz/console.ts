@@ -1527,6 +1527,59 @@ async function handlePutUpdatePkgUrl(req: http.IncomingMessage, res: http.Server
   }
 }
 
+/** GET /api/global/raw-config — 获取全局 config.json 原始内容 */
+async function handleGetGlobalRawConfig(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  try {
+    if (!fs.existsSync(GLOBAL_CONFIG_PATH)) {
+      jsonResponse(res, 200, { content: '{}' });
+      return;
+    }
+    const raw = fs.readFileSync(GLOBAL_CONFIG_PATH, 'utf-8');
+    // Parse and re-stringify for consistent formatting
+    const parsed = JSON.parse(raw);
+    jsonResponse(res, 200, { content: JSON.stringify(parsed, null, 2) });
+  } catch (err) {
+    jsonError(res, 500, '读取全局配置失败');
+  }
+}
+
+/** PUT /api/global/raw-config — 保存全局 config.json 原始内容 */
+async function handlePutGlobalRawConfig(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  try {
+    const body = await readBody(req);
+    const data = JSON.parse(body || '{}');
+    const content = data.content;
+
+    if (typeof content !== 'string') {
+      jsonError(res, 400, 'content 必须是字符串');
+      return;
+    }
+
+    // Validate JSON
+    let parsed: any;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      jsonError(res, 400, 'JSON 格式错误');
+      return;
+    }
+
+    // Backup existing config
+    if (fs.existsSync(GLOBAL_CONFIG_PATH)) {
+      backupFile(GLOBAL_CONFIG_PATH);
+    }
+
+    atomicWrite(GLOBAL_CONFIG_PATH, JSON.stringify(parsed, null, 2));
+    jsonResponse(res, 200, { message: '全局配置已保存' });
+  } catch (err) {
+    jsonError(res, 400, '请求格式错误');
+  }
+}
+
 /** GET /api/ping - 公开端点，用于局域网扫描发现（无需认证） */
 async function handlePing(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   jsonResponse(res, 200, {
@@ -2534,6 +2587,18 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // PUT /api/global/update-pkg-url
   if (pathname === '/api/global/update-pkg-url' && req.method === 'PUT') {
     await handlePutUpdatePkgUrl(req, res);
+    return;
+  }
+
+  // GET /api/global/raw-config
+  if (pathname === '/api/global/raw-config' && req.method === 'GET') {
+    await handleGetGlobalRawConfig(req, res);
+    return;
+  }
+
+  // PUT /api/global/raw-config
+  if (pathname === '/api/global/raw-config' && req.method === 'PUT') {
+    await handlePutGlobalRawConfig(req, res);
     return;
   }
 

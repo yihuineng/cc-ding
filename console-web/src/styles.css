@@ -1,3 +1,75 @@
+/* ── Monaco Editor ── */
+.monaco-editor {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default !important;
+  touch-action: pan-y !important;
+}
+
+.monaco-editor .view-lines {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+.monaco-editor .view-line {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+.monaco-editor .monaco-editor-background {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+/* Enable text selection on iOS */
+.monaco-editor * {
+  -webkit-user-select: text !important;
+  -webkit-touch-callout: default !important;
+}
+
+/* Prevent editor from blocking selection gestures */
+.monaco-editor .inputarea {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+/* ── CodeMirror Editor ── */
+.cm-editor {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  -webkit-touch-callout: default !important;
+  touch-action: auto !important;
+}
+
+.cm-editor .cm-content {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  caret-color: #fff;
+}
+
+.cm-editor .cm-line {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+/* Enable text selection on iOS for CodeMirror */
+.cm-editor * {
+  -webkit-user-select: text !important;
+  -webkit-touch-callout: default !important;
+}
+
+/* Fix for mobile browsers - allow text selection */
+@media (max-width: 768px) {
+  .cm-editor {
+    touch-action: manipulation !important;
+    -webkit-tap-highlight-color: rgba(0, 0, 0, 0.1);
+  }
+
+  .cm-editor .cm-content {
+    touch-action: manipulation !important;
+  }
+}
+
 /* ── Global ── */
 * {
   box-sizing: border-box;
@@ -72,9 +144,22 @@ body {
     gap: 8px;
   }
 
-  /* Tabs stack on mobile */
+  /* Tabs - Mobile optimized */
+  .ant-tabs {
+    margin-bottom: 16px;
+  }
+
   .ant-tabs-nav {
+    margin-bottom: 0 !important;
     overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .ant-tabs-nav::-webkit-scrollbar {
+    display: none;
   }
 
   .ant-tabs-nav::before {
@@ -83,11 +168,26 @@ body {
 
   .ant-tabs-nav-list {
     flex-wrap: nowrap !important;
+    padding: 0 8px;
   }
 
   .ant-tabs-tab {
-    padding: 8px 8px !important;
-    font-size: 13px;
+    padding: 12px 16px !important;
+    margin: 0 4px !important;
+    font-size: 14px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+
+  .ant-tabs-tab-btn {
+    font-size: 14px;
+  }
+
+  .ant-tabs-ink-bar {
+    height: 3px;
   }
 
   /* Card extra buttons wrap */
@@ -164,10 +264,20 @@ body {
     margin-bottom: 4px;
   }
 
-  /* Tab labels smaller */
+  /* Tab labels - better touch targets on small screens */
+  .ant-tabs-nav-list {
+    padding: 0 4px;
+  }
+
   .ant-tabs-tab {
-    padding: 6px 4px !important;
-    font-size: 12px;
+    padding: 10px 12px !important;
+    margin: 0 2px !important;
+    font-size: 13px;
+    min-height: 40px;
+  }
+
+  .ant-tabs-tab-btn {
+    font-size: 13px;
   }
 }
 

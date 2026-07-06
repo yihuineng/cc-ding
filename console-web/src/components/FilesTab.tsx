@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
-import { Card, Select, Button, Space, message, Spin, Tag } from 'antd'
-import { SaveOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons'
-import Editor, { type OnMount } from '@monaco-editor/react'
+import { Card, Select, Button, Space, message, Spin, Tag, Tooltip } from 'antd'
+import { SaveOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, FormatPainterOutlined, SelectOutlined, CopyOutlined } from '@ant-design/icons'
+import SimpleJsonEditor from './SimpleJsonEditor'
 import { api } from '../api/client'
 
 interface Props {
@@ -25,14 +25,13 @@ export default function FilesTab({ clientId }: Props) {
   const [dirty, setDirty] = useState(false)
   const [valid, setValid] = useState<boolean | null>(null)
   const [validationErrors, setValidationErrors] = useState<string[]>([])
-  const editorRef = useRef<any>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const loadFile = async (name: string) => {
     if (!name) return
     setLoading(true)
     try {
       const data: any = await api.getFile(clientId, name)
-      // API returns { content: "..." } or the raw object directly
       const raw = typeof data.content === 'string' ? data.content : JSON.stringify(data, null, 2)
       let parsed
       try { parsed = JSON.parse(raw) } catch { parsed = raw }
@@ -54,20 +53,44 @@ export default function FilesTab({ clientId }: Props) {
     loadFile(value)
   }
 
-  const handleEditorMount: OnMount = (editor, monaco) => {
-    editorRef.current = editor
-    monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
-      validate: true,
-      schemas: [],
-    })
-    monaco.editor.onDidChangeMarkers(([uri]) => {
-      const markers = monaco.editor.getModelMarkers({ resource: uri })
-      const errors = markers
-        .filter(m => m.severity === monaco.MarkerSeverity.Error)
-        .map(m => `第 ${m.startLineNumber} 行: ${m.message}`)
-      setValidationErrors(errors)
-      setValid(errors.length === 0)
-    })
+  const handleValidationError = (errors: string[]) => {
+    setValidationErrors(errors)
+    setValid(errors.length === 0)
+  }
+
+  const formatDocument = () => {
+    try {
+      const formatted = JSON.stringify(JSON.parse(content), null, 2)
+      setContent(formatted)
+      setDirty(true)
+      message.success('JSON 已格式化')
+    } catch (e) {
+      message.error('JSON 格式错误，无法格式化')
+    }
+  }
+
+  const handleSelectAll = () => {
+    if (textareaRef.current) {
+      textareaRef.current.select()
+      textareaRef.current.focus()
+      message.success('已全选')
+    }
+  }
+
+  const handleCopy = async () => {
+    if (!content) return
+    try {
+      await navigator.clipboard.writeText(content)
+      message.success('已复制到剪贴板')
+    } catch (e) {
+      const textArea = document.createElement('textarea')
+      textArea.value = content
+      document.body.appendChild(textArea)
+      textArea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textArea)
+      message.success('已复制到剪贴板')
+    }
   }
 
   const handleSave = async () => {
@@ -114,7 +137,16 @@ export default function FilesTab({ clientId }: Props) {
           )}
           {dirty && <Tag color="warning">未保存</Tag>}
         </div>
-        <Space>
+        <Space wrap>
+          <Tooltip title="格式化 JSON">
+            <Button icon={<FormatPainterOutlined />} onClick={formatDocument} disabled={!selectedFile || !content}>格式化</Button>
+          </Tooltip>
+          <Tooltip title="全选内容">
+            <Button icon={<SelectOutlined />} onClick={handleSelectAll} disabled={!selectedFile || !content}>全选</Button>
+          </Tooltip>
+          <Tooltip title="复制到剪贴板">
+            <Button icon={<CopyOutlined />} onClick={handleCopy} disabled={!content}>复制</Button>
+          </Tooltip>
           <Button icon={<ReloadOutlined />} onClick={() => loadFile(selectedFile)} disabled={!selectedFile}>刷新</Button>
           <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving} disabled={!selectedFile || !dirty || valid === false}>保存</Button>
         </Space>
@@ -133,27 +165,13 @@ export default function FilesTab({ clientId }: Props) {
       )}
 
       <Spin spinning={loading}>
-        <Card styles={{ body: { padding: 0 } }}>
-          <Editor
-            height="600px"
-            defaultLanguage="json"
-            value={content}
-            theme="vs-dark"
-            onChange={value => { setContent(value || ''); setDirty(true) }}
-            onMount={handleEditorMount}
-            options={{
-              minimap: { enabled: false },
-              fontSize: 13,
-              lineHeight: 20,
-              scrollBeyondLastLine: false,
-              roundedSelection: true,
-              formatOnPaste: true,
-              formatOnType: true,
-              automaticLayout: true,
-              tabSize: 2,
-            }}
-          />
-        </Card>
+        <SimpleJsonEditor
+          ref={textareaRef}
+          value={content}
+          onChange={(value) => { setContent(value); setDirty(true) }}
+          height="600px"
+          onValidationError={handleValidationError}
+        />
       </Spin>
     </div>
   )

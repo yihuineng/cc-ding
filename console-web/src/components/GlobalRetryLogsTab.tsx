@@ -123,7 +123,7 @@ export default function GlobalRetryLogsTab({ remoteUrl }: Props) {
           </div>
         </Card>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(420px, 1fr))', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(420px, 100%), 1fr))', gap: 12 }}>
           {entries.map(entry => (
             <Card key={entry.baseUrl} size="small" styles={{ body: { padding: '12px 16px' } }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>

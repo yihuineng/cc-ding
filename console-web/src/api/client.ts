@@ -162,6 +162,14 @@ export const api = {
       body: JSON.stringify(content),
     }),
 
+  getGlobalRawConfig: () => request<{ content: string }>('/api/global/raw-config'),
+
+  putGlobalRawConfig: (content: string) =>
+    request('/api/global/raw-config', {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    }),
+
   // ── Remote Global Config ──
   getRemoteGlobalConfig: (url: string) =>
     request<IGlobalConfig>(`/api/remote/global/config?url=${encodeURIComponent(url)}`),

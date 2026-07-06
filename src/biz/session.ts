@@ -127,6 +127,7 @@ export function getClientConfig(self: DingClaude): IConfig {
   const appCfgFile = path.join(getClientDir(self), 'config.json');
   assert(fs.existsSync(appCfgFile), `Could not find client config file: ${appCfgFile}`);
   const cfg = fileUtil.getJSON(appCfgFile) as IConfig;
+  require('./api-key-manager').migrateApiKeyCfg(cfg);
   assert(cfg.clientSecret, 'config.json missing required field: clientSecret');
   assert(cfg.whiteUserList, 'config.json missing required field: whiteUserList');
   return cfg;
@@ -173,6 +174,8 @@ export function reloadClientConfig(self: DingClaude): { config: IConfig; configP
   } catch (err) {
     throw new Error(`配置文件 JSON 解析失败: ${err instanceof Error ? err.message : String(err)}`);
   }
+  // 迁移旧版字段名
+  require('./api-key-manager').migrateApiKeyCfg(cfg);
   // 验证必填字段
   const missing: string[] = [];
   if (!cfg.clientSecret) missing.push('clientSecret');
@@ -1188,11 +1191,17 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         senderStaffId,
       });
     } catch (err) {
-      // 恢复会话失败（可能会话已失效），清除 agentSessionId 重新发起一次
+      // 恢复会话失败（可能会话已失效），生成新 agentSessionId 重新发起一次
       if (activeSession.session.agentSessionId) {
-        console.log(`[会话恢复失败] 清除 agentSessionId 并重新发起: ${activeSession.session.agentSessionId}`);
-        activeSession.session.agentSessionId = undefined;
-        self.updateSessionFile(activeSession.session, {});
+        const oldId = activeSession.session.agentSessionId;
+        const newId = crypto.randomUUID();
+        console.log(`[会话恢复失败] 重新生成 agentSessionId: ${oldId} -> ${newId}`);
+        activeSession.session.agentSessionId = newId;
+        // 创建新的会话目录
+        const newSessionDir = getSessionDir(self, activeSession.session);
+        fs.mkdirSync(newSessionDir, { recursive: true });
+        fs.writeFileSync(`${newSessionDir}/session.json`, JSON.stringify(activeSession.session, null, 2), 'utf-8');
+        saveActiveSession(self, conversationId);
         try {
           ensureAgent(activeSession);
           const agent = activeSession.agent!;
