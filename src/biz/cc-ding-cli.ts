@@ -261,10 +261,15 @@ export class DingClaude {
 
   /**
    * 获取有效的 apiKeyCfg：client 维度优先，fallback 到全局维度
-   * client config.json 中的 apiKeyCfg 完全覆盖全局 config.json 中的配置
+   * 仅当 client 配置了有效的 apiKeyCfg（有 modelSettings）时才使用 client 配置
+   * 否则 fallback 到全局配置
    */
   getApiKeyCfg = (): IConfig['apiKeyCfg'] | undefined => {
-    if (this.config.apiKeyCfg) return this.config.apiKeyCfg;
+    // 仅当 client 有实际配置的 keys 时才使用 client 配置
+    if (this.config.apiKeyCfg?.modelSettings?.length) {
+      return this.config.apiKeyCfg;
+    }
+    // fallback 到全局配置
     const globalCfg = getGlobalConfig() as any;
     return globalCfg?.apiKeyCfg;
   };

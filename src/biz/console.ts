@@ -185,7 +185,11 @@ function getGlobalConfig(): IGlobalConfigFile {
 
 /** 获取有效的 apiKeyCfg：client 维度优先，fallback 到全局维度 */
 function getEffectiveApiKeyCfg(clientConfig: IConfig | null): any {
-  if (clientConfig?.apiKeyCfg) return clientConfig.apiKeyCfg;
+  // 仅当 client 有实际配置的 keys 时才使用 client 配置
+  if (clientConfig?.apiKeyCfg?.modelSettings?.length) {
+    return clientConfig.apiKeyCfg;
+  }
+  // fallback 到全局配置
   try {
     const globalRaw = fs.existsSync(GLOBAL_CONFIG_PATH)
       ? JSON.parse(fs.readFileSync(GLOBAL_CONFIG_PATH, 'utf-8'))
@@ -600,8 +604,8 @@ async function handleGetClients(req: http.IncomingMessage, res: http.ServerRespo
         freedomMode: !!conv.freedomMode,
         streaming: !!conv.streaming,
       })),
-      apiKeyCount: getEffectiveApiKeyCfg(config)?.modelSettings?.length || 0,
-      apiKeysValid: (getEffectiveApiKeyCfg(config)?.modelSettings || []).filter((s: any) => s.isValid).length,
+      apiKeyCount: config?.apiKeyCfg?.modelSettings?.length || 0,
+      apiKeysValid: (config?.apiKeyCfg?.modelSettings || []).filter((s: any) => s.isValid).length,
     };
   });
 

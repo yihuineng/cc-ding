@@ -20,7 +20,7 @@ export default function ClientCard({ client }: Props) {
         <div style={{ marginTop: 8, fontSize: 12, color: '#999', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
           {client.pid != null && <span>🆔 PID: {client.pid}</span>}
           <span>💬 {client.conversationCount} 会话</span>
-          <span>🔑 {client.apiKeysValid}/{client.apiKeyCount} Key</span>
+          <span>🔑 {client.apiKeyCount > 0 ? `${client.apiKeysValid}/${client.apiKeyCount} Key` : '全局'}</span>
         </div>
       </Card>
     </Link>

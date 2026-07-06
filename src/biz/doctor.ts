@@ -156,7 +156,9 @@ export function runDoctor(clientDir: string): CheckResult[] {
   }
 
   // ---- 3. apiKeyCfg 检查（client 维度优先，fallback 全局维度） ----
-  const effectiveApiKeyCfg = config.apiKeyCfg || (getGlobalConfig() as any)?.apiKeyCfg;
+  const effectiveApiKeyCfg = config.apiKeyCfg?.modelSettings?.length
+    ? config.apiKeyCfg
+    : (getGlobalConfig() as any)?.apiKeyCfg;
   if (effectiveApiKeyCfg) {
     const cfg = effectiveApiKeyCfg;
     if (cfg.resetTime) {

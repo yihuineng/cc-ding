@@ -8,6 +8,22 @@ import { resolveSecret, isEnvRef } from './secrets';
 import { commandExists, isWindows } from './platform';
 
 /**
+ * 迁移 apiKeyCfg：兼容旧版 claudeSettings 字段名，确保 modelSettings 始终为数组
+ */
+export function migrateApiKeyCfg(cfg: any): void {
+  if (!cfg.apiKeyCfg) return;
+  if (!Array.isArray(cfg.apiKeyCfg.modelSettings)) {
+    if (Array.isArray((cfg.apiKeyCfg as any).claudeSettings)) {
+      console.log('[migrateApiKeyCfg] 检测到旧字段名 claudeSettings，自动迁移为 modelSettings');
+      cfg.apiKeyCfg.modelSettings = (cfg.apiKeyCfg as any).claudeSettings;
+      delete (cfg.apiKeyCfg as any).claudeSettings;
+    } else {
+      cfg.apiKeyCfg.modelSettings = [];
+    }
+  }
+}
+
+/**
  * 保存 config.json 到磁盘
  */
 export function saveClientConfig(self: DingClaude): void {
@@ -27,8 +43,7 @@ export function saveClientConfig(self: DingClaude): void {
  */
 export function resetApiKeyCfg(self: DingClaude): void {
   const cfg = self.config.apiKeyCfg;
-  if (!cfg) return;
-
+  if (!cfg?.modelSettings?.length) return;
   const now = new Date();
   cfg.resetTime = dateUtil.mm(now.getTime()).format('YYYY-MM-DD HH:mm:ss');
   let resetCount = 0;
@@ -67,7 +82,7 @@ function findSettingLabel(settings: IClaudeSetting[], apiKey: string): string {
  */
 export function rotateApiKey(self: DingClaude, usedKey: string): IClaudeSetting | null {
   const cfg = self.getApiKeyCfg();
-  if (!cfg) return null;
+  if (!cfg?.modelSettings?.length) return null;
 
   const resolvedUsedKey = resolveSecret(usedKey);
   const candidates = cfg.modelSettings.filter(s => s.isValid && resolveSecret(s.apiKey) !== resolvedUsedKey);
@@ -85,7 +100,7 @@ export function rotateApiKey(self: DingClaude, usedKey: string): IClaudeSetting 
  */
 export function pickValidApiKey(self: DingClaude, excludeApiKey?: string): IClaudeSetting | null {
   const cfg = self.getApiKeyCfg();
-  if (!cfg) return null;
+  if (!cfg?.modelSettings?.length) return null;
   const resolvedExclude = excludeApiKey ? resolveSecret(excludeApiKey) : undefined;
   const validSettings = cfg.modelSettings.filter(s => s.isValid && (!resolvedExclude || resolveSecret(s.apiKey) !== resolvedExclude));
   if (validSettings.length === 0) return null;
@@ -302,7 +317,9 @@ export function startupCheck(self: DingClaude): void {
     } catch { /* ignore */ }
   }
   // $ENV: 引用可解析性检查（apiKeyCfg 支持全局 + client 维度，client 优先）
-  const effectiveApiKeyCfg = config.apiKeyCfg || (getGlobalConfig() as any)?.apiKeyCfg;
+  const effectiveApiKeyCfg = config.apiKeyCfg?.modelSettings?.length
+    ? config.apiKeyCfg
+    : (getGlobalConfig() as any)?.apiKeyCfg;
   const envRefChecks: { value?: string; label: string }[] = [
     { value: config.clientSecret, label: 'clientSecret' },
     { value: config.defaultDingToken, label: 'defaultDingToken' },
