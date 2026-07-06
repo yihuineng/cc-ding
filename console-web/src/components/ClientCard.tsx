@@ -1,5 +1,4 @@
-import { Card, Tag, Button, Space, Tooltip } from 'antd'
-import { StopOutlined } from '@ant-design/icons'
+import { Card, Tag } from 'antd'
 import { Link } from 'react-router-dom'
 import { IClient } from '../types'
 
@@ -16,12 +15,7 @@ export default function ClientCard({ client }: Props) {
             <div style={{ fontWeight: 600 }}>{client.clientName || client.clientId}</div>
             <div style={{ fontSize: 12, color: '#666' }}>{client.clientId}</div>
           </div>
-          <Space>
-            <Tag color={client.online ? 'green' : 'default'}>{client.online ? '在线' : '离线'}</Tag>
-            <Tooltip title="停止">
-              <Button size="small" danger icon={<StopOutlined />} onClick={(e) => e.stopPropagation()} />
-            </Tooltip>
-          </Space>
+          <Tag color={client.online ? 'green' : 'default'}>{client.online ? '在线' : '离线'}</Tag>
         </div>
         <div style={{ marginTop: 8, fontSize: 12, color: '#999', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
           {client.pid != null && <span>🆔 PID: {client.pid}</span>}
