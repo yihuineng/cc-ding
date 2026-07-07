@@ -263,14 +263,20 @@ export class DingClaude {
    * 获取有效的 apiKeyCfg：client 维度优先，fallback 到全局维度
    * 仅当 client 配置了有效的 apiKeyCfg（有 modelSettings）时才使用 client 配置
    * 否则 fallback 到全局配置
+   * 注意：retryLogs 始终从全局配置获取，因为它是机器级别的配置
    */
   getApiKeyCfg = (): IConfig['apiKeyCfg'] | undefined => {
+    const globalCfg = getGlobalConfig() as any;
+
     // 仅当 client 有实际配置的 keys 时才使用 client 配置
     if (this.config.apiKeyCfg?.modelSettings?.length) {
-      return this.config.apiKeyCfg;
+      // 合并全局的 retryLogs 到 client 配置
+      return {
+        ...this.config.apiKeyCfg,
+        retryLogs: globalCfg?.apiKeyCfg?.retryLogs || this.config.apiKeyCfg.retryLogs,
+      };
     }
     // fallback 到全局配置
-    const globalCfg = getGlobalConfig() as any;
     return globalCfg?.apiKeyCfg;
   };
 

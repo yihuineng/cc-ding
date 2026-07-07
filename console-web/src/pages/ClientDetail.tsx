@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Tabs, Button, Space, Tag, message, Popconfirm } from 'antd'
-import { ArrowLeftOutlined, StopOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons'
+import { Tabs, Button, Space, Tag, message, Dropdown, Popconfirm } from 'antd'
+import { ArrowLeftOutlined, StopOutlined, ReloadOutlined, SyncOutlined, DownOutlined, MoreOutlined } from '@ant-design/icons'
+import type { MenuProps } from 'antd'
 import { api } from '../api/client'
 import { IConfig } from '../types'
 import ConfigTab from '../components/ConfigTab'
@@ -71,32 +72,65 @@ export default function ClientDetail() {
     }
   }
 
+  const menuItems: MenuProps['items'] = [
+    {
+      key: 'reload',
+      icon: <SyncOutlined />,
+      label: '重载配置',
+      onClick: handleReloadConfig,
+    },
+    {
+      key: 'restart',
+      icon: <ReloadOutlined />,
+      label: '重启',
+      onClick: () => {
+        Popconfirm.confirm({
+          title: '确定重启此客户端?',
+          onOk: handleRestart,
+        })
+      },
+    },
+    {
+      key: 'stop',
+      icon: <StopOutlined />,
+      label: '停止',
+      danger: true,
+      onClick: () => {
+        Popconfirm.confirm({
+          title: '确定停止此客户端?',
+          onOk: handleStop,
+        })
+      },
+    },
+  ]
+
   if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
   if (!config) return <div style={{ padding: 24 }}>配置加载失败</div>
 
   return (
     <div className="page-container">
-      <div className="page-header">
-        <Space wrap>
+      <div className="client-detail-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 8 }}>
+        <div style={{ flex: '0 0 auto' }}>
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回</Button>
+        </div>
+        <div style={{ flex: '1 1 auto', textAlign: 'center', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8 }}>
           <span style={{ fontWeight: 600, fontSize: 16 }}>{config.clientName || clientId}</span>
           <Tag color="green">在线</Tag>
-        </Space>
-        <Space>
-          <Button icon={<SyncOutlined />} onClick={handleReloadConfig} loading={actionLoading}>重载配置</Button>
-          <Popconfirm title="确定停止此客户端?" onConfirm={handleStop}>
-            <Button danger icon={<StopOutlined />} loading={actionLoading}>停止</Button>
-          </Popconfirm>
-          <Popconfirm title="确定重启此客户端?" onConfirm={handleRestart}>
-            <Button icon={<ReloadOutlined />} loading={actionLoading}>重启</Button>
-          </Popconfirm>
-        </Space>
+        </div>
+        <div style={{ flex: '0 0 auto' }}>
+          <Dropdown menu={{ items: menuItems }} trigger={['click']}>
+            <Button icon={<MoreOutlined />} loading={actionLoading}>
+              操作 <DownOutlined />
+            </Button>
+          </Dropdown>
+        </div>
       </div>
 
-      <Tabs
-        activeKey={tab || 'config'}
-        onChange={key => navigate(`/client/${clientId}/${key}`, { replace: true })}
-        items={[
+      <div>
+        <Tabs
+          activeKey={tab || 'config'}
+          onChange={key => navigate(`/client/${clientId}/${key}`, { replace: true })}
+          items={[
           { key: 'config', label: '⚙️ 配置', children: <ConfigTab clientId={clientId!} config={config} /> },
           {
             key: 'conversations',
@@ -119,6 +153,7 @@ export default function ClientDetail() {
           { key: 'raw', label: '📝 原始JSON', children: <RawTab clientId={clientId!} /> },
         ]}
       />
+      </div>
     </div>
   )
 }

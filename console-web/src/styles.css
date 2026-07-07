@@ -70,6 +70,11 @@
   }
 }
 
+/* Tabs content spacing */
+.ant-tabs-content-holder {
+  padding-top: 16px;
+}
+
 /* ── Global ── */
 * {
   box-sizing: border-box;

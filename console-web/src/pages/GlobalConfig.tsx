@@ -366,9 +366,14 @@ export default function GlobalConfig() {
 
   return (
     <div className="page-container" style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
-      <div className="page-header" style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回</Button>
-        <span style={{ fontSize: 16, fontWeight: 600 }}>🌐 全局配置</span>
+      <div className="client-detail-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, gap: 8 }}>
+        <div style={{ flex: '0 0 auto' }}>
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/')}>返回</Button>
+        </div>
+        <div style={{ flex: '1 1 auto', textAlign: 'center' }}>
+          <span style={{ fontSize: 16, fontWeight: 600 }}>🌐 全局配置</span>
+        </div>
+        <div style={{ flex: '0 0 auto' }}></div>
       </div>
 
       <Tabs defaultActiveKey="console" items={[
