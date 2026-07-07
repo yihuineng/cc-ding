@@ -2832,18 +2832,18 @@ export class DingClaude {
       route('/!', () => parseInterruptCommand(prompt), async (parsed) => {
         const found = this.findActiveSession(conversationId);
         if (!found) {
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: '⚠️ 当前没有活跃会话',
-          });
+          await sendAckConfirmation(
+            this, conversationId, sessionWebhook, conversationConfig, msgId,
+            '⚠️ 当前没有活跃会话',
+          );
           return;
         }
         const activeSession = found.session;
         if (!activeSession.currentProcess) {
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: 'ℹ️ 当前没有正在执行的任务',
-          });
+          await sendAckConfirmation(
+            this, conversationId, sessionWebhook, conversationConfig, msgId,
+            'ℹ️ 当前没有正在执行的任务',
+          );
           return;
         }
 
@@ -2853,18 +2853,18 @@ export class DingClaude {
         // 中断后原调用栈中的 agent.executeQuery 会结束，finally 释放 isProcessing 并自动 drain 消息队列
         activeSession.agent?.interrupt(activeSession, `/!: ${senderNick} 中断当前任务`);
         const queued = activeSession.messageQueue?.length ?? 0;
-        await this.sendDingMessage({
-          conversationId, sessionWebhook,
-          content: queued > 0
+        await sendAckConfirmation(
+          this, conversationId, sessionWebhook, conversationConfig, msgId,
+          queued > 0
             ? ` 已中断当前任务，开始处理队列中的 ${queued} 条消息`
             : ' 已中断当前任务',
-        });
+        );
 
         // 如果 ! 后有内容，作为新消息发送
         if (contentAfter) {
           await this.handleSessionMessage({
             conversationId, sessionWebhook, senderStaffId, senderNick,
-            message: contentAfter, conversationConfig,
+            message: contentAfter, conversationConfig, msgId,
           });
         }
       }),

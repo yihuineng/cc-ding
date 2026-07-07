@@ -1252,10 +1252,12 @@ export async function executeClaudeQuery(
         continue;
       }
       // retryLogs 关键词匹配：按 baseUrl 查找可重试报错关键词，随机间隔 1-2 分钟后发送"继续"重试
-      const errWithOutput = err as Error & { combinedOutput?: string };
+      const errWithOutput = err as Error & { combinedOutput?: string; output?: string };
       const retryLogs = currentSetting ? apiKeyCfg?.retryLogs?.[currentSetting.baseUrl] : undefined;
-      if (retryLogs?.length && errWithOutput.combinedOutput) {
-        const matched = retryLogs.find(kw => errWithOutput.combinedOutput!.includes(kw));
+      // RetryableApiError 使用 output 属性，exit error 使用 combinedOutput 属性
+      const errorOutput = errWithOutput.combinedOutput || errWithOutput.output || '';
+      if (retryLogs?.length && errorOutput) {
+        const matched = retryLogs.find(kw => errorOutput.includes(kw));
         if (matched) {
           totalRetries++; retryStartTime = retryStartTime || Date.now();
           // 随机间隔 60-120 秒，避免被识别为程序行为
