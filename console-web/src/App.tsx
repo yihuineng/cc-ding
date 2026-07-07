@@ -5,6 +5,7 @@ import Login from './pages/Login'
 import Clients from './pages/Clients'
 import ClientDetail from './pages/ClientDetail'
 import GlobalConfig from './pages/GlobalConfig'
+import RemoteGlobalConfig from './pages/RemoteGlobalConfig'
 
 const darkTheme = {
   algorithm: theme.darkAlgorithm,
@@ -37,6 +38,8 @@ function App() {
           <Route path="/client/:clientId/:tab" element={<ClientDetail />} />
           <Route path="/global" element={<GlobalConfig />} />
           <Route path="/global/:tab" element={<GlobalConfig />} />
+          <Route path="/remote-global/:remoteUrl" element={<RemoteGlobalConfig />} />
+          <Route path="/remote-global/:remoteUrl/:tab" element={<RemoteGlobalConfig />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

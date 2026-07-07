@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Button, Space, Tag, Typography, Row, Col, Card, message,
-  Dropdown, Modal, Form, Input, Popconfirm, Tabs,
+  Dropdown, Modal, Form, Input, Popconfirm,
 } from 'antd'
 import type { MenuProps } from 'antd'
 import {
@@ -12,10 +12,6 @@ import {
 import { api } from '../api/client'
 import { IClient, IStatus, IRemoteConsole } from '../types'
 import ClientCard from '../components/ClientCard'
-import ConsoleConfigTab from '../components/ConsoleConfigTab'
-import SettingsTplTab from '../components/SettingsTplTab'
-import GlobalKeysTab from '../components/GlobalKeysTab'
-import GlobalRetryLogsTab from '../components/GlobalRetryLogsTab'
 import { homeCache } from '../utils/cache'
 
 export default function Clients() {
@@ -32,11 +28,6 @@ export default function Clients() {
   const [createForm] = Form.useForm()
   const [createLoading, setCreateLoading] = useState(false)
   const [createTarget, setCreateTarget] = useState<string>('local')
-
-  // Remote config modal
-  const [remoteConfigUrl, setRemoteConfigUrl] = useState<string | null>(null)
-  const [remoteConfigModalOpen, setRemoteConfigModalOpen] = useState(false)
-  const [remoteConfigTab, setRemoteConfigTab] = useState('console')
 
   const loadData = async (forceRefresh = false) => {
     // Try cache first
@@ -360,7 +351,7 @@ export default function Clients() {
                     机器操作 <DownOutlined />
                   </Button>
                 </Dropdown>
-                <Button size="small" icon={<SettingOutlined />} onClick={() => { setRemoteConfigUrl(url); setRemoteConfigTab('console'); setRemoteConfigModalOpen(true) }}>全局配置</Button>
+                <Button size="small" icon={<SettingOutlined />} onClick={() => navigate(`/remote-global/${encodeURIComponent(url)}`)}>全局配置</Button>
                 <Button
                   type="primary"
                   size="small"
@@ -438,42 +429,6 @@ export default function Clients() {
         </Form>
       </Modal>
 
-      {/* Remote Config Modal */}
-      <Modal
-        title={`管理全局配置 — ${remoteConsoles.find(rc => rc.url === remoteConfigUrl)?.hostname || remoteConfigUrl}`}
-        open={remoteConfigModalOpen}
-        onCancel={() => { setRemoteConfigModalOpen(false); setRemoteConfigUrl(null) }}
-        footer={null}
-        width={900}
-        style={{ top: 20 }}
-      >
-        <Tabs
-          activeKey={remoteConfigTab}
-          onChange={setRemoteConfigTab}
-          items={[
-            {
-              key: 'console',
-              label: '️ Console 配置',
-              children: <ConsoleConfigTab remoteUrl={remoteConfigUrl || undefined} />,
-            },
-            {
-              key: 'settings',
-              label: '📝 settings-tpl',
-              children: <SettingsTplTab remoteUrl={remoteConfigUrl || undefined} />,
-            },
-            {
-              key: 'apikeys',
-              label: '🔑 API Keys',
-              children: <GlobalKeysTab remoteUrl={remoteConfigUrl || undefined} />,
-            },
-            {
-              key: 'retrylogs',
-              label: '🔄 重试日志',
-              children: <GlobalRetryLogsTab remoteUrl={remoteConfigUrl || undefined} />,
-            },
-          ]}
-        />
-      </Modal>
     </div>
   )
 }
