@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Tabs, Form, Input, InputNumber, Button, Card, Space, Popconfirm, message, Spin, Tag, Collapse, Progress, Modal, Tooltip } from 'antd'
-import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, DownOutlined, ScanOutlined, CodeOutlined, FileTextOutlined, FormatPainterOutlined, SelectOutlined, CopyOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, DownOutlined, ScanOutlined, CodeOutlined, FileTextOutlined, FormatPainterOutlined, SelectOutlined, CopyOutlined, SyncOutlined } from '@ant-design/icons'
 import SimpleJsonEditor from '../components/SimpleJsonEditor'
 import { api } from '../api/client'
 import { IGlobalConfig, IRemoteConsole } from '../types'
@@ -111,6 +111,50 @@ export default function GlobalConfig() {
       message.success('远程 Console 已删除')
     } catch (e: any) {
       message.error(e.message || '删除失败')
+    }
+  }
+
+  const handleSyncToAllRemotes = async () => {
+    if (!remoteConsoles.length) return
+    const loadingMsg = message.loading({ content: '正在同步配置到远程 Console...', duration: 0 })
+    let successCount = 0
+    let failCount = 0
+    const results: string[] = []
+
+    try {
+      for (const rc of remoteConsoles) {
+        try {
+          // Get current remote config first
+          const remoteData = await api.getRemoteGlobalConfig(rc.url)
+          const remoteConfig = remoteData.config?.console || remoteData.config || {}
+
+          // Merge local config into remote (keep remote's auth settings)
+          const mergedConfig = {
+            ...remoteConfig,
+            port: config?.console?.port,
+            host: config?.console?.host,
+            updatePkgUrl: (config as any)?.updatePkgUrl,
+            apiKeyCfg: (config as any)?.apiKeyCfg,
+          }
+
+          await api.putRemoteGlobalConfig(rc.url, mergedConfig)
+          successCount++
+          results.push(`✓ ${rc.hostname || rc.url}`)
+        } catch (e: any) {
+          failCount++
+          results.push(`✗ ${rc.hostname || rc.url}: ${e.message}`)
+        }
+      }
+
+      loadingMsg()
+      if (failCount === 0) {
+        message.success(`同步完成！${successCount} 个远程 Console 配置已更新`)
+      } else {
+        message.warning(`同步完成！成功 ${successCount} 个，失败 ${failCount} 个`)
+      }
+    } catch (e: any) {
+      loadingMsg()
+      message.error(e.message || '同步失败')
     }
   }
 
@@ -427,7 +471,16 @@ export default function GlobalConfig() {
           label: '🌐 远程 Console',
           children: (
             <div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16, gap: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16, gap: 8, flexWrap: 'wrap' }}>
+                <Popconfirm
+                  title="确定将本地配置同步到所有远程 Console?"
+                  description="这将覆盖所有远程 Console 的当前配置"
+                  onConfirm={handleSyncToAllRemotes}
+                  okText="确定"
+                  cancelText="取消"
+                >
+                  <Button icon={<SyncOutlined />} disabled={remoteConsoles.length === 0}>同步到所有远程</Button>
+                </Popconfirm>
                 <Button icon={<ScanOutlined />} onClick={() => { setScanModalOpen(true); setDiscoveredConsoles([]); setScanProgress(0); scanForm.resetFields() }}>扫描局域网</Button>
                 <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddModalOpen(true)}>添加远程 Console</Button>
               </div>

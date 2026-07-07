@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Tabs, Button, Card, message } from 'antd'
-import { ArrowLeftOutlined } from '@ant-design/icons'
+import { Tabs, Button, Card, Form, Input, Space, message } from 'antd'
+import { ArrowLeftOutlined, SaveOutlined } from '@ant-design/icons'
+import { api } from '../api/client'
 import SettingsTplTab from '../components/SettingsTplTab'
 import GlobalKeysTab from '../components/GlobalKeysTab'
 import GlobalRetryLogsTab from '../components/GlobalRetryLogsTab'
@@ -19,17 +20,47 @@ export default function RemoteGlobalConfig() {
   useEffect(() => {
     // Fetch remote console info to get hostname
     if (remoteUrl) {
+      console.log('[RemoteGlobalConfig] Fetching hostname for:', remoteUrl)
       // Try to get from global config
+      const token = localStorage.getItem('ccding_token')
       fetch('/api/global/config', {
-        headers: { 'Authorization': localStorage.getItem('token') || '' }
+        headers: { 'Authorization': token ? `Bearer ${token}` : '' }
       })
-        .then(res => res.json())
-        .then((data: any) => {
-          const consoles: IRemoteConsole[] = data.config?.console?.remoteConsoles || data.config?.remoteConsoles || []
-          const rc = consoles.find(c => c.url === remoteUrl)
-          if (rc) setHostname(rc.hostname || remoteUrl)
+        .then(res => {
+          console.log('[RemoteGlobalConfig] Response status:', res.status)
+          return res.json()
         })
-        .catch(() => setHostname(remoteUrl))
+        .then((data: any) => {
+          console.log('[RemoteGlobalConfig] Response data:', data)
+          const consoles: IRemoteConsole[] = data.config?.console?.remoteConsoles || data.config?.remoteConsoles || []
+          console.log('[RemoteGlobalConfig] Consoles:', consoles)
+          // Normalize URLs for comparison (remove trailing slashes)
+          const normalizedRemoteUrl = remoteUrl.replace(/\/$/, '')
+          const rc = consoles.find(c => c.url.replace(/\/$/, '') === normalizedRemoteUrl)
+          console.log('[RemoteGlobalConfig] Found console:', rc)
+          if (rc && rc.hostname) {
+            console.log('[RemoteGlobalConfig] Setting hostname:', rc.hostname)
+            setHostname(rc.hostname)
+          } else {
+            // Extract IP from URL for cleaner display
+            try {
+              const url = new URL(remoteUrl)
+              setHostname(url.hostname)
+            } catch {
+              setHostname(remoteUrl)
+            }
+          }
+        })
+        .catch((err) => {
+          console.error('[RemoteGlobalConfig] Fetch error:', err)
+          // Fallback: extract IP from URL
+          try {
+            const url = new URL(remoteUrl)
+            setHostname(url.hostname)
+          } catch {
+            setHostname(remoteUrl)
+          }
+        })
     }
   }, [remoteUrl])
 
@@ -75,14 +106,14 @@ export default function RemoteGlobalConfig() {
   )
 }
 
-/** 远程 Console 配置 Tab（简化版，只显示基本信息） */
+/** 远程 Console 配置 Tab */
 function RemoteConsoleConfigTab({ remoteUrl }: { remoteUrl: string }) {
   const [config, setConfig] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (!remoteUrl) return
-    const api = require('../api/client').api
     api.getRemoteGlobalConfig(remoteUrl)
       .then((data: any) => {
         setConfig(data.config?.console || data.config || {})
@@ -91,22 +122,54 @@ function RemoteConsoleConfigTab({ remoteUrl }: { remoteUrl: string }) {
       .finally(() => setLoading(false))
   }, [remoteUrl])
 
+  const handleSaveUpdatePkgUrl = async (value: string) => {
+    setSaving(true)
+    try {
+      await api.putRemoteGlobalConfig(remoteUrl, { ...config, updatePkgUrl: value || undefined })
+      message.success('更新包地址已保存')
+    } catch (e: any) {
+      message.error(e.message || '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
   if (!config) return <div style={{ padding: 24 }}>配置加载失败</div>
 
   return (
     <div>
-      <div style={{ marginBottom: 16, fontSize: 13, color: '#999' }}>
-        远程 Console 基本配置信息
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
-        <Card size="small" title="端口">
-          <div style={{ fontSize: 18, fontWeight: 600 }}>{config.port || '-'}</div>
-        </Card>
-        <Card size="small" title="Host">
-          <div style={{ fontSize: 18, fontWeight: 600 }}>{config.host || '-'}</div>
-        </Card>
-      </div>
+      {/* 服务配置 */}
+      <Card title="服务配置" style={{ marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>端口</div>
+            <div style={{ fontSize: 18, fontWeight: 600 }}>{config.port || '-'}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>Host</div>
+            <div style={{ fontSize: 18, fontWeight: 600 }}>{config.host || '-'}</div>
+          </div>
+        </div>
+      </Card>
+
+      {/* 更新配置 */}
+      <Card title="更新配置">
+        <Form layout="vertical">
+          <Form.Item label="更新包下载地址 (updatePkgUrl)">
+            <Input
+              placeholder="http://192.168.3.2:39000/cc-ding/releases/cc-ding-latest.tgz"
+              defaultValue={(config as any)?.updatePkgUrl || ''}
+              style={{ maxWidth: 600 }}
+              onBlur={(e) => handleSaveUpdatePkgUrl(e.target.value.trim())}
+              onPressEnter={(e) => handleSaveUpdatePkgUrl((e.target as HTMLInputElement).value.trim())}
+            />
+          </Form.Item>
+          <div style={{ fontSize: 12, color: '#999' }}>
+            远程客户端执行 <code>/reboot --update</code> 时优先从此地址下载安装包
+          </div>
+        </Form>
+      </Card>
     </div>
   )
 }
