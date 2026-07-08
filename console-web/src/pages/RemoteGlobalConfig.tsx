@@ -82,7 +82,7 @@ export default function RemoteGlobalConfig() {
         items={[
           {
             key: 'console',
-            label: '⚙️ Console 配置',
+            label: '⚙️ 基础配置',
             children: <RemoteConsoleConfigTab remoteUrl={remoteUrl || ''} />,
           },
           {

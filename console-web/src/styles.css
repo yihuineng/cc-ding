@@ -360,3 +360,16 @@ code {
     font-size: 12px;
   }
 }
+
+/* ── Mobile: Prevent zoom on input focus ── */
+@media (max-width: 768px) {
+  /* iOS Safari auto-zooms when input font-size < 16px */
+  input, textarea, select {
+    font-size: 16px !important;
+  }
+
+  /* Prevent double-tap zoom */
+  * {
+    touch-action: manipulation;
+  }
+}

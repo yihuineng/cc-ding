@@ -3044,6 +3044,20 @@ export class ConsoleServer {
           return;
         }
 
+        // Serve apple-touch-icon and other root-level static files
+        if (pathname.match(/^\/(apple-touch-icon|favicon).*\.png$/)) {
+          const consoleWebDist = getConsoleWebDist();
+          const filePath = path.join(consoleWebDist, pathname);
+          if (fs.existsSync(filePath)) {
+            res.writeHead(200, {
+              'Content-Type': 'image/png',
+              'Cache-Control': 'public, max-age=86400',
+            });
+            fs.createReadStream(filePath).pipe(res);
+            return;
+          }
+        }
+
         // API 请求
         if (pathname.startsWith('/api/')) {
           await handleApiRequest(req, res, pathname, query);

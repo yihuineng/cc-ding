@@ -57,6 +57,7 @@ export default function GlobalConfig() {
   const [rawErrors, setRawErrors] = useState<string[]>([])
   const rawTextareaRef = useRef<HTMLTextAreaElement>(null)
   const [typeDefModalOpen, setTypeDefModalOpen] = useState(false)
+  const [updatePkgUrl, setUpdatePkgUrl] = useState<string>('')
 
   useEffect(() => {
     api.getGlobalConfig()
@@ -64,6 +65,7 @@ export default function GlobalConfig() {
         const configData = data.config?.console || data.config || data
         setConfig(configData)
         form.setFieldsValue(configData)
+        setUpdatePkgUrl((data as any)?.updatePkgUrl || '')
       })
       .catch(e => message.error(e.message))
       .finally(() => setLoading(false))
@@ -423,7 +425,7 @@ export default function GlobalConfig() {
       <Tabs defaultActiveKey="console" items={[
         {
           key: 'console',
-          label: '️ Console 配置',
+          label: '⚙️ 基础配置',
           children: (
             <div>
               <Card title="服务配置" style={{ marginBottom: 16 }}>
@@ -438,7 +440,8 @@ export default function GlobalConfig() {
                   <Form.Item label="更新包下载地址 (updatePkgUrl)">
                     <Input
                       placeholder="http://192.168.3.2:39000/cc-ding/releases/cc-ding-latest.tgz"
-                      defaultValue={(config as any)?.updatePkgUrl || ''}
+                      value={updatePkgUrl}
+                      onChange={(e) => setUpdatePkgUrl(e.target.value)}
                       style={{ maxWidth: 600 }}
                     />
                   </Form.Item>
@@ -446,8 +449,7 @@ export default function GlobalConfig() {
                     type="primary"
                     icon={<SaveOutlined />}
                     onClick={async () => {
-                      const input = (document.querySelector('input[placeholder*="cc-ding-latest.tgz"]') as HTMLInputElement);
-                      const value = input?.value.trim() || '';
+                      const value = updatePkgUrl.trim();
                       try {
                         await api.putGlobalConfig({ ...config, updatePkgUrl: value || undefined } as any);
                         message.success('更新包地址已保存');
@@ -720,7 +722,7 @@ export default function GlobalConfig() {
         },
         {
           key: 'raw',
-          label: '📝 原始 config.json',
+          label: '📝 原始JSON',
           children: (
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
