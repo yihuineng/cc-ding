@@ -80,7 +80,19 @@ interface IAuthToken {
 
 // ==================== 常量 ====================
 
-const FAVICON_PATH = path.join(__dirname, '..', '..', '..', 'favicon.ico');
+// Resolve favicon path (works from both src/ and dist/)
+const getFaviconPath = () => {
+  const candidates = [
+    path.join(__dirname, '..', '..', '..', 'console-web', 'public', 'favicon.ico'),
+    path.join(__dirname, '..', '..', 'console-web', 'public', 'favicon.ico'),
+    path.join(__dirname, '..', '..', '..', 'favicon.ico'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return candidates[0];
+};
+const FAVICON_PATH = getFaviconPath();
 const FAVICON_DATA = fs.existsSync(FAVICON_PATH) ? fs.readFileSync(FAVICON_PATH) : Buffer.alloc(0);
 const GLOBAL_CONFIG_PATH = path.join(getHomeDir(), '.cc-ding', 'config.json');
 const SETTINGS_TPL_PATH = path.join(getHomeDir(), '.cc-ding', 'settings-tpl.json');
