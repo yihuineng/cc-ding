@@ -1443,12 +1443,13 @@ async function handleGetGlobalConfig(req: http.IncomingMessage, res: http.Server
     const raw = fs.existsSync(GLOBAL_CONFIG_PATH)
       ? JSON.parse(fs.readFileSync(GLOBAL_CONFIG_PATH, 'utf-8'))
       : {};
-    // 返回完整配置：console + updatePkgUrl + apiKeyCfg
+    // 返回完整配置：console + updatePkgUrl + apiKeyCfg + a2aCfg
     const config: any = {
       console: raw.console,
       updatePkgUrl: raw.updatePkgUrl,
     };
     if (raw.apiKeyCfg) config.apiKeyCfg = raw.apiKeyCfg;
+    if (raw.a2aCfg) config.a2aCfg = raw.a2aCfg;
     jsonResponse(res, 200, { config });
   } catch (err) {
     jsonError(res, 500, '读取全局配置失败');
@@ -1468,14 +1469,17 @@ async function handlePutGlobalConfig(req: http.IncomingMessage, res: http.Server
       authUsers: data.authUsers,
       remoteConsoles: data.remoteConsoles,
     });
-    // 同时保存 apiKeyCfg（如果前端传了）
+    // 同时保存 apiKeyCfg 和 a2aCfg（如果前端传了）
+    const globalCfg = fs.existsSync(GLOBAL_CONFIG_PATH)
+      ? fileUtil.getJSON(GLOBAL_CONFIG_PATH) as any
+      : {};
     if (data.apiKeyCfg !== undefined) {
-      const globalCfg = fs.existsSync(GLOBAL_CONFIG_PATH)
-        ? fileUtil.getJSON(GLOBAL_CONFIG_PATH) as any
-        : {};
       globalCfg.apiKeyCfg = data.apiKeyCfg;
-      atomicWrite(GLOBAL_CONFIG_PATH, JSON.stringify(globalCfg, null, 2));
     }
+    if (data.a2aCfg !== undefined) {
+      globalCfg.a2aCfg = data.a2aCfg;
+    }
+    atomicWrite(GLOBAL_CONFIG_PATH, JSON.stringify(globalCfg, null, 2));
     jsonResponse(res, 200, { message: '全局配置已保存' });
   } catch (err) {
     jsonError(res, 400, '请求格式错误');

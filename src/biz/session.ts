@@ -258,6 +258,13 @@ export function isJobNumber(value: string): boolean {
   return !isMobile(value) && !value.includes('_') && value.length <= 15 && /^[A-Za-z0-9]+$/.test(value);
 }
 
+/** 判断是否为钉钉 userId 格式（如 manager1234、$:LWCP_v1:xxxxx 等） */
+export function isDingTalkId(value: string): boolean {
+  // 钉钉 userId 通常包含特殊字符（$:、_等）或是较长的字母数字组合
+  // 不是手机号，也不是工号
+  return !isMobile(value) && !isJobNumber(value) && value.length > 0;
+}
+
 export function getPhoneMapFile(self: DingClaude): string {
   return path.join(getClientDir(self), 'user-map.json');
 }
@@ -351,7 +358,7 @@ export async function resolveUserId(
   return userId;
 }
 
-/** 启动时批量解析 config 中的手机号/工号，填充到 self.resolvedPhones */
+/** 启动时批量解析 config 中的手机号/工号/钉钉号，填充到 self.resolvedPhones */
 export async function resolveAllPhonesInConfig(self: DingClaude): Promise<void> {
   self.resolvedPhones = loadPhoneMap(self);
   const newEntries: string[] = [];
@@ -363,6 +370,9 @@ export async function resolveAllPhonesInConfig(self: DingClaude): Promise<void> 
       userId = await queryUserIdByMobile(self, value);
     } else if (isJobNumber(value)) {
       userId = await queryUserIdByJobNumber(self, value);
+    } else if (isDingTalkId(value)) {
+      // 钉钉 userId 直接使用
+      userId = value;
     }
     if (userId) {
       self.resolvedPhones[value] = userId;
@@ -372,7 +382,7 @@ export async function resolveAllPhonesInConfig(self: DingClaude): Promise<void> 
 
   // 解析 owner（手机号或工号）
   if (self.config.owner) {
-    if (isMobile(self.config.owner) || isJobNumber(self.config.owner)) {
+    if (isMobile(self.config.owner) || isJobNumber(self.config.owner) || isDingTalkId(self.config.owner)) {
       await ensureResolved(self.config.owner);
       if (!self.resolvedPhones[self.config.owner]) {
         console.warn(`[WARN] 无法解析 owner: ${self.config.owner}`);
@@ -384,7 +394,7 @@ export async function resolveAllPhonesInConfig(self: DingClaude): Promise<void> 
 
   // 解析全局 whiteUserList
   for (const item of self.config.whiteUserList) {
-    if (isMobile(item) || isJobNumber(item)) {
+    if (isMobile(item) || isJobNumber(item) || isDingTalkId(item)) {
       await ensureResolved(item);
       if (!self.resolvedPhones[item]) {
         console.warn(`[WARN] 无法解析 whiteUserList: ${item}`);
@@ -396,7 +406,7 @@ export async function resolveAllPhonesInConfig(self: DingClaude): Promise<void> 
   for (const conv of self.config.conversations) {
     if (conv.whiteUserList) {
       for (const item of conv.whiteUserList) {
-        if (isMobile(item) || isJobNumber(item)) {
+        if (isMobile(item) || isJobNumber(item) || isDingTalkId(item)) {
           await ensureResolved(item);
           if (!self.resolvedPhones[item]) {
             console.warn(`[WARN] 无法解析群白名单: ${item}`);

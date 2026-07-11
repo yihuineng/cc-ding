@@ -1105,6 +1105,27 @@ export async function executeClaudeQuery(
       sessionDir = self.getSessionDir(session);
       sessionLog = `${sessionDir}/session.log`;
 
+      // retryLogs 关键词匹配：优先检查，匹配到则使用 retryLogs 重试策略（60-120s 延迟）
+      const errWithOutput = err as Error & { combinedOutput?: string; output?: string };
+      const retryLogs = currentSetting ? apiKeyCfg?.retryLogs?.[currentSetting.baseUrl] : undefined;
+      const errorOutput = errWithOutput.combinedOutput || errWithOutput.output || '';
+      if (retryLogs?.length && errorOutput) {
+        const matched = retryLogs.find(kw => errorOutput.includes(kw));
+        if (matched) {
+          totalRetries++; retryStartTime = retryStartTime || Date.now();
+          const delayMs = 60_000 + Math.floor(Math.random() * 60_000);
+          const delaySec = Math.round(delayMs / 1000);
+          retryHistory.push(`[${timestamp()}] retryLogs 匹配"${matched}"，${delaySec}s 后发送"继续"重试`);
+          console.log(`[${timestamp()}] retryLogs 匹配"${matched}"(${currentSetting.baseUrl})，${delaySec}s 后重试 (${totalRetries}/${MAX_TOTAL_RETRIES})`);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: retryLogs 匹配"${matched}"，${delaySec}s 后发送"继续"重试\n`, 'utf-8');
+          await sleep(delayMs);
+          if (!isSessionStillActive('停止 retryLogs 重试')) return;
+          consecutiveFastFail = 0;
+          retryLogRetry = true;
+          continue;
+        }
+      }
+
       if (err instanceof RetryableApiError) {
         totalRetries++; retryStartTime = retryStartTime || Date.now();
         // 配额耗尽 (429): 尝试切换/轮换 Key
@@ -1250,28 +1271,6 @@ export async function executeClaudeQuery(
         }
         consecutiveFastFail = 0;
         continue;
-      }
-      // retryLogs 关键词匹配：按 baseUrl 查找可重试报错关键词，随机间隔 1-2 分钟后发送"继续"重试
-      const errWithOutput = err as Error & { combinedOutput?: string; output?: string };
-      const retryLogs = currentSetting ? apiKeyCfg?.retryLogs?.[currentSetting.baseUrl] : undefined;
-      // RetryableApiError 使用 output 属性，exit error 使用 combinedOutput 属性
-      const errorOutput = errWithOutput.combinedOutput || errWithOutput.output || '';
-      if (retryLogs?.length && errorOutput) {
-        const matched = retryLogs.find(kw => errorOutput.includes(kw));
-        if (matched) {
-          totalRetries++; retryStartTime = retryStartTime || Date.now();
-          // 随机间隔 60-120 秒，避免被识别为程序行为
-          const delayMs = 60_000 + Math.floor(Math.random() * 60_000);
-          const delaySec = Math.round(delayMs / 1000);
-          retryHistory.push(`[${timestamp()}] retryLogs 匹配"${matched}"，${delaySec}s 后发送"继续"重试`);
-          console.log(`[${timestamp()}] retryLogs 匹配"${matched}"(${currentSetting.baseUrl})，${delaySec}s 后重试 (${totalRetries}/${MAX_TOTAL_RETRIES})`);
-          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: retryLogs 匹配"${matched}"，${delaySec}s 后发送"继续"重试\n`, 'utf-8');
-          await sleep(delayMs);
-          if (!isSessionStillActive('停止 retryLogs 重试')) return;
-          consecutiveFastFail = 0;
-          retryLogRetry = true;
-          continue;
-        }
       }
       throw err;
     }

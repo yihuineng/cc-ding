@@ -197,8 +197,8 @@ const COMMAND_REGISTRY: ICommandDef[] = [
   {
     name: '/reboot',
     description: '重启 cc-ding 应用（需 pm2 部署）',
-    usage: '/reboot [console|clients] [--update [tag]]',
-    examples: [ '/reboot', '/reboot console', '/reboot clients', '/reboot --update', '/reboot --update beta', '/reboot clients --update' ],
+    usage: '/reboot [console|clients|a2a] [--update [tag]]',
+    examples: [ '/reboot', '/reboot console', '/reboot clients', '/reboot a2a', '/reboot --update', '/reboot --update beta', '/reboot clients --update' ],
     category: '管理',
   },
   {
@@ -1172,9 +1172,10 @@ export function parseMenuCommand(text: string): MenuCommand | null {
  * - /reboot console      -> { target: 'console' }
  * - /reboot clients      -> { target: 'clients', update: false }
  * - /reboot clients --update -> { target: 'clients', update: true, tag: undefined }
+ * - /reboot a2a          -> { target: 'a2a' }
  */
 export interface IRebootCommand {
-  target: 'client' | 'console' | 'clients';
+  target: 'client' | 'console' | 'clients' | 'a2a';
   update: boolean;
   tag?: string;
 }
@@ -1188,6 +1189,9 @@ export function parseRebootCommand(text: string): IRebootCommand | null {
 
   // /reboot console
   if (/^console$/i.test(rest)) return { target: 'console', update: false };
+
+  // /reboot a2a
+  if (/^a2a$/i.test(rest)) return { target: 'a2a', update: false };
 
   // /reboot clients [--update [tag]]
   if (/^clients(?:\s|$)/i.test(rest)) {

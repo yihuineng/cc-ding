@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Tabs, Button, Space, Tag, message, Dropdown, Popconfirm } from 'antd'
+import { Tabs, Button, Space, Tag, message, Dropdown, Modal } from 'antd'
 import { ArrowLeftOutlined, StopOutlined, ReloadOutlined, SyncOutlined, DownOutlined, MoreOutlined } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
 import { api } from '../api/client'
@@ -84,7 +84,7 @@ export default function ClientDetail() {
       icon: <ReloadOutlined />,
       label: '重启',
       onClick: () => {
-        Popconfirm.confirm({
+        Modal.confirm({
           title: '确定重启此客户端?',
           onOk: handleRestart,
         })
@@ -96,7 +96,7 @@ export default function ClientDetail() {
       label: '停止',
       danger: true,
       onClick: () => {
-        Popconfirm.confirm({
+        Modal.confirm({
           title: '确定停止此客户端?',
           onOk: handleStop,
         })

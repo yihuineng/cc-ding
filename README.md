@@ -147,6 +147,13 @@ cc-ding console [--port 8080] [--host 0.0.0.0] [--open]
 | `--open` / `--browser` | 启动后自动打开浏览器 |
 | `--no-browser` | 禁止自动打开浏览器 |
 
+#### 端口约定
+
+| 服务 | 默认端口 | 环境变量 | 说明 |
+|------|----------|----------|------|
+| Console | 8080 | - | Web 管理界面 |
+| A2A Hub | 3002 | `A2A_HUB_PORT` | Agent-to-Agent 协调服务 |
+
 也可以通过聊天命令 `/open console` 在本地自动打开 Console 页面。
 
 #### 登录
@@ -398,6 +405,13 @@ cc-ding console [--port 8080] [--host 0.0.0.0] [--open]
 | `--host` | HTTP listen address (default 0.0.0.0) |
 | `--open` / `--browser` | Auto-open browser on start |
 | `--no-browser` | Disable auto-opening browser |
+
+#### Port Conventions
+
+| Service | Default Port | Env Variable | Description |
+|---------|--------------|--------------|-------------|
+| Console | 8080 | - | Web management interface |
+| A2A Hub | 3002 | `A2A_HUB_PORT` | Agent-to-Agent coordination service |
 
 You can also use the chat command `/open console` to open the Console page locally.
 

@@ -189,8 +189,19 @@ export function createA2AClient(agentId: string, self: import('../cc-ding-cli').
 }
 
 export function createHubClient(self: import('../cc-ding-cli').DingClaude): HubClient | null {
-  const hubUrl = self.config.a2aCfg?.hubUrl;
-  const apiKey = self.config.a2aCfg?.apiKey;
+  // 优先从 client config 读取，fallback 到 global config
+  let hubUrl = self.config.a2aCfg?.hubUrl;
+  let apiKey = self.config.a2aCfg?.apiKey;
+
+  if (!hubUrl || !apiKey) {
+    const { getGlobalConfig } = require('../session');
+    const globalCfg = getGlobalConfig() as any;
+    if (globalCfg?.a2aCfg) {
+      hubUrl = hubUrl || globalCfg.a2aCfg.hubUrl;
+      apiKey = apiKey || globalCfg.a2aCfg.apiKey;
+    }
+  }
+
   if (!hubUrl || !apiKey) return null;
   return new HubClient(hubUrl, apiKey);
 }

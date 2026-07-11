@@ -12,6 +12,7 @@ import {
 import { api } from '../api/client'
 import { IClient, IStatus, IRemoteConsole } from '../types'
 import ClientCard from '../components/ClientCard'
+import A2AStatusCard from '../components/A2AStatusCard'
 import { homeCache } from '../utils/cache'
 
 export default function Clients() {
@@ -277,6 +278,13 @@ export default function Clients() {
           <Button size="small" onClick={() => { localStorage.clear(); navigate('/login') }}>退出</Button>
         </Space>
       </div>
+
+      {/* A2A 服务状态卡片 */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={24} sm={12} lg={6}>
+          <A2AStatusCard />
+        </Col>
+      </Row>
 
       {/* Local machines */}
       <Card styles={{ body: { padding: '12px 16px' } }}>

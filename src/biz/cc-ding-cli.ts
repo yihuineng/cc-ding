@@ -1578,6 +1578,37 @@ export class DingClaude {
           return;
         }
 
+        // ---- /reboot a2a：重启 A2A Hub ----
+        if (rebootCmd.target === 'a2a') {
+          const { execSync } = await import('child_process');
+          let hasA2AHub = false;
+          try {
+            execSync('pm2 describe a2a-hub', { stdio: 'ignore' });
+            hasA2AHub = true;
+          } catch { /* a2a-hub not running */ }
+
+          if (!hasA2AHub) {
+            await this.sendDingMessage({
+              conversationId, sessionWebhook,
+              content: '❌ 未找到 a2a-hub 进程，请先启动 A2A Hub',
+              msgType: 'markdown',
+            });
+            return;
+          }
+
+          console.log(`[${timestamp()}] 执行 pm2 restart a2a-hub`);
+          childExec('pm2 restart "a2a-hub"', { timeout: 30_000 }, (err) => {
+            if (err) console.error(`[${timestamp()}] pm2 restart a2a-hub 失败:`, err);
+          });
+
+          await this.sendDingMessage({
+            conversationId, sessionWebhook,
+            content: '✅ A2A Hub 已重启完成',
+            msgType: 'markdown',
+          });
+          return;
+        }
+
         // ---- /reboot clients [--update]：重启所有 client ----
         if (rebootCmd.target === 'clients') {
           const { execSync } = await import('child_process');
