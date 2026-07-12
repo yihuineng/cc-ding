@@ -23,6 +23,28 @@ export const configSchema = {
     maxAutoRecovery: { type: 'integer', minimum: 0, description: '自动恢复次数' },
     cardTemplateId: { type: 'string', description: 'AI Card 模板 ID' },
     cardTemplateKey: { type: 'string', description: 'AI Card 模板变量名' },
+    taskHandlerCount: { type: 'integer', minimum: 1, description: '任务处理器数量' },
+    recorderCfg: {
+      type: 'object',
+      description: 'Recorder 模式配置',
+      properties: {
+        dist: { type: 'string', description: '保存目录' },
+      },
+    },
+    retryCfg: {
+      type: 'object',
+      description: '无限重试检测配置',
+      properties: {
+        maxDurationSecs: { type: 'integer', minimum: 60, description: '最大重试持续时间（秒）' },
+        maxCount: { type: 'integer', minimum: 1, description: '最大重试次数' },
+        minCountForDuration: { type: 'integer', minimum: 1, description: '持续时间触发最小重试次数' },
+      },
+    },
+    envs: {
+      type: 'object',
+      description: '自定义环境变量',
+      additionalProperties: { type: 'string' },
+    },
     conversations: {
       type: 'array',
       description: '会话列表',
@@ -50,6 +72,21 @@ export const configSchema = {
           ensureAt: { type: 'boolean' },
           useLocalOcr: { type: 'boolean' },
           maxTurnTimeMins: { type: 'integer' },
+          mobile: { type: 'string', description: '单聊目标用户手机号' },
+          qaCfg: {
+            type: 'object',
+            description: 'QA 模式配置',
+            properties: {
+              gitRepos: { type: 'array', items: { type: 'string' }, description: 'Git 仓库列表' },
+              docs: { type: 'array', items: { type: 'string' }, description: '文档 URL 列表' },
+              autoPull: { type: 'boolean', description: '自动 Pull' },
+            },
+          },
+          envs: {
+            type: 'object',
+            description: '会话级自定义环境变量',
+            additionalProperties: { type: 'string' },
+          },
         },
         required: ['conversationId', 'conversationType'],
       },
