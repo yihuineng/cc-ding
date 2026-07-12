@@ -171,6 +171,14 @@ export default function ConversationsTab({ clientId, conversations, onRefresh }:
                         />
                       </Col>
                       <Col xs={24} sm={12} md={8}>
+                        <label className="field-label">单聊手机号</label>
+                        <Input
+                          value={edit.mobile || ''}
+                          onChange={e => updateField(conv.conversationId, 'mobile', e.target.value)}
+                          placeholder="单聊目标用户手机号"
+                        />
+                      </Col>
+                      <Col xs={24} sm={12} md={8}>
                         <label className="field-label">白名单 (逗号分隔)</label>
                         <Input
                           value={(edit.whiteUserList || []).join(',')}
@@ -259,6 +267,44 @@ export default function ConversationsTab({ clientId, conversations, onRefresh }:
                         />
                       </Col>
                     </Row>
+
+                    {/* QA 配置 */}
+                    <div style={{ marginTop: 12 }}>
+                      <label className="field-label" style={{ marginBottom: 8 }}>QA 模式配置</label>
+                      <Row gutter={[12, 8]}>
+                        <Col xs={24} sm={12} md={8}>
+                          <label className="field-label">Git 仓库 (逗号分隔)</label>
+                          <Input
+                            value={(edit.qaCfg?.gitRepos || []).join(',')}
+                            onChange={e => updateField(conv.conversationId, 'qaCfg', {
+                              ...edit.qaCfg,
+                              gitRepos: e.target.value.split(',').map(s => s.trim()).filter(Boolean),
+                            })}
+                            placeholder="用于知识检索的 Git 仓库"
+                          />
+                        </Col>
+                        <Col xs={24} sm={12} md={8}>
+                          <label className="field-label">文档 URL (逗号分隔)</label>
+                          <Input
+                            value={(edit.qaCfg?.docs || []).join(',')}
+                            onChange={e => updateField(conv.conversationId, 'qaCfg', {
+                              ...edit.qaCfg,
+                              docs: e.target.value.split(',').map(s => s.trim()).filter(Boolean),
+                            })}
+                            placeholder="用于知识检索的文档 URL"
+                          />
+                        </Col>
+                        <Col xs={24} sm={12} md={8}>
+                          <label className="field-label">自动 Pull</label>
+                          <Switch
+                            checked={!!edit.qaCfg?.autoPull}
+                            onChange={v => updateField(conv.conversationId, 'qaCfg', { ...edit.qaCfg, autoPull: v })}
+                            checkedChildren="开启"
+                            unCheckedChildren="关闭"
+                          />
+                        </Col>
+                      </Row>
+                    </div>
 
                     {/* Boolean switches */}
                     <div style={{ marginTop: 12 }}>
