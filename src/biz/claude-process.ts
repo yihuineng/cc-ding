@@ -146,16 +146,6 @@ class ContextWindowExceededError extends Error {
   }
 }
 
-function readLastLogLines(logPath: string, n: number): string {
-  try {
-    const content = fs.readFileSync(logPath, 'utf-8');
-    const lines = content.split('\n').filter(Boolean);
-    return lines.slice(-n).join('\n');
-  } catch {
-    return '';
-  }
-}
-
 function isContextWindowExceededError(output: string): boolean {
   return /prompt tokens?\s*\(\s*\d+\s*\)\s*exceeds/i.test(output) ||
     /exceeds?.*maximum context window/i.test(output);
@@ -1058,14 +1048,13 @@ export async function executeClaudeQuery(
       console.error(`[${timestamp()}] 检测到无限重试循环: ${reason}`);
       fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 检测到无限重试循环，${reason}，终止重试\n`, 'utf-8');
 
-      const recentLogs = readLastLogLines(sessionLog, 1);
       const errorSummary = retryHistory.slice(-1)[0] || '';
       const atUserId = senderStaffId || session.startStaffId;
       await sendDingMessage(self, {
         conversationId: getReplyConversationId(session),
         sessionWebhook: getReplyWebhook(session),
         atUserId,
-        content: `🔄 检测到 Claude 陷入无限重试，已终止（${reason}）\n\n📋 最近重试记录：\n${errorSummary}\n\n📝 最近日志：\n\`\`\`\n${recentLogs}\n\`\`\`\n\n💡 可尝试发送 /new 开始新会话，或 /end 结束当前会话`,
+        content: ` 检测到 Claude 陷入无限重试，已终止（${reason}）\n\n📋 最近重试记录：\n${errorSummary}\n\n 可尝试发送 /new 开始新会话，或 /end 结束当前会话`,
       });
       return;
     }
