@@ -42,25 +42,22 @@ export default function A2AStatusCard() {
     <Card
       size="small"
       hoverable
+      className="a2a-status-card"
       onClick={() => navigate('/global/a2a-panel')}
       style={{ cursor: 'pointer' }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-            <RobotOutlined style={{ color: '#1890ff' }} />
-            <span style={{ fontWeight: 600 }}>A2A</span>
-          </div>
-          {loading ? (
-            <div style={{ fontSize: 12, color: '#999' }}>检查中...</div>
-          ) : online ? (
-            <div style={{ fontSize: 12, color: '#666' }}>
-              <Badge status="success" text={<span>{agentCount} 在线</span>} />
-            </div>
-          ) : (
-            <div style={{ fontSize: 12, color: '#999' }}>未连接</div>
-          )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <RobotOutlined style={{ color: '#1890ff', fontSize: 16 }} />
+          <span style={{ fontWeight: 600, fontSize: 14 }}>A2A</span>
         </div>
+        {loading ? (
+          <span style={{ fontSize: 12, color: '#999' }}>检查中...</span>
+        ) : online ? (
+          <Badge status="success" text={<span style={{ fontSize: 13 }}>{agentCount} 在线</span>} />
+        ) : (
+          <span style={{ fontSize: 12, color: '#999' }}>未连接</span>
+        )}
       </div>
     </Card>
   )

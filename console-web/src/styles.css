@@ -373,3 +373,85 @@ code {
     touch-action: manipulation;
   }
 }
+
+/* ── Mobile: Client page optimizations ── */
+@media (max-width: 768px) {
+  /* Page title smaller */
+  .page-title {
+    font-size: 18px !important;
+  }
+
+  /* Header actions: larger touch targets */
+  .header-actions .ant-btn {
+    min-height: 36px;
+    padding: 4px 12px;
+    font-size: 13px;
+  }
+
+  /* A2A status card: compact on mobile */
+  .a2a-status-card .ant-card-body {
+    padding: 8px 12px !important;
+  }
+
+  /* Machine group header: buttons stack on mobile */
+  .machine-header-actions {
+    flex-direction: column;
+    align-items: flex-start !important;
+  }
+
+  .machine-header-actions .ant-btn {
+    width: 100%;
+    min-height: 40px;
+    font-size: 14px;
+    justify-content: center;
+  }
+
+  /* Status bar: smaller, wrap */
+  .status-bar {
+    font-size: 11px;
+    gap: 6px;
+  }
+
+  .status-bar .ant-tag {
+    font-size: 11px;
+    padding: 0 6px;
+  }
+
+  .status-bar span {
+    font-size: 11px;
+  }
+
+  /* Client card: smaller padding */
+  .client-card .ant-card-body {
+    padding: 10px 12px !important;
+  }
+
+  .client-card .client-info {
+    gap: 10px !important;
+    font-size: 11px !important;
+  }
+
+  /* A2A stats: 2 columns on mobile */
+  .a2a-stats-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+
+  .a2a-stats-grid .ant-card-body {
+    padding: 8px !important;
+  }
+
+  .a2a-stats-grid .ant-card-body > div > div:first-child {
+    font-size: 20px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .page-title {
+    font-size: 16px !important;
+  }
+
+  .header-actions .ant-btn {
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+}

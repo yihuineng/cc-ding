@@ -1077,7 +1077,7 @@ function A2APanel() {
     <div>
       {/* 统计卡片 */}
       {stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16, marginBottom: 24 }}>
+        <div className="a2a-stats-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12, marginBottom: 24 }}>
           <Card size="small">
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: 24, fontWeight: 600, color: '#1890ff' }}>{stats.agents || 0}</div>

@@ -293,7 +293,7 @@ export default function Clients() {
           <div style={{ fontSize: 15, fontWeight: 600 }}>
             MB.LOCAL ({localClients.length})
           </div>
-          <Space wrap>
+          <Space wrap className="machine-header-actions">
             <Dropdown menu={{ items: localMachineMenuItems, onClick: handleLocalMachineClick }} disabled={machineLoading}>
               <Button size="small" loading={machineLoading}>
                 机器操作 <DownOutlined />
@@ -347,7 +347,7 @@ export default function Clients() {
                  {displayName} ({hasClients ? `${onlineCount} 在线 / ${group.clients.length} 总计` : '离线'})
                 {isOffline && <Tag color="default" style={{ marginLeft: 8 }}>未连接</Tag>}
               </div>
-              <Space wrap>
+              <Space wrap className="machine-header-actions">
                 <Dropdown
                   menu={{
                     items: getMachineMenuItems(url),
