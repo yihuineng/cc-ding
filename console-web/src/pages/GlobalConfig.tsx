@@ -951,7 +951,8 @@ function A2APanel() {
     setError('')
     try {
       const config = await api.getGlobalConfig()
-      const a2aCfg = (config as any)?.a2aCfg
+      const configObj = (config as any)?.config || config
+      const a2aCfg = configObj?.a2aCfg
       if (!a2aCfg?.hubUrl) {
         setError('未配置 A2A Hub URL')
         setLoading(false)
@@ -971,7 +972,7 @@ function A2APanel() {
         setAgents(agentsRes.value.agents || [])
       }
       if (tasksRes.status === 'fulfilled') {
-        setTasks(tasksRes.value.tasks || [])
+        setTasks(tasksRes.value.records || [])
       }
       if (statsRes.status === 'fulfilled') {
         setStats(statsRes.value)
@@ -985,6 +986,8 @@ function A2APanel() {
 
   useEffect(() => {
     fetchA2AData()
+    const timer = setInterval(fetchA2AData, 5000)
+    return () => clearInterval(timer)
   }, [])
 
   const agentColumns = [
@@ -1095,13 +1098,13 @@ function A2APanel() {
           </Card>
           <Card size="small">
             <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 24, fontWeight: 600, color: '#722ed1' }}>{stats.tasksRouted || 0}</div>
+              <div style={{ fontSize: 24, fontWeight: 600, color: '#722ed1' }}>{stats.totalRouted || 0}</div>
               <div style={{ color: '#666' }}>已路由任务</div>
             </div>
           </Card>
           <Card size="small">
             <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: 24, fontWeight: 600, color: '#ff4d4f' }}>{stats.taskErrors || 0}</div>
+              <div style={{ fontSize: 24, fontWeight: 600, color: '#ff4d4f' }}>{stats.totalErrors || 0}</div>
               <div style={{ color: '#666' }}>任务错误</div>
             </div>
           </Card>

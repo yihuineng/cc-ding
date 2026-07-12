@@ -42,7 +42,7 @@ export default function A2AStatusCard() {
     <Card
       size="small"
       hoverable
-      onClick={() => navigate('/a2a')}
+      onClick={() => navigate('/global/a2a-panel')}
       style={{ cursor: 'pointer' }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
