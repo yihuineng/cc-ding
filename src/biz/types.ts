@@ -53,6 +53,15 @@ export interface IConfig {
   cardTemplateKey?: string;
   /** 自定义环境变量，会注入到 Agent 进程中 */
   envs?: Record<string, string>;
+  /** 无限重试检测配置 */
+  retryCfg?: {
+    /** 最大重试持续时间（秒），超过此值且达到最小重试次数视为无限重试，默认 3600（1小时） */
+    maxDurationSecs?: number;
+    /** 最大总重试次数，超过此值视为无限重试，默认 50 */
+    maxCount?: number;
+    /** 触发持续时间检测的最小重试次数，默认 3 */
+    minCountForDuration?: number;
+  };
   /** A2A (Agent-to-Agent) 协议配置（中心化 Hub 模式） */
   a2aCfg?: {
     /** 中心化 Hub URL（配置后自动向 Hub 注册 + 心跳） */

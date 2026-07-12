@@ -30,9 +30,9 @@ const MAX_FAST_FAIL = 20;
 const API_RETRY_DELAY_MS = 10_000;
 const FAST_FAIL_THRESHOLD_MS = 10_000;
 /** 最大总重试次数（含所有错误类型），超过此值视为无限重试循环 */
-const MAX_TOTAL_RETRIES = 10;
-/** 最大重试持续时间（ms），超过此值且重试 >=3 次视为无限重试循环 */
-const MAX_RETRY_DURATION_MS = 5 * 60 * 1000;
+const DEFAULT_MAX_TOTAL_RETRIES = 50;
+/** 触发持续时间检测的最小重试次数 */
+const DEFAULT_MIN_COUNT_FOR_DURATION = 3;
 
 /** CLAUDE.md 注入内容的内存缓存，key=conversationId，value=上次注入的完整内容字符串 */
 const injectedContextCache = new Map<string, string>();
@@ -634,6 +634,8 @@ function buildContextContent(self: DingClaude, conversationId: string): string {
     convCfg?.preBash ? `- preBash(群): \`${convCfg.preBash}\`` : '',
     convCfg?.qaMode ? '- qaMode: true (问答模式，仅回答问题，禁止执行命令、写入文件或运行代码)' : '',
     convCfg?.qaMode && convCfg.qaCfg?.docs?.length ? `- qaDocs: ${convCfg.qaCfg.docs.join(', ')}` : '',
+    // 无限重试检测配置
+    config.retryCfg ? `## Retry Limits\n- maxDuration: ${config.retryCfg.maxDurationSecs ?? 3600}s\n- maxCount: ${config.retryCfg.maxCount ?? 50}` : '',
     '## DingTalk Context',
     '当 prompt 中包含 "消息来自: xxx(用户ID)" 时，说明消息来自钉钉用户。',
     '- 回答时要考虑用户的使用场景（钉钉聊天界面，非终端环境）',
@@ -1044,11 +1046,15 @@ export async function executeClaudeQuery(
     const isRetry = consecutiveFastFail > 0 || retryLogRetry;
     retryLogRetry = false; // 重置，下次循环默认非 retryLogs 重试
 
-    // 无限重试循环检测
-    if (totalRetries >= MAX_TOTAL_RETRIES || (totalRetries >= 3 && retryStartTime > 0 && Date.now() - retryStartTime > MAX_RETRY_DURATION_MS)) {
-      const reason = totalRetries >= MAX_TOTAL_RETRIES
-        ? `总重试次数已达 ${MAX_TOTAL_RETRIES} 次`
-        : `重试持续时间超过 ${MAX_RETRY_DURATION_MS / 1000}s（已重试 ${totalRetries} 次）`;
+    // 无限重试循环检测（支持配置阈值，fallback 到默认值）
+    const retryCfg = self.config.retryCfg || {};
+    const maxRetries = retryCfg.maxCount ?? DEFAULT_MAX_TOTAL_RETRIES;
+    const maxDurationMs = (retryCfg.maxDurationSecs ?? 3600) * 1000;
+    const minCountForDuration = retryCfg.minCountForDuration ?? DEFAULT_MIN_COUNT_FOR_DURATION;
+    if (totalRetries >= maxRetries || (totalRetries >= minCountForDuration && retryStartTime > 0 && Date.now() - retryStartTime > maxDurationMs)) {
+      const reason = totalRetries >= maxRetries
+        ? `总重试次数已达 ${maxRetries} 次`
+        : `重试持续时间超过 ${maxDurationMs / 1000}s（已重试 ${totalRetries} 次）`;
       console.error(`[${timestamp()}] 检测到无限重试循环: ${reason}`);
       fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 检测到无限重试循环，${reason}，终止重试\n`, 'utf-8');
 
@@ -1116,7 +1122,7 @@ export async function executeClaudeQuery(
           const delayMs = 60_000 + Math.floor(Math.random() * 60_000);
           const delaySec = Math.round(delayMs / 1000);
           retryHistory.push(`[${timestamp()}] retryLogs 匹配"${matched}"，${delaySec}s 后发送"继续"重试`);
-          console.log(`[${timestamp()}] retryLogs 匹配"${matched}"(${currentSetting.baseUrl})，${delaySec}s 后重试 (${totalRetries}/${MAX_TOTAL_RETRIES})`);
+          console.log(`[${timestamp()}] retryLogs 匹配"${matched}"(${currentSetting.baseUrl})，${delaySec}s 后重试 (${totalRetries}/${maxRetries})`);
           fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: retryLogs 匹配"${matched}"，${delaySec}s 后发送"继续"重试\n`, 'utf-8');
           await sleep(delayMs);
           if (!isSessionStillActive('停止 retryLogs 重试')) return;
