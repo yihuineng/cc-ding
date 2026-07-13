@@ -7,6 +7,117 @@ import { dateUtil } from 'utils-ok';
 import { resolveSecret, isEnvRef } from './secrets';
 import { commandExists, isWindows } from './platform';
 
+// ==================== API Key Cooldown 机制 ====================
+
+/** Key 标识：baseUrl + apiKey 前6位 */
+type KeyId = string;
+
+/** Cooldown 状态：{ expiresAt: 冷却到期时间戳 } */
+interface CooldownState {
+  expiresAt: number;
+  reason: string;
+}
+
+/** 内存中的 Cooldown 映射：KeyId -> CooldownState */
+const keyCooldowns = new Map<KeyId, CooldownState>();
+
+/** 默认冷却时长（秒） */
+const DEFAULT_COOLDOWN_SECS = 600;
+
+/**
+ * 生成 Key 的唯一标识
+ */
+function makeKeyId(baseUrl: string, apiKey: string): KeyId {
+  const resolved = resolveSecret(apiKey) || '';
+  return `${baseUrl}:${resolved.slice(-6)}`;
+}
+
+/**
+ * 标记 API Key 为暂不可用（cooldown 状态）
+ * @param baseUrl API Base URL
+ * @param apiKey API Key（支持 $ENV 引用）
+ * @param cooldownSecs 冷却时长（秒），默认 600
+ * @param reason 标记原因
+ */
+export function markKeyCooldown(baseUrl: string, apiKey: string, cooldownSecs?: number, reason?: string): void {
+  const keyId = makeKeyId(baseUrl, apiKey);
+  const expiresAt = Date.now() + (cooldownSecs ?? DEFAULT_COOLDOWN_SECS) * 1000;
+  keyCooldowns.set(keyId, { expiresAt, reason: reason || 'retryLogs 命中' });
+  const label = findSettingLabel([], apiKey);
+  console.log(`[${timestamp()}] API Key ${label} (${baseUrl}) 标记为暂不可用，${cooldownSecs ?? DEFAULT_COOLDOWN_SECS}s 后恢复（原因: ${reason || 'retryLogs 命中'}）`);
+}
+
+/**
+ * 检查 API Key 是否在 cooldown 状态
+ * 如果已过期则自动清除
+ */
+export function isKeyOnCooldown(baseUrl: string, apiKey: string): boolean {
+  const keyId = makeKeyId(baseUrl, apiKey);
+  const state = keyCooldowns.get(keyId);
+  if (!state) return false;
+  if (Date.now() >= state.expiresAt) {
+    keyCooldowns.delete(keyId);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * 从 modelSettings 中选取一个不在 cooldown 状态的可用 Key
+ * @param self DingClaude 实例
+ * @param excludeApiKey 排除指定 apiKey
+ * @returns 可用的 Setting，若全部在 cooldown 则返回 null
+ */
+export function pickAvailableApiKey(self: DingClaude, excludeApiKey?: string): IClaudeSetting | null {
+  const cfg = self.getApiKeyCfg();
+  if (!cfg?.modelSettings?.length) return null;
+
+  const resolvedExclude = excludeApiKey ? resolveSecret(excludeApiKey) : undefined;
+  const available = cfg.modelSettings.filter(s => {
+    if (!s.isValid) return false;
+    const resolved = resolveSecret(s.apiKey);
+    if (resolvedExclude && resolved === resolvedExclude) return false;
+    if (isKeyOnCooldown(s.baseUrl, s.apiKey)) return false;
+    return true;
+  });
+
+  if (available.length === 0) return null;
+  return available[Math.floor(Math.random() * available.length)];
+}
+
+/**
+ * 获取最早恢复可用的时间戳，若全部不在 cooldown 则返回 0
+ */
+export function getEarliestCooldownExpiry(): number {
+  let earliest = 0;
+  for (const state of keyCooldowns.values()) {
+    if (state.expiresAt > Date.now()) {
+      if (!earliest || state.expiresAt < earliest) {
+        earliest = state.expiresAt;
+      }
+    }
+  }
+  return earliest;
+}
+
+/**
+ * 等待直到有 API Key 恢复可用
+ * @param maxWaitSecs 最大等待时间（秒），默认 600
+ * @returns 是否有可用 Key
+ */
+export async function waitForKeyAvailable(maxWaitSecs = 600): Promise<boolean> {
+  const deadline = Date.now() + maxWaitSecs * 1000;
+  while (Date.now() < deadline) {
+    const expiry = getEarliestCooldownExpiry();
+    if (!expiry) return true; // 有可用 key
+
+    const waitMs = Math.min(expiry - Date.now(), 5000); // 每次最多等 5 秒
+    if (waitMs <= 0) continue;
+    await new Promise(r => setTimeout(r, waitMs));
+  }
+  return false;
+}
+
 /**
  * 迁移 apiKeyCfg：兼容旧版 claudeSettings 字段名，确保 modelSettings 始终为数组
  */

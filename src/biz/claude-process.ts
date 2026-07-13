@@ -20,6 +20,9 @@ import {
   readApiKeyFromSettings,
   getForceEnabledSettingsPath,
   settingLabel,
+  markKeyCooldown,
+  pickAvailableApiKey,
+  waitForKeyAvailable,
 } from './api-key-manager';
 import { resolveSecret } from './secrets';
 import { commandExists, formatClaudeCommandMissingMessage, isWindows, spawnCommand } from './platform';
@@ -33,6 +36,8 @@ const FAST_FAIL_THRESHOLD_MS = 10_000;
 const DEFAULT_MAX_TOTAL_RETRIES = 50;
 /** 触发持续时间检测的最小重试次数 */
 const DEFAULT_MIN_COUNT_FOR_DURATION = 3;
+/** retryLogs 命中后 API Key 冷却时长（秒），默认 10 分钟 */
+const DEFAULT_COOLDOWN_SECS = 600;
 
 /** CLAUDE.md 注入内容的内存缓存，key=conversationId，value=上次注入的完整内容字符串 */
 const injectedContextCache = new Map<string, string>();
@@ -1100,24 +1105,54 @@ export async function executeClaudeQuery(
       sessionDir = self.getSessionDir(session);
       sessionLog = `${sessionDir}/session.log`;
 
-      // retryLogs 关键词匹配：优先检查，匹配到则使用 retryLogs 重试策略（60-120s 延迟）
+      // retryLogs 关键词匹配：命中后标记当前 Key 为暂不可用，立即切换可用 Key
       const errWithOutput = err as Error & { combinedOutput?: string; output?: string };
       const retryLogs = currentSetting ? apiKeyCfg?.retryLogs?.[currentSetting.baseUrl] : undefined;
       const errorOutput = errWithOutput.combinedOutput || errWithOutput.output || '';
-      if (retryLogs?.length && errorOutput) {
+      if (retryLogs?.length && errorOutput && currentSetting) {
         const matched = retryLogs.find(kw => errorOutput.includes(kw));
         if (matched) {
           totalRetries++; retryStartTime = retryStartTime || Date.now();
-          const delayMs = 60_000 + Math.floor(Math.random() * 60_000);
-          const delaySec = Math.round(delayMs / 1000);
-          retryHistory.push(`[${timestamp()}] retryLogs 匹配"${matched}"，${delaySec}s 后发送"继续"重试`);
-          console.log(`[${timestamp()}] retryLogs 匹配"${matched}"(${currentSetting.baseUrl})，${delaySec}s 后重试 (${totalRetries}/${maxRetries})`);
-          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: retryLogs 匹配"${matched}"，${delaySec}s 后发送"继续"重试\n`, 'utf-8');
-          await sleep(delayMs);
-          if (!isSessionStillActive('停止 retryLogs 重试')) return;
-          consecutiveFastFail = 0;
-          retryLogRetry = true;
-          continue;
+          const cooldownSecs = self.config.retryCfg?.retryCooldownSecs ?? DEFAULT_COOLDOWN_SECS;
+
+          // 标记当前 Key 为 cooldown
+          markKeyCooldown(currentSetting.baseUrl, currentSetting.apiKey, cooldownSecs, `retryLogs 匹配"${matched}"`);
+          retryHistory.push(`[${timestamp()}] retryLogs 匹配"${matched}"，Key ${settingLabel(currentSetting)} 冷却 ${cooldownSecs}s，尝试切换`);
+          console.log(`[${timestamp()}] retryLogs 匹配"${matched}"(${currentSetting.baseUrl})，Key ${settingLabel(currentSetting)} 冷却 ${cooldownSecs}s (${totalRetries}/${maxRetries})`);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: retryLogs 匹配"${matched}"，Key 冷却 ${cooldownSecs}s，尝试切换可用 Key\n`, 'utf-8');
+
+          // 尝试切换到可用 Key
+          const availableKey = pickAvailableApiKey(self, currentSetting.apiKey);
+          if (availableKey) {
+            currentSetting = availableKey;
+            ensureSettingsWithApiKey(dingGroupDir, currentSetting);
+            console.log(`[${timestamp()}] 切换到可用 Key: ${settingLabel(availableKey)}`);
+            consecutiveFastFail = 0;
+            retryLogRetry = true;
+            continue;
+          }
+
+          // 全部 Key 都在 cooldown，等待恢复
+          console.log(`[${timestamp()}] 所有 Key 均在冷却中，等待恢复...`);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均在冷却中，等待恢复\n`, 'utf-8');
+          const gotKey = await waitForKeyAvailable(cooldownSecs);
+          if (!gotKey) {
+            retryHistory.push(`[${timestamp()}] 等待 ${cooldownSecs}s 后仍无可用 Key，终止重试`);
+            console.log(`[${timestamp()}] 等待 ${cooldownSecs}s 后仍无可用 Key，终止重试`);
+            if (!isSessionStillActive('等待 Key 恢复超时')) return;
+            break;
+          }
+
+          // 有 Key 恢复了，切换到它
+          const recoveredKey = pickAvailableApiKey(self);
+          if (recoveredKey) {
+            currentSetting = recoveredKey;
+            ensureSettingsWithApiKey(dingGroupDir, currentSetting);
+            console.log(`[${timestamp()}] Key 恢复可用: ${settingLabel(recoveredKey)}`);
+            consecutiveFastFail = 0;
+            retryLogRetry = true;
+            continue;
+          }
         }
       }
 

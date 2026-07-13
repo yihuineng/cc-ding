@@ -38,6 +38,7 @@ export default function ConfigTab({ clientId, config }: Props) {
     vals['retryCfg.maxDurationSecs'] = config.retryCfg?.maxDurationSecs
     vals['retryCfg.maxCount'] = config.retryCfg?.maxCount
     vals['retryCfg.minCountForDuration'] = config.retryCfg?.minCountForDuration
+    vals['retryCfg.retryCooldownSecs'] = config.retryCfg?.retryCooldownSecs
     // recorderCfg
     vals['recorderCfg.dist'] = config.recorderCfg?.dist
     form.setFieldsValue(vals)
@@ -69,6 +70,7 @@ export default function ConfigTab({ clientId, config }: Props) {
         'retryCfg.maxDurationSecs',
         'retryCfg.maxCount',
         'retryCfg.minCountForDuration',
+        'retryCfg.retryCooldownSecs',
         'recorderCfg.dist',
       ]
       for (const key of nestedFields) {
@@ -216,6 +218,11 @@ export default function ConfigTab({ clientId, config }: Props) {
             <Col xs={12} sm={8}>
               <Form.Item name="retryCfg.minCountForDuration" label="持续时间触发最小次数">
                 <InputNumber min={1} style={{ width: '100%' }} placeholder="默认 3" />
+              </Form.Item>
+            </Col>
+            <Col xs={12} sm={8}>
+              <Form.Item name="retryCfg.retryCooldownSecs" label="Key 冷却时长 (秒)">
+                <InputNumber min={30} style={{ width: '100%' }} placeholder="默认 600" />
               </Form.Item>
             </Col>
           </Row>

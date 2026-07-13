@@ -38,6 +38,7 @@ export const configSchema = {
         maxDurationSecs: { type: 'integer', minimum: 60, description: '最大重试持续时间（秒）' },
         maxCount: { type: 'integer', minimum: 1, description: '最大重试次数' },
         minCountForDuration: { type: 'integer', minimum: 1, description: '持续时间触发最小重试次数' },
+        retryCooldownSecs: { type: 'integer', minimum: 30, description: 'retryLogs 命中后 API Key 冷却时长（秒）' },
       },
     },
     envs: {

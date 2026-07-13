@@ -61,6 +61,8 @@ export interface IConfig {
     maxCount?: number;
     /** 触发持续时间检测的最小重试次数，默认 3 */
     minCountForDuration?: number;
+    /** retryLogs 命中后 API Key 暂不可用时长（秒），默认 600（10分钟） */
+    retryCooldownSecs?: number;
   };
   /** A2A (Agent-to-Agent) 协议配置（中心化 Hub 模式） */
   a2aCfg?: {
