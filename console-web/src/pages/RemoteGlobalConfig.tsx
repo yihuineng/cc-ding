@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Tabs, Button, message } from 'antd'
-import { ArrowLeftOutlined } from '@ant-design/icons'
+import { Tabs, Button, Card, Form, Input, InputNumber, message } from 'antd'
+import { ArrowLeftOutlined, SaveOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import SettingsTplTab from '../components/SettingsTplTab'
 import GlobalKeysTab from '../components/GlobalKeysTab'
@@ -102,39 +102,81 @@ export default function RemoteGlobalConfig() {
   )
 }
 
-/** 远程 Console 基础配置 Tab */
+/** 远程 Console 基础配置 Tab — 与本地对齐，支持编辑 */
 function RemoteConsoleConfigTab({ remoteUrl }: { remoteUrl: string }) {
+  const [form] = Form.useForm()
   const [config, setConfig] = useState<any>(null)
+  const [updatePkgUrl, setUpdatePkgUrl] = useState<string>('')
   const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (!remoteUrl) return
     api.getRemoteGlobalConfig(remoteUrl)
       .then((data: any) => {
-        setConfig(data.config?.console || data.config || {})
+        const consoleCfg = data.config?.console || data.config || {}
+        setConfig(consoleCfg)
+        form.setFieldsValue(consoleCfg)
+        setUpdatePkgUrl((data as any)?.updatePkgUrl || (data.config?.updatePkgUrl) || '')
       })
       .catch((e: any) => message.error(e.message))
       .finally(() => setLoading(false))
-  }, [remoteUrl])
+  }, [remoteUrl, form])
+
+  const onSave = async () => {
+    setSaving(true)
+    try {
+      const values = await form.validateFields()
+      await api.putRemoteGlobalConfig(remoteUrl, { ...config, ...values })
+      message.success('配置已保存')
+    } catch (e: any) {
+      message.error(e.message || '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const onSaveUpdatePkgUrl = async () => {
+    setSaving(true)
+    try {
+      await api.putRemoteGlobalConfig(remoteUrl, { ...config, updatePkgUrl: updatePkgUrl.trim() || undefined })
+      message.success('更新包地址已保存')
+    } catch (e: any) {
+      message.error(e.message || '保存失败')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
   if (!config) return <div style={{ padding: 24 }}>配置加载失败</div>
 
   return (
     <div>
-      <div style={{ fontSize: 13, color: '#999', marginBottom: 16 }}>
-        远程 Console 基础配置为只读模式。修改端口/Host 需登录远程机器直接编辑 config.json。
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 16 }}>
-        <div style={{ background: '#151b23', borderRadius: 8, padding: 16, border: '1px solid #2d3d4f' }}>
-          <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>端口</div>
-          <div style={{ fontSize: 20, fontWeight: 600 }}>{config.port || '-'}</div>
-        </div>
-        <div style={{ background: '#151b23', borderRadius: 8, padding: 16, border: '1px solid #2d3d4f' }}>
-          <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>Host</div>
-          <div style={{ fontSize: 20, fontWeight: 600 }}>{config.host || '-'}</div>
-        </div>
-      </div>
+      <Card title="服务配置" style={{ marginBottom: 16 }}>
+        <Form form={form} layout="vertical">
+          <Form.Item name="port" label="端口"><InputNumber style={{ width: 200 }} /></Form.Item>
+          <Form.Item name="host" label="Host"><Input style={{ width: 200 }} /></Form.Item>
+          <Button type="primary" icon={<SaveOutlined />} onClick={onSave} loading={saving}>保存</Button>
+        </Form>
+      </Card>
+
+      <Card title="更新配置">
+        <Form layout="vertical">
+          <Form.Item label="更新包下载地址 (updatePkgUrl)">
+            <Input
+              placeholder="http://192.168.3.2:39000/cc-ding/releases/cc-ding-latest.tgz"
+              value={updatePkgUrl}
+              onChange={(e) => setUpdatePkgUrl(e.target.value)}
+              style={{ maxWidth: 600 }}
+            />
+          </Form.Item>
+          <Button type="primary" icon={<SaveOutlined />} onClick={onSaveUpdatePkgUrl} loading={saving}>保存</Button>
+          <div style={{ fontSize: 12, color: '#999', marginTop: 12 }}>
+            远程客户端执行 <code>/reboot --update</code> 时优先从此地址下载安装包
+          </div>
+        </Form>
+      </Card>
     </div>
   )
 }
