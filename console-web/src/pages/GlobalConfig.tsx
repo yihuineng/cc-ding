@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { Tabs, Form, Input, InputNumber, Button, Card, Space, Popconfirm, message, Spin, Tag, Collapse, Progress, Modal, Tooltip, Table, Descriptions, Badge } from 'antd'
 import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, DeleteOutlined, ReloadOutlined, CheckCircleOutlined, CloseCircleOutlined, DownOutlined, ScanOutlined, CodeOutlined, FileTextOutlined, FormatPainterOutlined, SelectOutlined, CopyOutlined, SyncOutlined, MinusOutlined, RobotOutlined, ScheduleOutlined } from '@ant-design/icons'
 import SimpleJsonEditor from '../components/SimpleJsonEditor'
@@ -20,6 +20,7 @@ interface DiscoveredConsole {
 
 export default function GlobalConfig() {
   const navigate = useNavigate()
+  const { tab } = useParams()
   const [config, setConfig] = useState<IGlobalConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [form] = Form.useForm()
@@ -460,7 +461,10 @@ export default function GlobalConfig() {
         <div style={{ flex: '0 0 auto' }}></div>
       </div>
 
-      <Tabs defaultActiveKey="console" items={[
+      <Tabs
+        activeKey={tab || 'console'}
+        onChange={key => navigate(`/global/${key}`, { replace: true })}
+        items={[
         {
           key: 'console',
           label: '⚙️ 基础配置',
