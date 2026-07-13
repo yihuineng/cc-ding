@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, Table, Tag, Button, Space, Badge } from 'antd'
-import { ArrowLeftOutlined, ReloadOutlined, RobotOutlined, CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, ReloadOutlined, CheckCircleOutlined, ClockCircleOutlined, CloseCircleOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 
 export default function A2AMonitor() {
@@ -49,33 +49,10 @@ export default function A2AMonitor() {
     return () => clearInterval(timer)
   }, [])
 
-  const agentColumns = [
-    {
-      title: 'Agent',
-      key: 'agent',
-      render: (_: any, record: any) => (
-        <div>
-          <div style={{ fontWeight: 500 }}>{record.name || record.id}</div>
-          <div style={{ fontSize: 11, color: '#888' }}>{record.clientId}</div>
-        </div>
-      ),
-    },
-    {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 80,
-      render: (status: string) => (
-        <Badge status={status === 'online' ? 'success' : 'default'} text={status === 'online' ? '在线' : '离线'} />
-      ),
-    },
-    {
-      title: '最后心跳',
-      dataIndex: 'lastHeartbeat',
-      key: 'lastHeartbeat',
-      width: 160,
-      render: (ts: number) => ts ? new Date(ts).toLocaleString('zh-CN') : '-',
-    },
+  const clientColumns = [
+    { title: 'Client ID', dataIndex: 'clientId', key: 'clientId', render: (text: string) => <code>{text}</code> },
+    { title: 'Agent 数', key: 'agentCount', width: 100, render: (_, record) => record.agents.length },
+    { title: '状态', key: 'status', width: 100, render: (_, record) => <Badge status={record.online ? 'success' : 'default'} text={record.online ? '在线' : '离线'} /> },
   ]
 
   const taskColumns = [
@@ -183,24 +160,15 @@ export default function A2AMonitor() {
           </div>
 
           {/* Client 列表 */}
-          <Card title="Client 列表" style={{ marginBottom: 16 }}>
+          <Card title="Client 列表">
             <Table
-              columns={[
-                { title: 'Client ID', dataIndex: 'clientId', key: 'clientId', render: (text: string) => <code>{text}</code> },
-                { title: 'Agent 数', key: 'agentCount', width: 100, render: (_, record) => record.agents.length },
-                { title: '状态', key: 'status', width: 100, render: (_, record) => <Badge status={record.online ? 'success' : 'default'} text={record.online ? '在线' : '离线'} /> },
-              ]}
+              columns={clientColumns}
               dataSource={clients}
               rowKey="clientId"
               size="small"
               pagination={false}
               locale={{ emptyText: '暂无 Client' }}
             />
-          </Card>
-
-          {/* Agent 列表 */}
-          <Card title={<span><RobotOutlined /> Agent 列表</span>} style={{ marginBottom: 16 }}>
-            <Table columns={agentColumns} dataSource={agents} rowKey="id" size="small" pagination={false} loading={loading} locale={{ emptyText: '暂无 Agent' }} />
           </Card>
 
           {/* 任务 */}
