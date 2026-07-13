@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Tabs, Button, Card, Form, Input, Space, message } from 'antd'
-import { ArrowLeftOutlined, SaveOutlined, PlusOutlined, MinusOutlined } from '@ant-design/icons'
+import { Tabs, Button, message } from 'antd'
+import { ArrowLeftOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import SettingsTplTab from '../components/SettingsTplTab'
 import GlobalKeysTab from '../components/GlobalKeysTab'
 import GlobalRetryLogsTab from '../components/GlobalRetryLogsTab'
+import A2AConfigTab from '../components/A2AConfigTab'
 import { IRemoteConsole } from '../types'
 
 export default function RemoteGlobalConfig() {
@@ -14,35 +15,22 @@ export default function RemoteGlobalConfig() {
   const navigate = useNavigate()
   const [tab, setTab] = useState('console')
 
-  // Get hostname from remote consoles list
   const [hostname, setHostname] = useState<string>(remoteUrl)
 
   useEffect(() => {
-    // Fetch remote console info to get hostname
     if (remoteUrl) {
-      console.log('[RemoteGlobalConfig] Fetching hostname for:', remoteUrl)
-      // Try to get from global config
       const token = localStorage.getItem('ccding_token')
       fetch('/api/global/config', {
         headers: { 'Authorization': token ? `Bearer ${token}` : '' }
       })
-        .then(res => {
-          console.log('[RemoteGlobalConfig] Response status:', res.status)
-          return res.json()
-        })
+        .then(res => res.json())
         .then((data: any) => {
-          console.log('[RemoteGlobalConfig] Response data:', data)
           const consoles: IRemoteConsole[] = data.config?.console?.remoteConsoles || data.config?.remoteConsoles || []
-          console.log('[RemoteGlobalConfig] Consoles:', consoles)
-          // Normalize URLs for comparison (remove trailing slashes)
           const normalizedRemoteUrl = remoteUrl.replace(/\/$/, '')
           const rc = consoles.find(c => c.url.replace(/\/$/, '') === normalizedRemoteUrl)
-          console.log('[RemoteGlobalConfig] Found console:', rc)
           if (rc && rc.hostname) {
-            console.log('[RemoteGlobalConfig] Setting hostname:', rc.hostname)
             setHostname(rc.hostname)
           } else {
-            // Extract IP from URL for cleaner display
             try {
               const url = new URL(remoteUrl)
               setHostname(url.hostname)
@@ -51,9 +39,7 @@ export default function RemoteGlobalConfig() {
             }
           }
         })
-        .catch((err) => {
-          console.error('[RemoteGlobalConfig] Fetch error:', err)
-          // Fallback: extract IP from URL
+        .catch(() => {
           try {
             const url = new URL(remoteUrl)
             setHostname(url.hostname)
@@ -82,8 +68,13 @@ export default function RemoteGlobalConfig() {
         items={[
           {
             key: 'console',
-            label: '⚙️ 基础配置',
+            label: '️ 基础配置',
             children: <RemoteConsoleConfigTab remoteUrl={remoteUrl || ''} />,
+          },
+          {
+            key: 'a2a',
+            label: '🤖 A2A 配置',
+            children: <A2AConfigTab remoteUrl={remoteUrl} />,
           },
           {
             key: 'settings',
@@ -101,9 +92,9 @@ export default function RemoteGlobalConfig() {
             children: <GlobalRetryLogsTab remoteUrl={remoteUrl} />,
           },
           {
-            key: 'a2a',
-            label: ' A2A 配置',
-            children: <RemoteA2AConfigTab remoteUrl={remoteUrl || ''} />,
+            key: 'raw',
+            label: '📝 原始JSON',
+            children: <RemoteRawConfigTab remoteUrl={remoteUrl} />,
           },
         ]}
       />
@@ -111,11 +102,10 @@ export default function RemoteGlobalConfig() {
   )
 }
 
-/** 远程 Console 配置 Tab */
+/** 远程 Console 基础配置 Tab */
 function RemoteConsoleConfigTab({ remoteUrl }: { remoteUrl: string }) {
   const [config, setConfig] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (!remoteUrl) return
@@ -127,202 +117,101 @@ function RemoteConsoleConfigTab({ remoteUrl }: { remoteUrl: string }) {
       .finally(() => setLoading(false))
   }, [remoteUrl])
 
-  const handleSaveUpdatePkgUrl = async (value: string) => {
-    setSaving(true)
-    try {
-      await api.putRemoteGlobalConfig(remoteUrl, { ...config, updatePkgUrl: value || undefined })
-      message.success('更新包地址已保存')
-    } catch (e: any) {
-      message.error(e.message || '保存失败')
-    } finally {
-      setSaving(false)
-    }
-  }
-
   if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
   if (!config) return <div style={{ padding: 24 }}>配置加载失败</div>
 
   return (
     <div>
-      {/* 服务配置 */}
-      <Card title="服务配置" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>端口</div>
-            <div style={{ fontSize: 18, fontWeight: 600 }}>{config.port || '-'}</div>
-          </div>
-          <div>
-            <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>Host</div>
-            <div style={{ fontSize: 18, fontWeight: 600 }}>{config.host || '-'}</div>
-          </div>
+      <div style={{ fontSize: 13, color: '#999', marginBottom: 16 }}>
+        远程 Console 基础配置为只读模式。修改端口/Host 需登录远程机器直接编辑 config.json。
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 16 }}>
+        <div style={{ background: '#151b23', borderRadius: 8, padding: 16, border: '1px solid #2d3d4f' }}>
+          <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>端口</div>
+          <div style={{ fontSize: 20, fontWeight: 600 }}>{config.port || '-'}</div>
         </div>
-      </Card>
-
-      {/* 更新配置 */}
-      <Card title="更新配置">
-        <Form layout="vertical">
-          <Form.Item label="更新包下载地址 (updatePkgUrl)">
-            <Input
-              placeholder="http://192.168.3.2:39000/cc-ding/releases/cc-ding-latest.tgz"
-              defaultValue={(config as any)?.updatePkgUrl || ''}
-              style={{ maxWidth: 600 }}
-              onBlur={(e) => handleSaveUpdatePkgUrl(e.target.value.trim())}
-              onPressEnter={(e) => handleSaveUpdatePkgUrl((e.target as HTMLInputElement).value.trim())}
-            />
-          </Form.Item>
-          <div style={{ fontSize: 12, color: '#999' }}>
-            远程客户端执行 <code>/reboot --update</code> 时优先从此地址下载安装包
-          </div>
-        </Form>
-      </Card>
+        <div style={{ background: '#151b23', borderRadius: 8, padding: 16, border: '1px solid #2d3d4f' }}>
+          <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>Host</div>
+          <div style={{ fontSize: 20, fontWeight: 600 }}>{config.host || '-'}</div>
+        </div>
+      </div>
     </div>
   )
 }
 
-/** 远程 A2A 配置 Tab */
-function RemoteA2AConfigTab({ remoteUrl }: { remoteUrl: string }) {
-  const [a2aHubUrl, setA2aHubUrl] = useState<string>('')
-  const [a2aApiKey, setA2aApiKey] = useState<string>('')
-  const [a2aRemoteAgents, setA2aRemoteAgents] = useState<Array<{id: string; name: string; baseUrl: string; apiKey?: string; defaultSkill?: string}>>([])
+/** 远程原始 JSON 配置 Tab */
+function RemoteRawConfigTab({ remoteUrl }: { remoteUrl: string }) {
+  const [content, setContent] = useState<string>('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
 
-  useEffect(() => {
+  const fetchRaw = () => {
     if (!remoteUrl) return
-    api.getRemoteGlobalConfig(remoteUrl)
+    setLoading(true)
+    const token = localStorage.getItem('ccding_token')
+    fetch(`/api/remote/global/config?url=${encodeURIComponent(remoteUrl)}`, {
+      headers: { 'Authorization': token ? `Bearer ${token}` : '' }
+    })
+      .then(res => res.json())
       .then((data: any) => {
-        const a2aCfg = (data as any)?.a2aCfg || {}
-        setA2aHubUrl(a2aCfg.hubUrl || '')
-        setA2aApiKey(a2aCfg.apiKey || '')
-        setA2aRemoteAgents(a2aCfg.remoteAgents || [])
+        const config = data.config || data
+        setContent(JSON.stringify(config, null, 2))
       })
       .catch((e: any) => message.error(e.message))
       .finally(() => setLoading(false))
-  }, [remoteUrl])
+  }
+
+  useEffect(() => { fetchRaw() }, [remoteUrl])
 
   const handleSave = async () => {
     setSaving(true)
     try {
-      const a2aCfg: any = {}
-      if (a2aHubUrl.trim()) a2aCfg.hubUrl = a2aHubUrl.trim()
-      if (a2aApiKey.trim()) a2aCfg.apiKey = a2aApiKey.trim()
-      if (a2aRemoteAgents.length > 0) {
-        a2aCfg.remoteAgents = a2aRemoteAgents.filter(a => a.id && a.baseUrl)
+      const parsed = JSON.parse(content)
+      const token = localStorage.getItem('ccding_token')
+      const res = await fetch(`/api/remote/global/config?url=${encodeURIComponent(remoteUrl)}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': token ? `Bearer ${token}` : ''
+        },
+        body: JSON.stringify(parsed)
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.error || '保存失败')
       }
-      await api.putRemoteGlobalConfig(remoteUrl, { a2aCfg: Object.keys(a2aCfg).length > 0 ? a2aCfg : undefined })
-      message.success('A2A 配置已保存')
+      message.success('远程配置已保存')
     } catch (e: any) {
-      message.error(e.message || '保存失败')
+      message.error(e.message || 'JSON 格式错误')
     } finally {
       setSaving(false)
     }
-  }
-
-  const handleAddRemoteAgent = () => {
-    setA2aRemoteAgents([...a2aRemoteAgents, { id: '', name: '', baseUrl: '', apiKey: '', defaultSkill: '' }])
-  }
-
-  const handleRemoveRemoteAgent = (index: number) => {
-    setA2aRemoteAgents(a2aRemoteAgents.filter((_, i) => i !== index))
-  }
-
-  const handleUpdateRemoteAgent = (index: number, field: string, value: string) => {
-    const updated = [...a2aRemoteAgents]
-    updated[index] = { ...updated[index], [field]: value }
-    setA2aRemoteAgents(updated)
   }
 
   if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
 
   return (
     <div>
-      {/* Hub 配置 */}
-      <Card title="Hub 配置" style={{ marginBottom: 16 }}>
-        <Form layout="vertical">
-          <Form.Item label="Hub URL">
-            <Input
-              placeholder="https://hub.example.com"
-              value={a2aHubUrl}
-              onChange={(e) => setA2aHubUrl(e.target.value)}
-              style={{ maxWidth: 600 }}
-            />
-          </Form.Item>
-          <Form.Item label="API Key">
-            <Input.Password
-              placeholder="Hub 认证密钥"
-              value={a2aApiKey}
-              onChange={(e) => setA2aApiKey(e.target.value)}
-              style={{ maxWidth: 600 }}
-            />
-          </Form.Item>
-          <div style={{ fontSize: 12, color: '#999' }}>
-            配置后自动向 Hub 注册并保持心跳，发现其他 Agent
-          </div>
-        </Form>
-      </Card>
-
-      {/* 远端 Agent 列表 */}
-      <Card title="远端 Agent 列表（备用）">
-        <div style={{ marginBottom: 12 }}>
-          <Button type="dashed" icon={<PlusOutlined />} onClick={handleAddRemoteAgent}>添加 Agent</Button>
-        </div>
-        {a2aRemoteAgents.map((agent, index) => (
-          <Card key={index} size="small" style={{ marginBottom: 8 }}>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-              <Form.Item label="ID" style={{ marginBottom: 0, minWidth: 150 }}>
-                <Input
-                  placeholder="agent-id"
-                  value={agent.id}
-                  onChange={(e) => handleUpdateRemoteAgent(index, 'id', e.target.value)}
-                />
-              </Form.Item>
-              <Form.Item label="名称" style={{ marginBottom: 0, minWidth: 150 }}>
-                <Input
-                  placeholder="Agent 名称"
-                  value={agent.name}
-                  onChange={(e) => handleUpdateRemoteAgent(index, 'name', e.target.value)}
-                />
-              </Form.Item>
-              <Form.Item label="Base URL" style={{ marginBottom: 0, minWidth: 250 }}>
-                <Input
-                  placeholder="https://agent.example.com"
-                  value={agent.baseUrl}
-                  onChange={(e) => handleUpdateRemoteAgent(index, 'baseUrl', e.target.value)}
-                />
-              </Form.Item>
-              <Form.Item label="API Key" style={{ marginBottom: 0, minWidth: 200 }}>
-                <Input.Password
-                  placeholder="认证密钥"
-                  value={agent.apiKey}
-                  onChange={(e) => handleUpdateRemoteAgent(index, 'apiKey', e.target.value)}
-                />
-              </Form.Item>
-              <Form.Item label="默认技能" style={{ marginBottom: 0, minWidth: 150 }}>
-                <Input
-                  placeholder="skill-name"
-                  value={agent.defaultSkill}
-                  onChange={(e) => handleUpdateRemoteAgent(index, 'defaultSkill', e.target.value)}
-                />
-              </Form.Item>
-              <Button
-                type="text"
-                danger
-                icon={<MinusOutlined />}
-                onClick={() => handleRemoveRemoteAgent(index)}
-                style={{ marginTop: 4 }}
-              />
-            </div>
-          </Card>
-        ))}
-        {a2aRemoteAgents.length === 0 && (
-          <div style={{ color: '#999', fontSize: 13 }}>
-            暂无远端 Agent 配置。Hub 不可用时，可通过此处配置直连 Agent。
-          </div>
-        )}
-      </Card>
-
-      <div style={{ marginTop: 16 }}>
-        <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving}>保存 A2A 配置</Button>
+      <textarea
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+        style={{
+          width: '100%',
+          minHeight: 500,
+          background: '#0d1117',
+          color: '#c9d1d9',
+          border: '1px solid #30363d',
+          borderRadius: 8,
+          padding: 16,
+          fontFamily: 'SF Mono, Monaco, monospace',
+          fontSize: 13,
+          lineHeight: 1.5,
+          resize: 'vertical',
+        }}
+      />
+      <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <Button onClick={fetchRaw}>重新加载</Button>
+        <Button type="primary" onClick={handleSave} loading={saving}>保存</Button>
       </div>
     </div>
   )
