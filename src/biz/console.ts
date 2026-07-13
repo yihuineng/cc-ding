@@ -305,9 +305,27 @@ async function proxyToRemoteConsole(
   });
 
   const data = await res.json();
-  // 远程 Console 返回 401 时映射为 502，避免前端误判为本地认证失败而清除 token
-  const mappedStatus = res.status === 401 ? 502 : res.status;
-  return { status: mappedStatus, data };
+
+  // 远程 Console 返回 401：清除缓存 token 并重试一次
+  if (res.status === 401) {
+    tokenCache.delete(remoteConsole.url);
+    const freshToken = await getRemoteConsoleToken(remoteConsole);
+    headers.Authorization = `Bearer ${freshToken}`;
+    const retryRes = await fetch(url, {
+      method,
+      headers,
+      body: body || undefined,
+    });
+    const retryData = await retryRes.json();
+    if (retryRes.status === 401) {
+      // 刷新后仍然 401，说明账号密码有误
+      tokenCache.delete(remoteConsole.url);
+      return { status: 502, data: { error: '远程 Console 认证失败，请检查账号密码' } };
+    }
+    return { status: retryRes.status, data: retryData };
+  }
+
+  return { status: res.status, data };
 }
 
 /** 保存全局 Console 配置 */
