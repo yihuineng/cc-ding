@@ -6,6 +6,7 @@ import Clients from './pages/Clients'
 import ClientDetail from './pages/ClientDetail'
 import GlobalConfig from './pages/GlobalConfig'
 import RemoteGlobalConfig from './pages/RemoteGlobalConfig'
+import A2AMonitor from './pages/A2AMonitor'
 
 const darkTheme = {
   algorithm: theme.darkAlgorithm,
@@ -40,6 +41,7 @@ function App() {
           <Route path="/global/:tab" element={<GlobalConfig />} />
           <Route path="/remote-global/:remoteUrl" element={<RemoteGlobalConfig />} />
           <Route path="/remote-global/:remoteUrl/:tab" element={<RemoteGlobalConfig />} />
+          <Route path="/a2a" element={<A2AMonitor />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

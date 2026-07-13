@@ -43,7 +43,7 @@ export default function A2AStatusCard() {
       size="small"
       hoverable
       className="a2a-status-card"
-      onClick={() => navigate('/global/a2a-panel')}
+      onClick={() => navigate('/a2a')}
       style={{ cursor: 'pointer' }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
