@@ -1497,6 +1497,10 @@ async function handlePutGlobalConfig(req: http.IncomingMessage, res: http.Server
     if (data.a2aCfg !== undefined) {
       globalCfg.a2aCfg = data.a2aCfg;
     }
+    if (data.updatePkgUrl !== undefined) {
+      globalCfg.updatePkgUrl = data.updatePkgUrl || undefined;
+      if (!data.updatePkgUrl) delete globalCfg.updatePkgUrl;
+    }
     atomicWrite(GLOBAL_CONFIG_PATH, JSON.stringify(globalCfg, null, 2));
     jsonResponse(res, 200, { message: '全局配置已保存' });
   } catch (err) {
