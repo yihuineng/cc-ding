@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { Card, Button, Space, Modal, Form, Input, Popconfirm, message, Switch } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, CopyOutlined } from '@ant-design/icons'
+import { useEffect, useState, useRef } from 'react'
+import { Card, Button, Space, Modal, Form, Input, Popconfirm, message, Switch, Tag } from 'antd'
+import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, CopyOutlined, DragOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import { IApiKey } from '../types'
 
@@ -17,6 +17,13 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
   const [saving, setSaving] = useState(false)
   const [form] = Form.useForm()
   const [togglingIndex, setTogglingIndex] = useState<number | null>(null)
+  // 拖拽排序
+  const [dragIndex, setDragIndex] = useState<number | null>(null)
+  const [overIndex, setOverIndex] = useState<number | null>(null)
+  const [reorderSaving, setReorderSaving] = useState(false)
+  const isRemote = !!remoteUrl
+  const dragNode = useRef<HTMLDivElement | null>(null)
+  const dragOverNode = useRef<HTMLDivElement | null>(null)
 
   const loadKeys = async () => {
     setLoading(true)
@@ -121,6 +128,56 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
     }
   }
 
+  // 拖拽排序：本地模式
+  const handleReorder = async (newOrder: number[]) => {
+    if (isRemote) return // 远程不支持拖拽排序
+    setReorderSaving(true)
+    try {
+      await api.reorderGlobalApiKeys(newOrder)
+      setKeys(prev => newOrder.map(i => prev[i]))
+      message.success('排序已更新，排前的 Key 优先使用')
+    } catch (e: any) {
+      message.error(e.message || '排序失败')
+      loadKeys()
+    } finally {
+      setReorderSaving(false)
+    }
+  }
+
+  const handleDragStart = (index: number) => {
+    if (isRemote) return
+    setDragIndex(index)
+  }
+
+  const handleDragEnter = (e: React.DragEvent, index: number) => {
+    if (isRemote || dragIndex === null || dragIndex === index) return
+    e.preventDefault()
+    setOverIndex(index)
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+  }
+
+  const handleDragLeave = () => {
+    setOverIndex(null)
+  }
+
+  const handleDrop = (e: React.DragEvent, targetIndex: number) => {
+    e.preventDefault()
+    if (isRemote || dragIndex === null || dragIndex === targetIndex) {
+      setDragIndex(null)
+      setOverIndex(null)
+      return
+    }
+    const newOrder = keys.map((_, i) => i)
+    const [moved] = newOrder.splice(dragIndex, 1)
+    newOrder.splice(targetIndex, 0, moved)
+    setDragIndex(null)
+    setOverIndex(null)
+    handleReorder(newOrder)
+  }
+
   const maskKey = (key: string) => {
     if (!key || key.length <= 8) return key || ''
     return key.slice(0, 4) + '****' + key.slice(-4)
@@ -131,7 +188,10 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>添加 Key</Button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openAdd}>添加 Key</Button>
+          {!isRemote && <Tag color="blue" style={{ margin: 0 }}>拖拽排序，排前优先</Tag>}
+        </div>
         <Button onClick={loadKeys} icon={<ReloadOutlined />}>刷新</Button>
       </div>
 
@@ -145,38 +205,66 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
         </Card>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(380px, 100%), 1fr))', gap: 12 }}>
-          {keys.map((key, index) => (
-            <Card key={index} size="small" styles={{ body: { padding: '12px 16px' } }} style={{ opacity: key.isValid ? 1 : 0.6 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ marginBottom: 6 }}>
-                    <code style={{ fontSize: 12, color: '#999' }}>{maskKey(key.apiKey || '')}</code>
+          {keys.map((key, index) => {
+            const isDragging = dragIndex === index;
+            const isOver = overIndex === index;
+            return (
+              <Card
+                key={index}
+                size="small"
+                styles={{ body: { padding: '12px 16px' } }}
+                style={{
+                  opacity: key.isValid ? 1 : 0.6,
+                  cursor: isRemote ? 'default' : 'grab',
+                  border: isOver ? '2px solid #00ff9d' : undefined,
+                  transform: isDragging ? 'scale(0.98)' : undefined,
+                  transition: 'border 0.15s, transform 0.15s',
+                }}
+                draggable={!isRemote}
+                onDragStart={() => handleDragStart(index)}
+                onDragEnter={(e) => handleDragEnter(e, index)}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={(e) => handleDrop(e, index)}
+                ref={isDragging ? dragNode : isOver ? dragOverNode : undefined}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flex: 1, minWidth: 0 }}>
+                    {!isRemote && (
+                      <DragOutlined style={{ color: '#666', marginTop: 3, flexShrink: 0 }} />
+                    )}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                        <span style={{ fontSize: 11, color: '#666', fontWeight: 600 }}>#{index + 1}</span>
+                        <code style={{ fontSize: 12, color: '#999' }}>{maskKey(key.apiKey || '')}</code>
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{key.model || '-'}</div>
+                      <div style={{ fontSize: 11, color: '#666', wordBreak: 'break-all' }}>
+                        {key.baseUrl && <><span style={{ color: '#999' }}>URL: </span><code>{key.baseUrl}</code><br /></>}
+                        {key.smallModel && <><span style={{ color: '#999' }}>小模型: </span>{key.smallModel}<br /></>}
+                        {key.memo && <><span style={{ color: '#999' }}>备注: </span>{key.memo}</>}
+                      </div>
+                    </div>
                   </div>
-                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{key.model || '-'}</div>
-                  <div style={{ fontSize: 11, color: '#666', wordBreak: 'break-all' }}>
-                    {key.baseUrl && <><span style={{ color: '#999' }}>URL: </span><code>{key.baseUrl}</code><br /></>}
-                    {key.smallModel && <><span style={{ color: '#999' }}>小模型: </span>{key.smallModel}<br /></>}
-                    {key.memo && <><span style={{ color: '#999' }}>备注: </span>{key.memo}</>}
-                  </div>
+                  <Space size={4} align="start">
+                    <Switch
+                      size="small"
+                      checked={key.isValid}
+                      loading={togglingIndex === index}
+                      onChange={() => handleToggleValid(index, key.isValid)}
+                      checkedChildren="启用"
+                      unCheckedChildren="禁用"
+                    />
+                    <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => openCopy(index)} />
+                    <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(index)} />
+                    <Popconfirm title="确定删除此 Key?" onConfirm={() => handleDelete(index)}>
+                      <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+                    </Popconfirm>
+                  </Space>
                 </div>
-                <Space size={4} align="start">
-                  <Switch
-                    size="small"
-                    checked={key.isValid}
-                    loading={togglingIndex === index}
-                    onChange={() => handleToggleValid(index, key.isValid)}
-                    checkedChildren="启用"
-                    unCheckedChildren="禁用"
-                  />
-                  <Button size="small" type="text" icon={<CopyOutlined />} onClick={() => openCopy(index)} />
-                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(index)} />
-                  <Popconfirm title="确定删除此 Key?" onConfirm={() => handleDelete(index)}>
-                    <Button size="small" type="text" danger icon={<DeleteOutlined />} />
-                  </Popconfirm>
-                </Space>
-              </div>
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </div>
       )}
 

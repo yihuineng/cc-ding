@@ -209,7 +209,13 @@ export const api = {
       method: 'DELETE',
     }),
 
-  // ── Global RetryLogs ──
+  reorderGlobalApiKeys: (order: number[]) =>
+    request('/api/global/apikeys/reorder', {
+      method: 'PUT',
+      body: JSON.stringify({ order }),
+    }),
+
+  // ─ Global RetryLogs ──
   getGlobalRetryLogs: () => request<{ retryLogs: Record<string, string[]> }>('/api/global/retrylogs'),
 
   putGlobalRetryLogs: (retryLogs: Record<string, string[]>) =>

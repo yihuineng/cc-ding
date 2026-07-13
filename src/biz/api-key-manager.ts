@@ -199,14 +199,15 @@ export function rotateApiKey(self: DingClaude, usedKey: string): IClaudeSetting 
   const candidates = cfg.modelSettings.filter(s => s.isValid && resolveSecret(s.apiKey) !== resolvedUsedKey);
   if (candidates.length === 0) return null;
 
-  const newSetting = candidates[Math.floor(Math.random() * candidates.length)];
+  // 按顺序选取第一个可用 Key（排前的优先）
+  const newSetting = candidates[0];
   const usedKeyLabel = findSettingLabel(cfg.modelSettings, usedKey);
   console.log(`[${timestamp()}] 连续失败切换 Key: ${usedKeyLabel} → ${settingLabel(newSetting)}（剩余候选: ${candidates.length}）`);
   return newSetting;
 }
 
 /**
- * 随机从 modelSettings 中取一个有效的 Setting
+ * 按顺序从 modelSettings 中取第一个有效的 Setting（排前的优先使用）
  * @param excludeApiKey 排除指定 apiKey（用于切换时排除当前 Key）
  */
 export function pickValidApiKey(self: DingClaude, excludeApiKey?: string): IClaudeSetting | null {
@@ -215,7 +216,8 @@ export function pickValidApiKey(self: DingClaude, excludeApiKey?: string): IClau
   const resolvedExclude = excludeApiKey ? resolveSecret(excludeApiKey) : undefined;
   const validSettings = cfg.modelSettings.filter(s => s.isValid && (!resolvedExclude || resolveSecret(s.apiKey) !== resolvedExclude));
   if (validSettings.length === 0) return null;
-  return validSettings[Math.floor(Math.random() * validSettings.length)];
+  // 返回第一个有效 Key（排前的优先）
+  return validSettings[0];
 }
 
 /**

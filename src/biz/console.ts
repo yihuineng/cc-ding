@@ -1387,6 +1387,31 @@ async function handleDeleteGlobalApiKey(req: http.IncomingMessage, res: http.Ser
   }
 }
 
+/** PUT /api/global/apikeys/reorder — 拖拽排序 API Keys */
+async function handleReorderGlobalApiKeys(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  try {
+    const body = await readBody(req);
+    const { order } = JSON.parse(body || '{}');
+    if (!Array.isArray(order)) {
+      jsonError(res, 400, 'order 必须为索引数组');
+      return;
+    }
+    const apiKeyCfg = readGlobalApiKeyCfg();
+    if (!apiKeyCfg?.modelSettings) {
+      jsonError(res, 404, '全局 API Key 配置不存在');
+      return;
+    }
+    // 按新顺序重新排列
+    const reordered = order.map(i => apiKeyCfg.modelSettings[i]).filter(Boolean);
+    apiKeyCfg.modelSettings = reordered;
+    writeGlobalApiKeyCfg(apiKeyCfg);
+    jsonResponse(res, 200, { message: 'API Key 排序已更新' });
+  } catch (err) {
+    jsonError(res, 400, '请求格式错误');
+  }
+}
+
 /** GET /api/global/retrylogs — 获取全局 retryLogs 配置 */
 async function handleGetGlobalRetryLogs(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   if (!requireAuth(req, res)) return;
@@ -2671,6 +2696,12 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // DELETE /api/global/apikeys/:index
   if (globalApiKeyIndexMatch && req.method === 'DELETE') {
     await handleDeleteGlobalApiKey(req, res, parseInt(globalApiKeyIndexMatch[1], 10));
+    return;
+  }
+
+  // PUT /api/global/apikeys/reorder
+  if (pathname === '/api/global/apikeys/reorder' && req.method === 'PUT') {
+    await handleReorderGlobalApiKeys(req, res);
     return;
   }
 
