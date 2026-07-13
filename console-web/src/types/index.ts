@@ -89,4 +89,5 @@ export interface IStatus {
   nodeVersion: string
   platform: string
   uptime: number
+  buildTime?: string
 }

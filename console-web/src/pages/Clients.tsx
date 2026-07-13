@@ -314,7 +314,8 @@ export default function Clients() {
           <div className="status-bar">
             <Tag color="green">● 在线: {localClients.filter(c => c.online).length}</Tag>
             {status.ccDingVersion && <span>📦 {status.ccDingVersion}</span>}
-            {status.nodeVersion && <span>⚙️ Node {status.nodeVersion}</span>}
+            {status.buildTime && <span> {new Date(status.buildTime).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>}
+            {status.nodeVersion && <span>️ Node {status.nodeVersion}</span>}
             {status.platform && <span>💻 {status.platform}</span>}
           </div>
         )}
@@ -398,6 +399,7 @@ export default function Clients() {
                 <div className="status-bar">
                   <Tag color="orange">● 离线</Tag>
                   {remoteStatus.ccDingVersion && <span> {remoteStatus.ccDingVersion}</span>}
+                  {remoteStatus.buildTime && <span> {new Date(remoteStatus.buildTime).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>}
                   {remoteStatus.nodeVersion && <span>️ Node {remoteStatus.nodeVersion}</span>}
                   {remoteStatus.platform && <span>💻 {remoteStatus.platform}</span>}
                 </div>

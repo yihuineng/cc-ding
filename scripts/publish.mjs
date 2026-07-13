@@ -66,7 +66,7 @@ function getPackageInfo() {
 }
 
 function buildProject() {
-  console.log('\n📦 Building project...');
+  console.log('\n Building project...');
   run('npm', [ 'run', 'build', '--silent' ], { silent: true });
   console.log('✅ Build complete');
 }
@@ -91,7 +91,7 @@ function createTarball() {
 
   if (fs.existsSync(npmPackOutput)) {
     fs.renameSync(npmPackOutput, tarballPath);
-    console.log(`📋 Tarball created: ${name}-latest.tgz`);
+    console.log(` Tarball created: ${name}-latest.tgz`);
     return tarballPath;
   }
 

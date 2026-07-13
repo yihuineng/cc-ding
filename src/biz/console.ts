@@ -69,6 +69,7 @@ interface ISystemStatus {
   uptime: number;
   clients: number;
   onlineClients: number;
+  buildTime?: string;
 }
 
 /** Bearer Token 记录 */
@@ -1620,10 +1621,12 @@ async function handlePutGlobalRawConfig(req: http.IncomingMessage, res: http.Ser
 
 /** GET /api/ping - 公开端点，用于局域网扫描发现（无需认证） */
 async function handlePing(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const pkg = projUtil().getPkg();
   jsonResponse(res, 200, {
     name: 'cc-ding-console',
     version: projUtil().getPkgVersion(),
     hostname: require('os').hostname(),
+    buildTime: pkg.buildTime || '',
   });
 }
 
@@ -1637,6 +1640,7 @@ async function handleGetStatus(req: http.IncomingMessage, res: http.ServerRespon
     if (checkClientOnline(clientId).online) onlineCount++;
   }
 
+  const pkg = projUtil().getPkg();
   const status: ISystemStatus = {
     ccDingVersion: projUtil().getPkgVersion(),
     nodeVersion: process.version,
@@ -1645,6 +1649,7 @@ async function handleGetStatus(req: http.IncomingMessage, res: http.ServerRespon
     uptime: process.uptime(),
     clients: clientDirs.length,
     onlineClients: onlineCount,
+    buildTime: pkg.buildTime || '',
   };
   jsonResponse(res, 200, { status });
 }

@@ -47,3 +47,10 @@ run(process.execPath, [ tscPath ]);
 fs.cpSync(resourceDir, path.join(distDir, 'resource'), { recursive: true });
 fs.rmSync(path.join(distDir, 'test'), { recursive: true, force: true });
 patchBinShebangs();
+
+// 更新 package.json 的构建时间
+const pkgPath = path.join(rootDir, 'package.json');
+const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+pkg.buildTime = new Date().toISOString();
+fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+console.log(` Build time: ${pkg.buildTime}`);
