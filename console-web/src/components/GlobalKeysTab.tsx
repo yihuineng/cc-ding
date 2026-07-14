@@ -295,11 +295,13 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
               >
                 <Card
                   size="small"
-                  styles={{ body: { padding: '12px 16px' } }}
+                  className="api-key-card"
                   style={{
                     border: isOver && dragIndex !== null ? '2px solid #00ff9d' : undefined,
                     cursor: isRemote ? 'default' : 'grab',
                     touchAction: isRemote ? 'auto' : 'none',
+                    width: '100%',
+                    boxSizing: 'border-box',
                   }}
                   draggable={!isRemote}
                   onDragStart={() => handleDragStart(index)}

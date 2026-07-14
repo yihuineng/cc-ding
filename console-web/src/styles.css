@@ -134,6 +134,29 @@ body {
     padding: 12px;
   }
 
+  /* API Keys 卡片移动端优化 */
+  .api-keys-grid {
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .api-keys-grid > div {
+    width: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+
+  .api-keys-grid .api-key-card {
+    width: 100% !important;
+    box-sizing: border-box;
+    overflow: hidden;
+  }
+
+  .api-keys-grid .api-key-card .ant-card-body {
+    padding: 10px 12px !important;
+    overflow: hidden;
+  }
+
   .page-header {
     flex-direction: column;
     align-items: flex-start;
@@ -399,11 +422,11 @@ code {
   }
 
   .api-keys-grid .ant-card {
-    overflow: visible;
+    overflow: hidden;
   }
 
   .api-keys-grid .ant-card-body {
-    overflow: visible;
+    overflow: hidden;
   }
 
   .api-keys-grid code {
