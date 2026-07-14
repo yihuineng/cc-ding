@@ -1315,6 +1315,15 @@ export async function executeClaudeQuery(
         console.log(`[${timestamp()}] Agent 异常，Key ${settingLabel(currentSetting)} 标记为不可用，尝试切换其他 Key`);
         fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Agent 异常，切换 Key 重试\n`, 'utf-8');
 
+        // 通知用户 Key 不可用
+        const atUserId = senderStaffId || session.startStaffId;
+        await sendDingMessage(self, {
+          conversationId: getReplyConversationId(session),
+          sessionWebhook: getReplyWebhook(session),
+          atUserId,
+          content: `⚠️ API Key ${settingLabel(currentSetting)} 异常不可用，已自动切换到其他 Key\n\n错误: ${errorMsg.substring(0, 100)}`,
+        });
+
         // 尝试切换到可用 Key
         const availableKey = pickAvailableApiKey(self, currentSetting.apiKey);
         if (availableKey) {
@@ -1344,6 +1353,14 @@ export async function executeClaudeQuery(
         console.log(`[${timestamp()}] 等待后仍无可用 Key，终止重试`);
         fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均不可用，终止重试\n`, 'utf-8');
         retryHistory.push(`[${timestamp()}] 所有 Key 均不可用，终止重试`);
+
+        // 通知用户所有 Key 不可用
+        await sendDingMessage(self, {
+          conversationId: getReplyConversationId(session),
+          sessionWebhook: getReplyWebhook(session),
+          atUserId,
+          content: `🔑 所有 API Key 均不可用，已终止重试\n\n请检查 API Key 配置或联系管理员`,
+        });
       }
 
       throw err;
