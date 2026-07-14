@@ -1302,6 +1302,50 @@ export async function executeClaudeQuery(
         consecutiveFastFail = 0;
         continue;
       }
+
+      // 通用异常处理：标记当前 Key 为不可用，尝试切换其他可用 Key
+      if (currentSetting && apiKeyCfg?.modelSettings?.length) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+
+        // 标记当前 Key 为暂不可用（5 分钟冷却）
+        const cooldownSecs = 300; // 5 分钟
+        markKeyCooldown(currentSetting.baseUrl, currentSetting.apiKey, cooldownSecs, `异常: ${errorMsg.substring(0, 50)}`);
+        totalRetries++; retryStartTime = retryStartTime || Date.now();
+        retryHistory.push(`[${timestamp()}] 异常，Key ${settingLabel(currentSetting)} 冷却 ${cooldownSecs}s，尝试切换`);
+        console.log(`[${timestamp()}] Agent 异常，Key ${settingLabel(currentSetting)} 标记为不可用，尝试切换其他 Key`);
+        fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: Agent 异常，切换 Key 重试\n`, 'utf-8');
+
+        // 尝试切换到可用 Key
+        const availableKey = pickAvailableApiKey(self, currentSetting.apiKey);
+        if (availableKey) {
+          currentSetting = availableKey;
+          ensureSettingsWithApiKey(dingGroupDir, currentSetting);
+          consecutiveFastFail = 0;
+          retryLogRetry = true;
+          continue;
+        }
+
+        // 无可用 Key，等待恢复
+        console.log(`[${timestamp()}] 所有 Key 均不可用，等待恢复...`);
+        fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均不可用，等待恢复\n`, 'utf-8');
+        const gotKey = await waitForKeyAvailable(cooldownSecs);
+        if (gotKey) {
+          const recoveredKey = pickAvailableApiKey(self);
+          if (recoveredKey) {
+            currentSetting = recoveredKey;
+            ensureSettingsWithApiKey(dingGroupDir, currentSetting);
+            consecutiveFastFail = 0;
+            retryLogRetry = true;
+            continue;
+          }
+        }
+
+        // 等待后仍无可用 Key，终止
+        console.log(`[${timestamp()}] 等待后仍无可用 Key，终止重试`);
+        fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均不可用，终止重试\n`, 'utf-8');
+        retryHistory.push(`[${timestamp()}] 所有 Key 均不可用，终止重试`);
+      }
+
       throw err;
     }
   }
