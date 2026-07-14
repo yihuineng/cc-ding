@@ -89,16 +89,11 @@ export function resolveClaudeSettingsPath(
 }
 
 /**
- * 判断错误是否为可重试的 API 限流错误（422 TPM、429 限流等）
+ * 判断错误是否为可重试的 API 限流错误
+ * 仅匹配通用限流关键词，不硬编码 HTTP 状态码
+ * 具体错误模式由用户通过 retryLogs 配置
  */
 export function isRetryableApiError(output: string): boolean {
-  // 匹配 429 限流（可重试）
-  if (/\b429\b/.test(output)) return true;
-  // 匹配 422 TPM 限流: "API Error: 422 {"error":{"type":"api_error","message":"...请求额度超限(TPM)"}...}"
-  if (/API\s*Error.*422/i.test(output)) return true;
-  if (/\b422\b.*(?:TPM|额度超限|rate\s*limit|tokens?\s*per\s*minute)/i.test(output)) return true;
-  if (/(?:TPM|额度超限).*\b422\b/i.test(output)) return true;
-  // 通用限流关键词（非 429）
   const lowerOutput = output.toLowerCase();
   const keywords = [
     'rate limit', 'rate_limit', 'ratelimit', 'too many requests',

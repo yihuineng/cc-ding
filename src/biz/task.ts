@@ -608,7 +608,7 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
 
     if (exitCode !== 0) {
 
-      // 配额耗尽 (429): 尝试切换/轮换 Key
+      // Key 异常: 尝试切换/轮换 Key
       if (!useApiMode) {
         // 切换到 API Key 模式
         currentSetting = pickValidApiKey(self);
@@ -628,7 +628,7 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
           consecutiveFastFail = 0;
           const settingsPath = ensureSettingsWithApiKey(conversationDir, currentSetting);
           updateCmdArgsSettings(cmdArgs, settingsPath);
-          console.log(`[${timestamp()}] API Key 配额耗尽(429)，切换到新 Key: ${settingLabel(newSetting)}`);
+          console.log(`[${timestamp()}] API Key Key 异常，切换到新 Key: ${settingLabel(newSetting)}`);
           continue;
         }
       }
@@ -640,7 +640,7 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
         combinedOutput,
       ].join('\n');
       fs.writeFileSync(logFile, logContent);
-      await resetTaskToTodo(self, taskDir, '无可用配额(429)');
+      await resetTaskToTodo(self, taskDir, '无可用 Key');
       return false;
 
       // 认证错误(401)：不可重试，直接标记失败
@@ -656,7 +656,7 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
         return true;
       }
 
-      // 可重试 API 错误（422 TPM 限流等）
+      // 可重试 API 错误（限流）
       if (isRetryableApiError(combinedOutput)) {
         // API Key 模式下连续快速失败 → 轮换 Key
         if (result.elapsed < FAST_FAIL_THRESHOLD_MS && useApiMode && currentSetting && apiKeyCfg) {
@@ -707,7 +707,7 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
   fs.writeFileSync(logFile, logContent);
 
   if (exitCode !== 0) {
-    // 非超时、非429、非422的其他错误 → 标记为失败
+    // 非超时、其他的其他错误 → 标记为失败
     console.error(`命令执行失败, 退出码: ${exitCode}`);
     await failTask(self, taskDir, `执行失败(退出码: ${exitCode})`);
     return true;

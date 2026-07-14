@@ -3,11 +3,10 @@ import { isRetryableApiError, parseClaudeStreamLine } from '../src/biz/claude-pr
 
 describe('claude-process error classifiers', () => {
   describe('isRetryableApiError', () => {
-    it('429 临时限流可重试', () => {
+    it('429 临时限流可重试（通过 too many requests 关键词）', () => {
       assert.strictEqual(isRetryableApiError('API Error: 429 too many requests'), true);
     });
-    it('422 TPM 限流可重试', () => {
-      assert.strictEqual(isRetryableApiError('API Error: 422 {"error":{"message":"请求额度超限(TPM)"}}'), true);
+    it('TPM 限流可重试（通过 tokens per minute 关键词）', () => {
       assert.strictEqual(isRetryableApiError('422 tokens per minute exceeded'), true);
     });
     it('通用限流关键词可重试', () => {

@@ -160,14 +160,11 @@ async function analyzeCronWithClaude(
     const combined = res.errorOutput;
     console.error(`[${timestamp()}] Cron分析失败: ${combined.trim().substring(0, 200)}`);
     // 根据错误类型给出更具体的提示
-    if (/\b429\b/.test(combined)) {
-      throw new Error('Agent 配额已耗尽(429)，请稍后重试或明天再试');
+    if (/TPM|额度超限|rate.?limit|too many requests/i.test(combined)) {
+      throw new Error('Agent 限流，请稍后重试');
     }
-    if (/\b422\b/.test(combined) || /TPM|额度超限/i.test(combined)) {
-      throw new Error('Agent TPM 限流(422)，请稍后重试');
-    }
-    if (/\b401\b/.test(combined) || /auth|认证|permission/i.test(combined)) {
-      throw new Error('Agent 认证失败(401)，请检查 API Key 配置');
+    if (/auth|认证|permission/i.test(combined)) {
+      throw new Error('Agent 认证失败，请检查 API Key 配置');
     }
     throw new Error(`分析失败: ${combined.trim().substring(0, 200) || '无输出，请检查 claude 是否可用'}`);
   }
