@@ -88,7 +88,7 @@ export default function A2AConfigTab({ remoteUrl }: Props) {
             />
           </Form.Item>
           <Form.Item label="API Key">
-            <Input.Password
+            <Input
               placeholder="Hub 认证密钥"
               value={a2aApiKey}
               onChange={(e) => setA2aApiKey(e.target.value)}
@@ -131,7 +131,7 @@ export default function A2AConfigTab({ remoteUrl }: Props) {
                 />
               </Form.Item>
               <Form.Item label="API Key" style={{ marginBottom: 0, minWidth: 200 }}>
-                <Input.Password
+                <Input
                   placeholder="认证密钥"
                   value={agent.apiKey}
                   onChange={(e) => handleUpdateRemoteAgent(index, 'apiKey', e.target.value)}

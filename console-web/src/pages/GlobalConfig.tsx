@@ -546,7 +546,7 @@ export default function GlobalConfig() {
                                   <Input placeholder="admin" />
                                 </Form.Item>
                                 <Form.Item name="password" label="登录密码" style={{ minWidth: 150 }}>
-                                  <Input.Password placeholder="留空不变" />
+                                  <Input placeholder="留空不变" />
                                 </Form.Item>
                                 <Form.Item name="token" label="API Token" style={{ minWidth: 200 }}>
                                   <Input placeholder="与账号密码二选一" />
@@ -647,7 +647,7 @@ export default function GlobalConfig() {
                         <Input placeholder="admin" />
                       </Form.Item>
                       <Form.Item name="password" label="登录密码" style={{ minWidth: 150 }}>
-                        <Input.Password placeholder="密码" />
+                        <Input placeholder="密码" />
                       </Form.Item>
                       <Form.Item name="token" label="API Token (可选)" style={{ minWidth: 200 }}>
                         <Input placeholder="与账号密码二选一" />

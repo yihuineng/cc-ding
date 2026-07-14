@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Form, Input, InputNumber, Switch, Button, Card, Row, Col, message, Divider, Space } from 'antd'
-import { SaveOutlined, EyeInvisibleOutlined, EyeOutlined } from '@ant-design/icons'
+import { Form, Input, InputNumber, Switch, Button, Card, Row, Col, message, Divider } from 'antd'
+import { SaveOutlined } from '@ant-design/icons'
 import { api } from '../api/client'
 import { IConfig } from '../types'
 
@@ -9,31 +9,12 @@ interface Props {
   config: IConfig
 }
 
-/** 掩码凭证字段：仅显示前后 4 位 */
-function maskSecret(value: string | undefined): string {
-  if (!value) return ''
-  if (value.length <= 8) return '****'
-  return value.substring(0, 4) + '****' + value.substring(value.length - 4)
-}
-
 export default function ConfigTab({ clientId, config }: Props) {
   const [form] = Form.useForm()
   const [saving, setSaving] = useState(false)
-  // 敏感字段显示/隐藏
-  const [showSecrets, setShowSecrets] = useState(false)
-  // 原始凭证值（用于保存时对比，避免空覆盖）
-  const [originalSecrets, setOriginalSecrets] = useState({
-    clientSecret: config.clientSecret || '',
-    defaultDingToken: config.defaultDingToken || '',
-    dingSecret: config.dingSecret || '',
-  })
 
   useEffect(() => {
     const vals: any = { ...config }
-    // 敏感字段用掩码显示
-    vals.clientSecret = maskSecret(config.clientSecret)
-    vals.defaultDingToken = maskSecret(config.defaultDingToken)
-    vals.dingSecret = maskSecret(config.dingSecret)
     // retryCfg 展开为顶层表单字段（用点号 key）
     vals['retryCfg.maxDurationSecs'] = config.retryCfg?.maxDurationSecs
     vals['retryCfg.maxCount'] = config.retryCfg?.maxCount
@@ -42,11 +23,6 @@ export default function ConfigTab({ clientId, config }: Props) {
     // recorderCfg
     vals['recorderCfg.dist'] = config.recorderCfg?.dist
     form.setFieldsValue(vals)
-    setOriginalSecrets({
-      clientSecret: config.clientSecret || '',
-      defaultDingToken: config.defaultDingToken || '',
-      dingSecret: config.dingSecret || '',
-    })
   }, [config, form])
 
   const onSave = async () => {
@@ -54,16 +30,6 @@ export default function ConfigTab({ clientId, config }: Props) {
     try {
       const values = await form.validateFields()
       const patches: any = {}
-
-      // 处理敏感凭证：仅当值被修改时才提交（掩码 → 原值不变，非掩码 → 新值）
-      const secretFields = ['clientSecret', 'defaultDingToken', 'dingSecret'] as const
-      for (const field of secretFields) {
-        const val = values[field]
-        if (val && val !== maskSecret(originalSecrets[field])) {
-          patches[field] = val
-          originalSecrets[field] = val // 更新原始值
-        }
-      }
 
       // 处理 retryCfg 和 recorderCfg 嵌套字段（dot-path）
       const nestedFields = [
@@ -82,7 +48,7 @@ export default function ConfigTab({ clientId, config }: Props) {
 
       // 普通顶层字段
       Object.keys(values).forEach(key => {
-        if (secretFields.includes(key as any) || nestedFields.includes(key)) return
+        if (nestedFields.includes(key)) return
         const v = values[key]
         if (v !== undefined && v !== null && v !== '') patches[key] = v
         else if (key === 'taskQueueSize' || key === 'sessionMaxConcurrency') patches[key] = v || undefined
@@ -129,29 +95,22 @@ export default function ConfigTab({ clientId, config }: Props) {
       </Card>
 
       {/* 钉钉凭证 */}
-      <Card title={
-        <Space>
-          <span>🔐 钉钉凭证</span>
-          <Button size="small" type="link" onClick={() => setShowSecrets(!showSecrets)}>
-            {showSecrets ? <><EyeInvisibleOutlined /> 隐藏</> : <><EyeOutlined /> 显示</>}
-          </Button>
-        </Space>
-      } style={{ marginBottom: 16 }}>
+      <Card title="🔐 钉钉凭证" style={{ marginBottom: 16 }}>
         <Form form={form} layout="vertical">
           <Row gutter={[16, 0]}>
             <Col xs={24} sm={12}>
               <Form.Item name="clientSecret" label="Client Secret (钉钉 Stream 密钥)">
-                <Input.Password visibilityToggle={false} readOnly={!showSecrets} placeholder="请输入 Client Secret" />
+                <Input placeholder="请输入 Client Secret" />
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>
               <Form.Item name="defaultDingToken" label="Default DingToken (兜底机器人 Token)">
-                <Input.Password visibilityToggle={false} readOnly={!showSecrets} placeholder="请输入 DingToken" />
+                <Input placeholder="请输入 DingToken" />
               </Form.Item>
             </Col>
             <Col xs={24} sm={12}>
               <Form.Item name="dingSecret" label="DingSecret (群消息签名密钥，可选)">
-                <Input.Password visibilityToggle={false} readOnly={!showSecrets} placeholder="请输入 DingSecret" />
+                <Input placeholder="请输入 DingSecret" />
               </Form.Item>
             </Col>
           </Row>
@@ -248,7 +207,7 @@ export default function ConfigTab({ clientId, config }: Props) {
       </Card>
 
       {/* Recorder */}
-      <Card title="🎙️ Recorder 模式" style={{ marginBottom: 16 }}>
+      <Card title="️ Recorder 模式" style={{ marginBottom: 16 }}>
         <Form form={form} layout="vertical">
           <Row gutter={[16, 0]}>
             <Col xs={24} sm={12}>

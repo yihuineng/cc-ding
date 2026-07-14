@@ -144,11 +144,6 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
     }
   }
 
-  const handleDragStart = (index: number) => {
-    if (isRemote) return
-    setDragIndex(index)
-  }
-
   const handleDragEnter = (e: React.DragEvent, index: number) => {
     if (isRemote || dragIndex === null || dragIndex === index) return
     e.preventDefault()
@@ -178,9 +173,9 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
     handleReorder(newOrder)
   }
 
-  const maskKey = (key: string) => {
-    if (!key || key.length <= 8) return key || ''
-    return key.slice(0, 4) + '****' + key.slice(-4)
+  const handleDragStart = (index: number) => {
+    if (isRemote) return
+    setDragIndex(index)
   }
 
   if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
@@ -236,7 +231,7 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                         <span style={{ fontSize: 11, color: '#666', fontWeight: 600 }}>#{index + 1}</span>
-                        <code style={{ fontSize: 12, color: '#999' }}>{maskKey(key.apiKey || '')}</code>
+                        <code style={{ fontSize: 12, color: '#999' }}>{key.apiKey || ''}</code>
                       </div>
                       <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{key.model || '-'}</div>
                       <div style={{ fontSize: 11, color: '#666', wordBreak: 'break-all' }}>
@@ -278,7 +273,7 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
       >
         <Form form={form} layout="vertical" style={{ marginTop: 16 }} initialValues={{ isValid: true }}>
           <Form.Item name="apiKey" label="API Key" rules={[{ required: true, message: '请输入 Key' }]}>
-            <Input.Password placeholder="sk-xxx..." />
+            <Input placeholder="sk-xxx..." />
           </Form.Item>
           <Form.Item name="baseUrl" label="Base URL" rules={[{ required: true, message: '请输入 Base URL' }]}>
             <Input placeholder="https://api.anthropic.com" />

@@ -86,11 +86,6 @@ export default function KeysTab({ clientId }: Props) {
     }
   }
 
-  const maskKey = (key: string) => {
-    if (key.length <= 8) return key
-    return key.slice(0, 4) + '****' + key.slice(-4)
-  }
-
   if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
 
   return (
@@ -115,7 +110,7 @@ export default function KeysTab({ clientId }: Props) {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ marginBottom: 6 }}>
-                    <code style={{ fontSize: 12, color: '#999' }}>{maskKey(key.key || '')}</code>
+                    <code style={{ fontSize: 12, color: '#999' }}>{key.key || ''}</code>
                   </div>
                   <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{key.model || '-'}</div>
                   <div style={{ fontSize: 11, color: '#666', wordBreak: 'break-all' }}>

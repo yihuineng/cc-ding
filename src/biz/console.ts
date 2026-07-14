@@ -6,7 +6,6 @@ import crypto from 'crypto';
 import { fileUtil } from 'utils-ok';
 import { spawnCommand, commandExists, isWindows } from './platform';
 import { getHomeDir } from './session';
-import { isEnvRef } from './secrets';
 import { setCorsHeaders, readBody } from './a2a/http-utils';
 import type { IConfig, IClaudeSetting } from './types';
 import { execFile } from 'child_process';
@@ -107,14 +106,6 @@ const TOKEN_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 小时
 /** SHA-256 哈希 */
 function sha256(text: string): string {
   return crypto.createHash('sha256').update(text).digest('hex');
-}
-
-/** 掩码显示敏感字段：仅显示前后4位 */
-function maskSecret(value: string | undefined): string {
-  if (!value) return '';
-  if (isEnvRef(value)) return value; // $ENV:xxx 不解密，不掩码
-  if (value.length <= 8) return '****';
-  return value.substring(0, 4) + '****' + value.substring(value.length - 4);
 }
 
 /** 原子写入：先写 .tmp 再 rename 覆盖 */
@@ -705,27 +696,8 @@ async function handleGetClientConfig(req: http.IncomingMessage, res: http.Server
       config = fileUtil.getJSON(configPath) as IConfig;
     }
 
-    // 脱敏处理
-    const maskedConfig = JSON.parse(JSON.stringify(config));
-    if (maskedConfig.clientSecret) maskedConfig.clientSecret = maskSecret(maskedConfig.clientSecret);
-    if (maskedConfig.defaultDingToken) maskedConfig.defaultDingToken = maskSecret(maskedConfig.defaultDingToken);
-    if (maskedConfig.dingSecret) maskedConfig.dingSecret = maskSecret(maskedConfig.dingSecret);
-    if (maskedConfig.conversations) {
-      maskedConfig.conversations = maskedConfig.conversations.map((conv: any) => {
-        if (conv.dingToken) conv.dingToken = maskSecret(conv.dingToken);
-        return conv;
-      });
-    }
-    // 显示有效的 apiKeyCfg（client 维度优先，fallback 全局）
-    const effectiveApiKeyCfg = getEffectiveApiKeyCfg(maskedConfig);
-    if (effectiveApiKeyCfg?.modelSettings) {
-      maskedConfig.apiKeyCfg = effectiveApiKeyCfg;
-      maskedConfig.apiKeyCfg.modelSettings = maskedConfig.apiKeyCfg.modelSettings.map((s: any) => {
-        if (s.apiKey) s.apiKey = maskSecret(s.apiKey);
-        return s;
-      });
-    }
-    jsonResponse(res, 200, { config: maskedConfig });
+    // 直接返回完整配置（前端直接编辑，不再脱敏）
+    jsonResponse(res, 200, { config });
   } catch (err) {
     jsonError(res, 500, `读取配置失败: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -1161,7 +1133,7 @@ async function handleGetApiKeys(req: http.IncomingMessage, res: http.ServerRespo
     const keys = (effectiveApiKeyCfg?.modelSettings || []).map((setting: any, index: number) => ({
       index,
       isValid: setting.isValid,
-      apiKey: maskSecret(setting.apiKey),
+      apiKey: setting.apiKey,
       baseUrl: setting.baseUrl,
       model: setting.model,
       smallModel: setting.smallModel || '',
@@ -1291,7 +1263,7 @@ function writeGlobalApiKeyCfg(apiKeyCfg: any): void {
   atomicWrite(GLOBAL_CONFIG_PATH, JSON.stringify(globalCfg, null, 2));
 }
 
-/** GET /api/global/apikeys — 获取全局 API Key 列表（mask 密钥） */
+/** GET /api/global/apikeys — 获取全局 API Key 列表 */
 async function handleGetGlobalApiKeys(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   if (!requireAuth(req, res)) return;
   const apiKeyCfg = readGlobalApiKeyCfg();
@@ -1302,7 +1274,7 @@ async function handleGetGlobalApiKeys(req: http.IncomingMessage, res: http.Serve
   const keys = (apiKeyCfg.modelSettings || []).map((setting: any, index: number) => ({
     index,
     isValid: setting.isValid,
-    apiKey: maskSecret(setting.apiKey),
+    apiKey: setting.apiKey,
     baseUrl: setting.baseUrl,
     model: setting.model,
     smallModel: setting.smallModel || '',
