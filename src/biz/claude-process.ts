@@ -1158,21 +1158,62 @@ export async function executeClaudeQuery(
 
       if (err instanceof RetryableApiError) {
         totalRetries++; retryStartTime = retryStartTime || Date.now();
-        // 配额耗尽 (429): 尝试切换/轮换 Key
-        if (isQuotaExhaustedError(err.output) && apiKeyCfg) {
-          retryHistory.push(`[${timestamp()}] 429 配额耗尽，尝试轮换 Key`);
-          if (currentSetting) {
-            // API Key 配额耗尽/不稳定 → 轮换 Key
-            const newSetting = rotateApiKey(self, currentSetting.apiKey);
-            if (newSetting) {
-              currentSetting = newSetting;
+        // 配额耗尽 (429): 标记当前 Key 为不可用，切换到其他 Key
+        if (isQuotaExhaustedError(err.output) && apiKeyCfg && currentSetting) {
+          retryHistory.push(`[${timestamp()}] 429 配额耗尽，标记 Key 不可用并切换`);
+          console.log(`[${timestamp()}] API Key 配额耗尽(429)，标记 ${settingLabel(currentSetting)} 为不可用`);
+
+          // 标记当前 Key 为暂不可用（使用 retryCooldownSecs 配置，默认 10 分钟）
+          const cooldownSecs = self.config.retryCfg?.retryCooldownSecs ?? DEFAULT_COOLDOWN_SECS;
+          markKeyCooldown(currentSetting.baseUrl, currentSetting.apiKey, cooldownSecs, '429 配额耗尽');
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 429 配额耗尽，Key 冷却 ${cooldownSecs}s\n`, 'utf-8');
+
+          // 尝试切换到可用 Key
+          const availableKey = pickAvailableApiKey(self, currentSetting.apiKey);
+          if (availableKey) {
+            currentSetting = availableKey;
+            ensureSettingsWithApiKey(dingGroupDir, currentSetting);
+            consecutiveFastFail = 0;
+            console.log(`[${timestamp()}] 切换到可用 Key: ${settingLabel(availableKey)}`);
+            fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 切换到 Key ${settingLabel(availableKey)}\n`, 'utf-8');
+
+            // 通知用户
+            const atUserId = senderStaffId || session.startStaffId;
+            await sendDingMessage(self, {
+              conversationId: getReplyConversationId(session),
+              sessionWebhook: getReplyWebhook(session),
+              atUserId,
+              content: `⚠️ API Key ${settingLabel(currentSetting)} 配额耗尽(429)，已自动切换到 ${settingLabel(availableKey)}`,
+            });
+
+            continue;
+          }
+
+          // 无可用 Key，等待恢复
+          console.log(`[${timestamp()}] 所有 Key 均配额耗尽，等待恢复...`);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均配额耗尽，等待恢复\n`, 'utf-8');
+          const gotKey = await waitForKeyAvailable(cooldownSecs);
+          if (gotKey) {
+            const recoveredKey = pickAvailableApiKey(self);
+            if (recoveredKey) {
+              currentSetting = recoveredKey;
+              ensureSettingsWithApiKey(dingGroupDir, currentSetting);
               consecutiveFastFail = 0;
-              console.log(`[${timestamp()}] API Key 配额耗尽(429)，切换到新 Key: ${settingLabel(newSetting)}`);
-              fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: API Key 配额耗尽(429)，切换到新 Key\n`, 'utf-8');
+              console.log(`[${timestamp()}] Key 恢复可用：${settingLabel(recoveredKey)}`);
               continue;
             }
           }
-          // 无可用配额，静默返回
+
+          // 等待后仍无可用 Key，终止
+          console.log(`[${timestamp()}] 等待后仍无可用 Key，终止重试`);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均配额耗尽，终止重试\n`, 'utf-8');
+          const atUserId = senderStaffId || session.startStaffId;
+          await sendDingMessage(self, {
+            conversationId: getReplyConversationId(session),
+            sessionWebhook: getReplyWebhook(session),
+            atUserId,
+            content: ` 所有 API Key 配额耗尽(429)，已终止重试\n\n请等待配额重置或联系管理员`,
+          });
           return;
         }
         if (err.isFastFail) {
