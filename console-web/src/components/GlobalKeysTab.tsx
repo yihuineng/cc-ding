@@ -323,7 +323,7 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
                         </div>
                         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{key.model || '-'}</div>
                         <div style={{ fontSize: 11, color: '#666', overflow: 'hidden' }}>
-                          {key.baseUrl && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}><span style={{ color: '#999' }}>URL: </span><code title={key.baseUrl} style={{ wordBreak: 'break-all' }}>{truncate(key.baseUrl, 40)}</code></div>}
+                          {key.baseUrl && <div><span style={{ color: '#999' }}>URL: </span><code title={key.baseUrl} style={{ wordBreak: 'break-all', fontSize: 11 }}>{key.baseUrl}</code></div>}
                           {key.smallModel && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><span style={{ color: '#999' }}>小模型: </span>{key.smallModel}</div>}
                           {key.memo && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><span style={{ color: '#999' }}>备注: </span>{key.memo}</div>}
                         </div>

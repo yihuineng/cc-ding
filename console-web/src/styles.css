@@ -410,6 +410,7 @@ code {
   .api-keys-grid code {
     word-break: break-all;
     overflow-wrap: break-word;
+    white-space: normal;
   }
 
   .api-keys-grid code[title] {
