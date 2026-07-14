@@ -246,6 +246,18 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
     handleReorder(newOrder)
   }
 
+  // 掩码显示 API Key
+  const maskKey = (key: string) => {
+    if (!key || key.length <= 8) return key || ''
+    return key.slice(0, 4) + '****' + key.slice(-4)
+  }
+
+  // 截断长文本
+  const truncate = (text: string, maxLen: number) => {
+    if (!text) return ''
+    return text.length > maxLen ? text.slice(0, maxLen) + '...' : text
+  }
+
   if (loading) return <div style={{ padding: 24, textAlign: 'center' }}>加载中...</div>
 
   return (
@@ -267,7 +279,7 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
           </div>
         </Card>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(380px, 100%), 1fr))', gap: 12 }}>
+        <div className="api-keys-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(320px, 100%), 1fr))', gap: 12 }}>
           {keys.map((key, index) => {
             const isDragging = dragIndex === index;
             const isOver = overIndex === index;
@@ -299,25 +311,25 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
                   onTouchMove={handleTouchMove}
                   onTouchEnd={handleTouchEnd}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flex: 1, minWidth: 0 }}>
                       {!isRemote && (
                         <DragOutlined style={{ color: '#666', marginTop: 3, flexShrink: 0 }} />
                       )}
-                      <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                          <span style={{ fontSize: 11, color: '#666', fontWeight: 600 }}>#{index + 1}</span>
-                          <code style={{ fontSize: 12, color: '#999' }}>{key.apiKey || ''}</code>
+                          <span style={{ fontSize: 11, color: '#666', fontWeight: 600, flexShrink: 0 }}>#{index + 1}</span>
+                          <code style={{ fontSize: 12, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 200 }} title={key.apiKey || ''}>{maskKey(key.apiKey || '')}</code>
                         </div>
                         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{key.model || '-'}</div>
-                        <div style={{ fontSize: 11, color: '#666', wordBreak: 'break-all' }}>
-                          {key.baseUrl && <><span style={{ color: '#999' }}>URL: </span><code>{key.baseUrl}</code><br /></>}
-                          {key.smallModel && <><span style={{ color: '#999' }}>小模型: </span>{key.smallModel}<br /></>}
-                          {key.memo && <><span style={{ color: '#999' }}>备注: </span>{key.memo}</>}
+                        <div style={{ fontSize: 11, color: '#666', overflow: 'hidden' }}>
+                          {key.baseUrl && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><span style={{ color: '#999' }}>URL: </span><code title={key.baseUrl}>{truncate(key.baseUrl, 50)}</code></div>}
+                          {key.smallModel && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><span style={{ color: '#999' }}>小模型: </span>{key.smallModel}</div>}
+                          {key.memo && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><span style={{ color: '#999' }}>备注: </span>{key.memo}</div>}
                         </div>
                       </div>
                     </div>
-                    <Space size={4} align="start">
+                    <Space size={4} align="start" style={{ flexShrink: 0 }}>
                       <Switch
                         size="small"
                         checked={key.isValid}

@@ -393,6 +393,15 @@ code {
     padding: 8px 12px !important;
   }
 
+  /* API Keys 网格移动端优化 */
+  .api-keys-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .api-keys-grid code[title] {
+    max-width: 160px !important;
+  }
+
   /* Machine group header: buttons stack on mobile */
   .machine-header-actions {
     flex-direction: row;
