@@ -77,6 +77,7 @@ export class HubClient {
     const wsUrl = this.hubUrl.replace(/^http/, 'ws') + `/ws?token=${encodeURIComponent(this.apiKey)}`;
 
     return new Promise((resolve, reject) => {
+      let registered = false;
       this.ws = new WebSocket(wsUrl);
 
       this.ws.on('open', () => {
@@ -95,6 +96,7 @@ export class HubClient {
           const msg = JSON.parse(data.toString()) as Record<string, unknown>;
 
           if (msg.type === 'registered') {
+            registered = true;
             this.connected = true;
             resolve();
           } else if (msg.type === 'heartbeat_ack') {
@@ -107,9 +109,13 @@ export class HubClient {
         } catch { /* ignore */ }
       });
 
-      this.ws.on('close', () => {
-        console.log('[A2A-Hub] WebSocket disconnected');
+      this.ws.on('close', (code, reason) => {
+        console.log(`[A2A-Hub] WebSocket disconnected (code: ${code}, reason: ${reason.toString()})`);
         this.connected = false;
+        // 如果还未成功注册就断开，说明连接失败（如认证失败）
+        if (!registered) {
+          reject(new Error(`Hub connection failed: ${reason.toString() || `code ${code}`}`));
+        }
       });
 
       this.ws.on('error', (err) => {
