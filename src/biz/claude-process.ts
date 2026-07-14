@@ -37,7 +37,7 @@ const DEFAULT_MAX_TOTAL_RETRIES = 50;
 /** 触发持续时间检测的最小重试次数 */
 const DEFAULT_MIN_COUNT_FOR_DURATION = 3;
 /** retryLogs 命中后 API Key 冷却时长（秒），默认 10 分钟 */
-const DEFAULT_COOLDOWN_SECS = 600;
+const DEFAULT_COOLDOWN_SECS = 300; // 5 分钟
 
 /** CLAUDE.md 注入内容的内存缓存，key=conversationId，value=上次注入的完整内容字符串 */
 const injectedContextCache = new Map<string, string>();
