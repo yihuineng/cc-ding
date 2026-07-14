@@ -12,7 +12,7 @@ interface Props {
   remoteUrl?: string
 }
 
-/** 全局 retryLogs 管理 Tab */
+/** 全局重试配置管理 Tab */
 export default function GlobalRetryLogsTab({ remoteUrl }: Props) {
   const [retryLogs, setRetryLogs] = useState<Record<string, string[]>>({})
   const [loading, setLoading] = useState(true)
@@ -104,7 +104,7 @@ export default function GlobalRetryLogsTab({ remoteUrl }: Props) {
   return (
     <div>
       <div style={{ marginBottom: 16, fontSize: 12, color: '#999' }}>
-        当 Claude 异常退出信息包含这些关键词时，自动发送"继续"重试（随机间隔 1-2 分钟）
+        按 Base URL 配置异常关键词，当 Claude 异常退出信息包含这些关键词时，自动冷却当前 API Key 并切换到其他可用 Key 继续重试
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
@@ -118,7 +118,7 @@ export default function GlobalRetryLogsTab({ remoteUrl }: Props) {
         <Card>
           <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>🔄</div>
-            <div>暂无 retryLogs 配置</div>
+            <div>暂无重试配置</div>
             <div style={{ fontSize: 12, marginTop: 8 }}>点击"添加 Base URL"按钮开始配置</div>
           </div>
         </Card>
@@ -144,7 +144,7 @@ export default function GlobalRetryLogsTab({ remoteUrl }: Props) {
                 </div>
                 <Space size={4}>
                   <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openEdit(entry.baseUrl)} />
-                  <Popconfirm title={`确定删除 ${entry.baseUrl} 的 retryLogs?`} onConfirm={() => handleDelete(entry.baseUrl)}>
+                  <Popconfirm title={`确定删除 ${entry.baseUrl} 的重试配置?`} onConfirm={() => handleDelete(entry.baseUrl)}>
                     <Button size="small" type="text" danger icon={<DeleteOutlined />} />
                   </Popconfirm>
                 </Space>
@@ -155,7 +155,7 @@ export default function GlobalRetryLogsTab({ remoteUrl }: Props) {
       )}
 
       <Modal
-        title={editingBaseUrl ? '编辑 retryLogs' : '添加 retryLogs'}
+        title={editingBaseUrl ? '编辑重试配置' : '添加重试配置'}
         open={modalOpen}
         onCancel={() => setModalOpen(false)}
         onOk={handleSave}

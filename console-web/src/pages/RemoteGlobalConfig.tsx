@@ -88,7 +88,7 @@ export default function RemoteGlobalConfig() {
           },
           {
             key: 'retrylogs',
-            label: '🔄 重试日志',
+            label: '🔄 重试配置',
             children: <GlobalRetryLogsTab remoteUrl={remoteUrl} />,
           },
           {

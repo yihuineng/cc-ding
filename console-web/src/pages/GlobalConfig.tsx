@@ -728,7 +728,7 @@ export default function GlobalConfig() {
         },
         {
           key: 'retrylogs',
-          label: '🔄 重试日志',
+          label: '🔄 重试配置',
           children: <GlobalRetryLogsTab />,
         },
         {
