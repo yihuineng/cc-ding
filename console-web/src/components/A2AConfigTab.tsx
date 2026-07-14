@@ -23,7 +23,7 @@ export default function A2AConfigTab({ remoteUrl }: Props) {
 
     fetchConfig
       .then((data: any) => {
-        const configObj = isRemote ? (data as any) : ((data as any)?.config || data)
+        const configObj = (data as any)?.config || data
         const a2aCfg = configObj?.a2aCfg || {}
         setA2aHubUrl(a2aCfg.hubUrl || '')
         setA2aApiKey(a2aCfg.apiKey || '')
