@@ -154,7 +154,19 @@ body {
 
   .api-keys-grid .api-key-card .ant-card-body {
     padding: 10px 12px !important;
-    overflow: hidden;
+  }
+
+  /* 移动端按钮换行 */
+  .api-keys-grid .api-key-card-header {
+    flex-wrap: wrap !important;
+  }
+
+  .api-keys-grid .api-key-actions {
+    width: 100%;
+    justify-content: flex-end;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
   }
 
   .page-header {
