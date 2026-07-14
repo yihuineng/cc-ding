@@ -396,15 +396,14 @@ code {
   /* API Keys 网格移动端优化 */
   .api-keys-grid {
     grid-template-columns: 1fr !important;
-    overflow-x: hidden;
   }
 
   .api-keys-grid .ant-card {
-    overflow: hidden;
+    overflow: visible;
   }
 
   .api-keys-grid .ant-card-body {
-    overflow: hidden;
+    overflow: visible;
   }
 
   .api-keys-grid code {
@@ -420,11 +419,6 @@ code {
     text-overflow: ellipsis;
     white-space: nowrap;
     vertical-align: middle;
-  }
-
-  /* 防止卡片内容溢出 */
-  .api-keys-grid > div > div {
-    overflow: hidden;
   }
 
   /* Machine group header: buttons stack on mobile */

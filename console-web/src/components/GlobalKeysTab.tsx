@@ -311,18 +311,18 @@ export default function GlobalKeysTab({ remoteUrl }: Props) {
                   onTouchMove={handleTouchMove}
                   onTouchEnd={handleTouchEnd}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, overflow: 'hidden' }}>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flex: 1, minWidth: 0, overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flex: 1, minWidth: 0 }}>
                       {!isRemote && (
                         <DragOutlined style={{ color: '#666', marginTop: 3, flexShrink: 0 }} />
                       )}
-                      <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, overflow: 'hidden' }}>
                           <span style={{ fontSize: 11, color: '#666', fontWeight: 600, flexShrink: 0 }}>#{index + 1}</span>
                           <code style={{ fontSize: 12, color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' }} title={key.apiKey || ''}>{maskKey(key.apiKey || '')}</code>
                         </div>
                         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{key.model || '-'}</div>
-                        <div style={{ fontSize: 11, color: '#666', overflow: 'hidden' }}>
+                        <div style={{ fontSize: 11, color: '#666' }}>
                           {key.baseUrl && <div><span style={{ color: '#999' }}>URL: </span><code title={key.baseUrl} style={{ wordBreak: 'break-all', fontSize: 11 }}>{key.baseUrl}</code></div>}
                           {key.smallModel && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><span style={{ color: '#999' }}>小模型: </span>{key.smallModel}</div>}
                           {key.memo && <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}><span style={{ color: '#999' }}>备注: </span>{key.memo}</div>}
