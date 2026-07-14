@@ -349,23 +349,28 @@ export default function Clients() {
                 {isOffline && <Tag color="default" style={{ marginLeft: 8 }}>未连接</Tag>}
               </div>
               <Space wrap className="machine-header-actions">
-                <Dropdown
-                  menu={{
-                    items: getMachineMenuItems(url),
-                    onClick: ({ key }) => handleMachineClick(url, key),
-                  }}
-                  disabled={machineLoading}
-                >
-                  <Button size="small" loading={machineLoading}>
-                    机器操作 <DownOutlined />
-                  </Button>
-                </Dropdown>
-                <Button size="small" icon={<SettingOutlined />} onClick={() => navigate(`/remote-global/${encodeURIComponent(url)}`)}>全局配置</Button>
+                {!isOffline && (
+                  <>
+                    <Dropdown
+                      menu={{
+                        items: getMachineMenuItems(url),
+                        onClick: ({ key }) => handleMachineClick(url, key),
+                      }}
+                      disabled={machineLoading}
+                    >
+                      <Button size="small" loading={machineLoading}>
+                        机器操作 <DownOutlined />
+                      </Button>
+                    </Dropdown>
+                    <Button size="small" icon={<SettingOutlined />} onClick={() => navigate(`/remote-global/${encodeURIComponent(url)}`)}>全局配置</Button>
+                  </>
+                )}
                 <Button
                   type="primary"
                   size="small"
                   icon={<PlusOutlined />}
                   onClick={() => { setCreateTarget(url); setCreateModalOpen(true) }}
+                  disabled={isOffline}
                 >
                   新建 Client
                 </Button>
