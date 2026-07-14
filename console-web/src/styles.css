@@ -396,10 +396,34 @@ code {
   /* API Keys 网格移动端优化 */
   .api-keys-grid {
     grid-template-columns: 1fr !important;
+    overflow-x: hidden;
+  }
+
+  .api-keys-grid .ant-card {
+    overflow: hidden;
+  }
+
+  .api-keys-grid .ant-card-body {
+    overflow: hidden;
+  }
+
+  .api-keys-grid code {
+    word-break: break-all;
+    overflow-wrap: break-word;
   }
 
   .api-keys-grid code[title] {
-    max-width: 160px !important;
+    max-width: 140px !important;
+    display: inline-block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+
+  /* 防止卡片内容溢出 */
+  .api-keys-grid > div > div {
+    overflow: hidden;
   }
 
   /* Machine group header: buttons stack on mobile */
