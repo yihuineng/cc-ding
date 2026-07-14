@@ -379,6 +379,7 @@ export default function Clients() {
                   {remoteStatus ? (
                     <>
                       {remoteStatus.ccDingVersion && <span>📦 {remoteStatus.ccDingVersion}</span>}
+                      {remoteStatus.buildTime && <span>📅 {new Date(remoteStatus.buildTime).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>}
                       {remoteStatus.nodeVersion && <span>⚙️ Node {remoteStatus.nodeVersion}</span>}
                       {remoteStatus.platform && <span>💻 {remoteStatus.platform}</span>}
                     </>
