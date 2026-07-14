@@ -1221,7 +1221,6 @@ export async function handleSessionMessage(self: DingClaude, opts: {
             senderNick,
             senderStaffId,
           });
-          return;
         } catch (retryErr) {
           console.error('重试执行 Agent 查询失败:', retryErr);
           await sendDingMessage(self, {
