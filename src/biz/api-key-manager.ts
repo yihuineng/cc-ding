@@ -286,21 +286,6 @@ export function ensureSettingsWithApiKey(workDir: string, setting: IClaudeSettin
 }
 
 /**
- * 判断错误输出是否为配额耗尽错误（429 不可重试）
- * 仅匹配明确表示配额/额度已用尽的 429，如 "Request rejected" 或 "超过模型使用上限"
- * 其他 429（如临时限流）由 isRetryableApiError 处理为可重试
- */
-export function isQuotaExhaustedError(output: string): boolean {
-  // "Request rejected" + 429 - 明确表示配额被拒绝
-  if (/Request\s+rejected.*429/i.test(output)) return true;
-  if (/429.*Request\s+rejected/i.test(output)) return true;
-  // "超过模型使用上限" 或类似配额耗尽描述 + 429
-  if (/429.*(?:超过.*上限|使用上限|配额|quota|capacity)/i.test(output)) return true;
-  if (/(?:超过.*上限|使用上限|配额|quota|capacity).*429/i.test(output)) return true;
-  return false;
-}
-
-/**
  * 判断错误输出是否为认证/授权错误（401）
  * 401 为不可重试错误，通常表示 API Key 无效或服务未授权
  */

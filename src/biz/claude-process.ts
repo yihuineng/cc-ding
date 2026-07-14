@@ -15,7 +15,6 @@ import {
   rotateApiKey,
   pickValidApiKey,
   ensureSettingsWithApiKey,
-  isQuotaExhaustedError,
   isAuthenticationError,
   readApiKeyFromSettings,
   getForceEnabledSettingsPath,
@@ -90,12 +89,11 @@ export function resolveClaudeSettingsPath(
 }
 
 /**
- * 判断错误是否为可重试的 API 限流错误（422 TPM、429 临时限流等）
- * 注意：429 配额耗尽（Request rejected / 超过上限）由 isQuotaExhaustedError 单独处理，不可重试
+ * 判断错误是否为可重试的 API 限流错误（422 TPM、429 限流等）
  */
 export function isRetryableApiError(output: string): boolean {
-  // 匹配 429 临时限流（非配额耗尽，可重试）
-  if (/\b429\b/.test(output) && !isQuotaExhaustedError(output)) return true;
+  // 匹配 429 限流（可重试）
+  if (/\b429\b/.test(output)) return true;
   // 匹配 422 TPM 限流: "API Error: 422 {"error":{"type":"api_error","message":"...请求额度超限(TPM)"}...}"
   if (/API\s*Error.*422/i.test(output)) return true;
   if (/\b422\b.*(?:TPM|额度超限|rate\s*limit|tokens?\s*per\s*minute)/i.test(output)) return true;
@@ -431,7 +429,7 @@ function runClaudeOnce(
       const str = data.toString();
       stderrOutput += str;
       updateActivity();
-      if (isQuotaExhaustedError(str)) {
+      if (isRetryableApiError(str)) {
         console.log(`[${timestamp()}] [Claude stderr] 配额耗尽错误(429): ${str.trim()}`);
         try { fs.appendFileSync(sessionLog, `[${timestamp()}] [WARN]: ${str}`, 'utf-8'); } catch { /* ignore */ }
       } else if (isRetryableApiError(str)) {
@@ -520,15 +518,6 @@ function runClaudeOnce(
 
       // 合并 stdout + stderr 用于错误检测（claude 可能将错误输出到 stdout）
       const combinedOutput = stderrOutput + '\n' + stdoutOutput;
-
-      if (isQuotaExhaustedError(combinedOutput)) {
-        // 429 配额耗尽：不可重试，抛出特殊标记让外层处理 key 轮换
-        const elapsed = Date.now() - startTime;
-        const isFastFail = elapsed < FAST_FAIL_THRESHOLD_MS;
-        console.log(`[${timestamp()}] 检测到配额耗尽错误(429)，stdout匹配=${isQuotaExhaustedError(stdoutOutput)}, stderr匹配=${isQuotaExhaustedError(stderrOutput)}`);
-        reject(new RetryableApiError(isFastFail, combinedOutput));
-        return;
-      }
 
       if (isAuthenticationError(combinedOutput)) {
         // 401 认证错误：不可重试，直接通知用户
@@ -1158,64 +1147,6 @@ export async function executeClaudeQuery(
 
       if (err instanceof RetryableApiError) {
         totalRetries++; retryStartTime = retryStartTime || Date.now();
-        // 配额耗尽 (429): 标记当前 Key 为不可用，切换到其他 Key
-        if (isQuotaExhaustedError(err.output) && apiKeyCfg && currentSetting) {
-          retryHistory.push(`[${timestamp()}] 429 配额耗尽，标记 Key 不可用并切换`);
-          console.log(`[${timestamp()}] API Key 配额耗尽(429)，标记 ${settingLabel(currentSetting)} 为不可用`);
-
-          // 标记当前 Key 为暂不可用（使用 retryCooldownSecs 配置，默认 10 分钟）
-          const cooldownSecs = self.config.retryCfg?.retryCooldownSecs ?? DEFAULT_COOLDOWN_SECS;
-          markKeyCooldown(currentSetting.baseUrl, currentSetting.apiKey, cooldownSecs, '429 配额耗尽');
-          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 429 配额耗尽，Key 冷却 ${cooldownSecs}s\n`, 'utf-8');
-
-          // 尝试切换到可用 Key
-          const availableKey = pickAvailableApiKey(self, currentSetting.apiKey);
-          if (availableKey) {
-            currentSetting = availableKey;
-            ensureSettingsWithApiKey(dingGroupDir, currentSetting);
-            consecutiveFastFail = 0;
-            console.log(`[${timestamp()}] 切换到可用 Key: ${settingLabel(availableKey)}`);
-            fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 切换到 Key ${settingLabel(availableKey)}\n`, 'utf-8');
-
-            // 通知用户
-            const atUserId = senderStaffId || session.startStaffId;
-            await sendDingMessage(self, {
-              conversationId: getReplyConversationId(session),
-              sessionWebhook: getReplyWebhook(session),
-              atUserId,
-              content: `⚠️ API Key ${settingLabel(currentSetting)} 配额耗尽(429)，已自动切换到 ${settingLabel(availableKey)}`,
-            });
-
-            continue;
-          }
-
-          // 无可用 Key，等待恢复
-          console.log(`[${timestamp()}] 所有 Key 均配额耗尽，等待恢复...`);
-          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均配额耗尽，等待恢复\n`, 'utf-8');
-          const gotKey = await waitForKeyAvailable(cooldownSecs);
-          if (gotKey) {
-            const recoveredKey = pickAvailableApiKey(self);
-            if (recoveredKey) {
-              currentSetting = recoveredKey;
-              ensureSettingsWithApiKey(dingGroupDir, currentSetting);
-              consecutiveFastFail = 0;
-              console.log(`[${timestamp()}] Key 恢复可用：${settingLabel(recoveredKey)}`);
-              continue;
-            }
-          }
-
-          // 等待后仍无可用 Key，终止
-          console.log(`[${timestamp()}] 等待后仍无可用 Key，终止重试`);
-          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均配额耗尽，终止重试\n`, 'utf-8');
-          const atUserId = senderStaffId || session.startStaffId;
-          await sendDingMessage(self, {
-            conversationId: getReplyConversationId(session),
-            sessionWebhook: getReplyWebhook(session),
-            atUserId,
-            content: ` 所有 API Key 配额耗尽(429)，已终止重试\n\n请等待配额重置或联系管理员`,
-          });
-          return;
-        }
         if (err.isFastFail) {
           // 422 TPM 限流快速失败：累计计数，超过阈值则轮换 Key 或放弃
           consecutiveFastFail++;

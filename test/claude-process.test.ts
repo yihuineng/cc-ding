@@ -1,6 +1,5 @@
 import assert from 'assert';
 import { isRetryableApiError, parseClaudeStreamLine } from '../src/biz/claude-process';
-import { isQuotaExhaustedError } from '../src/biz/api-key-manager';
 
 describe('claude-process error classifiers', () => {
   describe('isRetryableApiError', () => {
@@ -54,10 +53,4 @@ describe('claude-process error classifiers', () => {
     });
   });
 
-  describe('isQuotaExhaustedError', () => {
-    it('与 429 临时限流互斥的判定可用', () => {
-      // 具体文案依赖实现，仅验证函数对普通文本不误判
-      assert.strictEqual(isQuotaExhaustedError('hello world'), false);
-    });
-  });
 });

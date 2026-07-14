@@ -12,7 +12,6 @@ import {
   rotateApiKey,
   pickValidApiKey,
   ensureSettingsWithApiKey,
-  isQuotaExhaustedError,
   isAuthenticationError,
   getForceEnabledSettingsPath,
   settingLabel,
@@ -610,41 +609,39 @@ export async function handleTask(self: DingClaude): Promise<boolean> {
     if (exitCode !== 0) {
 
       // 配额耗尽 (429): 尝试切换/轮换 Key
-      if (isQuotaExhaustedError(combinedOutput) && apiKeyCfg) {
-        if (!useApiMode) {
-          // 切换到 API Key 模式
-          currentSetting = pickValidApiKey(self);
-          if (currentSetting) {
-            useApiMode = true;
-            consecutiveFastFail = 0;
-            const settingsPath = ensureSettingsWithApiKey(conversationDir, currentSetting);
-            updateCmdArgsSettings(cmdArgs, settingsPath);
-            console.log(`[${timestamp()}] 切换到 API Key 模式`);
-            continue;
-          }
-        } else if (currentSetting) {
-          // API Key 配额耗尽 → 轮换 Key
-          const newSetting = rotateApiKey(self, currentSetting.apiKey);
-          if (newSetting) {
-            currentSetting = newSetting;
-            consecutiveFastFail = 0;
-            const settingsPath = ensureSettingsWithApiKey(conversationDir, currentSetting);
-            updateCmdArgsSettings(cmdArgs, settingsPath);
-            console.log(`[${timestamp()}] API Key 配额耗尽(429)，切换到新 Key: ${settingLabel(newSetting)}`);
-            continue;
-          }
+      if (!useApiMode) {
+        // 切换到 API Key 模式
+        currentSetting = pickValidApiKey(self);
+        if (currentSetting) {
+          useApiMode = true;
+          consecutiveFastFail = 0;
+          const settingsPath = ensureSettingsWithApiKey(conversationDir, currentSetting);
+          updateCmdArgsSettings(cmdArgs, settingsPath);
+          console.log(`[${timestamp()}] 切换到 API Key 模式`);
+          continue;
         }
-        // 无可用配额，重置任务为待办
-        console.log(`[${timestamp()}] 无可用配额，任务重置为待办`);
-        const logContent = [
-          `[${timestamp()}] 执行命令: ${entryCmd} ${cmdArgs.join(' ')}`,
-          `[${timestamp()}] 退出码: ${exitCode}`,
-          combinedOutput,
-        ].join('\n');
-        fs.writeFileSync(logFile, logContent);
-        await resetTaskToTodo(self, taskDir, '无可用配额(429)');
-        return false;
+      } else if (currentSetting) {
+        // API Key 配额耗尽 → 轮换 Key
+        const newSetting = rotateApiKey(self, currentSetting.apiKey);
+        if (newSetting) {
+          currentSetting = newSetting;
+          consecutiveFastFail = 0;
+          const settingsPath = ensureSettingsWithApiKey(conversationDir, currentSetting);
+          updateCmdArgsSettings(cmdArgs, settingsPath);
+          console.log(`[${timestamp()}] API Key 配额耗尽(429)，切换到新 Key: ${settingLabel(newSetting)}`);
+          continue;
+        }
       }
+      // 无可用配额，重置任务为待办
+      console.log(`[${timestamp()}] 无可用配额，任务重置为待办`);
+      const logContent = [
+        `[${timestamp()}] 执行命令: ${entryCmd} ${cmdArgs.join(' ')}`,
+        `[${timestamp()}] 退出码: ${exitCode}`,
+        combinedOutput,
+      ].join('\n');
+      fs.writeFileSync(logFile, logContent);
+      await resetTaskToTodo(self, taskDir, '无可用配额(429)');
+      return false;
 
       // 认证错误(401)：不可重试，直接标记失败
       if (isAuthenticationError(combinedOutput)) {
