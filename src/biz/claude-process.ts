@@ -1103,7 +1103,6 @@ export async function executeClaudeQuery(
           markKeyCooldown(currentSetting.baseUrl, currentSetting.apiKey, cooldownSecs, `retryLogs 匹配"${matched}"`);
           retryHistory.push(`[${timestamp()}] retryLogs 匹配"${matched}"，Key ${settingLabel(currentSetting)} 冷却 ${cooldownSecs}s，尝试切换`);
           console.log(`[${timestamp()}] retryLogs 匹配"${matched}"(${currentSetting.baseUrl})，Key ${settingLabel(currentSetting)} 冷却 ${cooldownSecs}s (${totalRetries}/${maxRetries})`);
-          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: retryLogs 匹配"${matched}"，Key 冷却 ${cooldownSecs}s，尝试切换可用 Key\n`, 'utf-8');
 
           // 尝试切换到可用 Key
           const availableKey = pickAvailableApiKey(self, currentSetting.apiKey);
