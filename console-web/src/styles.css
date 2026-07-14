@@ -407,9 +407,8 @@ code {
   }
 
   .api-keys-grid code {
-    word-break: break-all;
-    overflow-wrap: break-word;
     white-space: normal;
+    overflow-wrap: break-word;
   }
 
   .api-keys-grid code[title] {
