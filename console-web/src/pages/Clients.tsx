@@ -38,68 +38,92 @@ export default function Clients() {
       setStatus(cached.status)
       if (cached.remoteConsoles) setRemoteConsoles(cached.remoteConsoles)
       if (cached.remoteStatuses) setRemoteStatuses(cached.remoteStatuses)
+      setLoading(false)
+      // 后台静默更新远程状态（不阻塞 UI）
+      refreshRemoteStatuses(cached)
+      return
     }
 
+    setLoading(true)
     try {
-      // Always load global config for remote consoles
+      // Load global config for remote consoles
       const globalConfigData = await api.getGlobalConfig()
       const configData: any = globalConfigData
       const consoles = configData.config?.console?.remoteConsoles || configData.config?.remoteConsoles || []
       setRemoteConsoles(consoles)
 
-      // Load remote statuses with short timeout to avoid blocking UI
-      // Use cached remote statuses as fallback
-      const statusPromises = consoles.map(async (rc: IRemoteConsole) => {
-        try {
-          // Use AbortController for 3s timeout
-          const controller = new AbortController()
-          const timeoutId = setTimeout(() => controller.abort(), 3000)
-          const remoteStatus = await api.getRemoteStatus(rc.url)
-          clearTimeout(timeoutId)
-          return { url: rc.url, status: remoteStatus }
-        } catch {
-          // Fallback to cached status
-          return { url: rc.url, status: cached?.remoteStatuses?.[rc.url] || null }
-        }
-      })
-      const statusResults = await Promise.all(statusPromises)
-      const statusMap: Record<string, IStatus> = {}
-      statusResults.forEach(({ url, status }) => {
-        if (status) statusMap[url] = status
-      })
-      setRemoteStatuses(statusMap)
+      // Load clients and status
+      const [clientsData, statusData] = await Promise.all([
+        api.getClients(),
+        api.getStatus(),
+      ])
+      const newClients = clientsData.clients || []
+      setClients(newClients)
+      setStatus(statusData)
 
-      // Load clients and status if not from cache
-      if (!cached || forceRefresh) {
-        const [clientsData, statusData] = await Promise.all([
-          api.getClients(),
-          api.getStatus(),
-        ])
-        const newClients = clientsData.clients || []
-        setClients(newClients)
-        setStatus(statusData)
+      // Load remote statuses with short timeout
+      const remoteStatuses = await loadRemoteStatuses(consoles, cached?.remoteStatuses)
+      setRemoteStatuses(remoteStatuses)
 
-        // Update cache (including remote data)
-        homeCache.set({
-          clients: newClients,
-          status: statusData,
-          remoteConsoles: consoles,
-          remoteStatuses: statusMap,
-        })
-      } else {
-        // Update cache with latest remote data only
-        homeCache.set({
-          clients: cached.clients,
-          status: cached.status,
-          remoteConsoles: consoles,
-          remoteStatuses: statusMap,
-        })
-      }
+      // Update cache
+      homeCache.set({
+        clients: newClients,
+        status: statusData,
+        remoteConsoles: consoles,
+        remoteStatuses: remoteStatuses,
+      })
     } catch (e: any) {
       message.error(e.message)
     } finally {
       setLoading(false)
     }
+  }
+
+  // 后台刷新远程状态（不阻塞 UI）
+  const refreshRemoteStatuses = async (cached: any) => {
+    const consoles = cached?.remoteConsoles || []
+    if (consoles.length === 0) return
+
+    try {
+      const globalConfigData = await api.getGlobalConfig()
+      const configData: any = globalConfigData
+      const freshConsoles = configData.config?.console?.remoteConsoles || configData.config?.remoteConsoles || []
+      setRemoteConsoles(freshConsoles)
+
+      const remoteStatuses = await loadRemoteStatuses(freshConsoles, cached?.remoteStatuses)
+      setRemoteStatuses(remoteStatuses)
+
+      // Update cache with fresh remote data
+      homeCache.set({
+        clients: cached.clients,
+        status: cached.status,
+        remoteConsoles: freshConsoles,
+        remoteStatuses: remoteStatuses,
+      })
+    } catch {
+      // 静默失败，保持缓存数据
+    }
+  }
+
+  // 加载远程状态（带超时和缓存降级）
+  const loadRemoteStatuses = async (consoles: IRemoteConsole[], fallbackStatuses?: Record<string, IStatus>): Promise<Record<string, IStatus>> => {
+    const statusPromises = consoles.map(async (rc: IRemoteConsole) => {
+      try {
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 2000)
+        const remoteStatus = await api.getRemoteStatus(rc.url)
+        clearTimeout(timeoutId)
+        return { url: rc.url, status: remoteStatus }
+      } catch {
+        return { url: rc.url, status: fallbackStatuses?.[rc.url] || null }
+      }
+    })
+    const statusResults = await Promise.all(statusPromises)
+    const statusMap: Record<string, IStatus> = {}
+    statusResults.forEach(({ url, status }) => {
+      if (status) statusMap[url] = status
+    })
+    return statusMap
   }
 
   useEffect(() => { loadData() }, [])
