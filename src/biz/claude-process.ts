@@ -21,7 +21,7 @@ import {
   settingLabel,
   markKeyCooldown,
   pickAvailableApiKey,
-  waitForKeyAvailable,
+  waitForKeyAvailableWithActivityUpdate,
 } from './api-key-manager';
 import { resolveSecret } from './secrets';
 import { commandExists, formatClaudeCommandMissingMessage, isWindows, spawnCommand } from './platform';
@@ -1118,7 +1118,11 @@ export async function executeClaudeQuery(
           // 全部 Key 都在 cooldown，等待恢复
           console.log(`[${timestamp()}] 所有 Key 均在冷却中，等待恢复...`);
           fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均在冷却中，等待恢复\n`, 'utf-8');
-          const gotKey = await waitForKeyAvailable(cooldownSecs);
+          // 等待期间定期更新 lastActivityTime，防止 Watchdog 误判超时
+          const gotKey = await waitForKeyAvailableWithActivityUpdate(cooldownSecs, () => {
+            const as = self.activeSessions.get(session.conversationId);
+            if (as) as.lastActivityTime = Date.now();
+          });
           if (!gotKey) {
             retryHistory.push(`[${timestamp()}] 等待 ${cooldownSecs}s 后仍无可用 Key，终止重试`);
             console.log(`[${timestamp()}] 等待 ${cooldownSecs}s 后仍无可用 Key，终止重试`);
@@ -1303,7 +1307,11 @@ export async function executeClaudeQuery(
         // 无可用 Key，等待恢复
         console.log(`[${timestamp()}] 所有 Key 均不可用，等待恢复...`);
         fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均不可用，等待恢复\n`, 'utf-8');
-        const gotKey = await waitForKeyAvailable(permanentCooldown);
+        // 等待期间定期更新 lastActivityTime，防止 Watchdog 误判超时
+        const gotKey = await waitForKeyAvailableWithActivityUpdate(permanentCooldown, () => {
+          const as = self.activeSessions.get(session.conversationId);
+          if (as) as.lastActivityTime = Date.now();
+        });
         if (gotKey) {
           const recoveredKey = pickAvailableApiKey(self);
           if (recoveredKey) {

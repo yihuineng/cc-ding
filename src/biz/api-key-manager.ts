@@ -106,6 +106,19 @@ export function getEarliestCooldownExpiry(): number {
  * @returns 是否有可用 Key
  */
 export async function waitForKeyAvailable(maxWaitSecs = 600): Promise<boolean> {
+  return waitForKeyAvailableWithActivityUpdate(maxWaitSecs);
+}
+
+/**
+ * 等待直到有 API Key 恢复可用，期间定期调用 onTick 保持活动状态
+ * @param maxWaitSecs 最大等待时间（秒），默认 600
+ * @param onTick 每次轮询时的回调，用于更新 lastActivityTime 防止 Watchdog 超时
+ * @returns 是否有可用 Key
+ */
+export async function waitForKeyAvailableWithActivityUpdate(
+  maxWaitSecs = 600,
+  onTick?: () => void,
+): Promise<boolean> {
   const deadline = Date.now() + maxWaitSecs * 1000;
   while (Date.now() < deadline) {
     const expiry = getEarliestCooldownExpiry();
@@ -114,6 +127,7 @@ export async function waitForKeyAvailable(maxWaitSecs = 600): Promise<boolean> {
     const waitMs = Math.min(expiry - Date.now(), 5000); // 每次最多等 5 秒
     if (waitMs <= 0) continue;
     await new Promise(r => setTimeout(r, waitMs));
+    onTick?.(); // 保持活动状态
   }
   return false;
 }
