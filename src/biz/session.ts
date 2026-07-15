@@ -1114,6 +1114,30 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     return;
   }
 
+  // /new 命令：结束当前会话并开始新会话（即使在处理中也要响应）
+  if (/^\/new/i.test(rawMessage)) {
+    const found = findActiveSession(self, conversationId);
+    if (found) {
+      console.log(`收到 /new 命令，结束旧会话: 群=${conversationId}`);
+      found.session.agent?.interrupt(found.session, '/new 命令中断');
+      self.activeSessions.delete(conversationId);
+      self.saveActiveSession(conversationId);
+    }
+    const actualMsg = rawMessage.replace(/^\/new\s*/i, '').trim();
+    if (actualMsg) {
+      await startNewSession(self, {
+        conversationId, sessionWebhook, senderStaffId, senderNick,
+        message: actualMsg, conversationConfig, msgCreateAt, msgId,
+      });
+    } else {
+      await sendDingMessage(self, {
+        conversationId, sessionWebhook,
+        content: '🚀 请输入您的问题开始新会话',
+      });
+    }
+    return;
+  }
+
   const found = findActiveSession(self, conversationId);
   const activeSession = found?.session;
 

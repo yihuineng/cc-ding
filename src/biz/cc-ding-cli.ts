@@ -2535,7 +2535,7 @@ export class DingClaude {
       }),
 
       // /new 命令：开始新会话
-      route('/new', () => /^\/new(?:\s|$)/i.test(prompt), async () => {
+      route('/new', () => /^\/new/i.test(prompt), async () => {
         const activeFound = this.findActiveSession(conversationId);
         if (activeFound) {
           console.log(`收到新会话命令，结束旧会话: 群=${activeFound.session.session.conversationId}, 会话ID=${this.getSessionId(activeFound.session.session)}`);
