@@ -1116,36 +1116,20 @@ export async function executeClaudeQuery(
           }
 
           // 全部 Key 都在 cooldown，等待恢复
-          console.log(`[${timestamp()}] 所有 Key 均在冷却中，等待恢复...`);
+          console.log(`[${timestamp()}] 所有 Key 均在冷却中，等待 ${cooldownSecs}s 后继续重试...`);
           fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均在冷却中，等待恢复\n`, 'utf-8');
           // 等待期间定期更新 lastActivityTime，防止 Watchdog 误判超时
-          const gotKey = await waitForKeyAvailableWithActivityUpdate(cooldownSecs, () => {
+          await waitForKeyAvailableWithActivityUpdate(cooldownSecs + 5, () => {
             const as = self.activeSessions.get(session.conversationId);
             if (as) as.lastActivityTime = Date.now();
           });
-          if (!gotKey) {
-            retryHistory.push(`[${timestamp()}] 等待 ${cooldownSecs}s 后仍无可用 Key，终止重试`);
-            console.log(`[${timestamp()}] 等待 ${cooldownSecs}s 后仍无可用 Key，终止重试`);
-            if (!isSessionStillActive('等待 Key 恢复超时')) return;
-            break;
-          }
 
-          // 有 Key 恢复了，切换到它
-          const recoveredKey = pickAvailableApiKey(self);
-          if (recoveredKey) {
-            currentSetting = recoveredKey;
-            ensureSettingsWithApiKey(dingGroupDir, currentSetting);
-            console.log(`[${timestamp()}] Key 恢复可用: ${settingLabel(recoveredKey)}`);
-            consecutiveFastFail = 0;
-            retryLogRetry = true;
-            continue;
-          }
-
-          // 无可用 Key，终止重试（不再 fall through 到其他错误处理）
-          console.log(`[${timestamp()}] retryLogs 命中但无可用 Key，终止重试`);
-          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: retryLogs 命中但无可用 Key，终止重试\n`, 'utf-8');
-          retryHistory.push(`[${timestamp()}] retryLogs 命中但无可用 Key，终止重试`);
-          return;
+          // 等待结束后继续重试（此时冷却应已结束）
+          if (!isSessionStillActive('等待 Key 冷却结束')) return;
+          console.log(`[${timestamp()}] 冷却结束，继续重试...`);
+          consecutiveFastFail = 0;
+          retryLogRetry = true;
+          continue;
         }
       }
 
