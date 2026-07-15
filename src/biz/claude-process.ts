@@ -256,6 +256,11 @@ function runClaudeOnce(
   let sessionDir = self.getSessionDir(session);
   let sessionLog = `${sessionDir}/session.log`;
 
+  // 确保会话目录存在
+  if (!fs.existsSync(sessionDir)) {
+    fs.mkdirSync(sessionDir, { recursive: true });
+  }
+
   const startTime = Date.now();
 
   return new Promise((resolve, reject) => {
@@ -866,6 +871,11 @@ export async function executeClaudeQuery(
   let sessionDir = self.getSessionDir(session);
   let sessionLog = `${sessionDir}/session.log`;
   const dingGroupDir = self.getConversationDir(session.conversationId);
+
+  // 确保会话目录存在（避免首次查询时目录未创建导致写入 session.log 失败）
+  if (!fs.existsSync(sessionDir)) {
+    fs.mkdirSync(sessionDir, { recursive: true });
+  }
 
   // 合并环境变量：process.env → config.envs → conversation.envs
   const mergedEnvs = getMergedEnvs(self, session.conversationId);
