@@ -16,26 +16,20 @@ export default function A2AMonitor() {
     setLoading(true)
     setError('')
     try {
-      const config = await api.getGlobalConfig()
-      const configObj = (config as any)?.config || config
-      const a2aCfg = configObj?.a2aCfg
-      if (!a2aCfg?.hubUrl) {
-        setError('未配置 A2A Hub URL，请前往「全局配置 → A2A 配置」设置')
-        setLoading(false)
-        return
-      }
-
-      const hubUrl = a2aCfg.hubUrl.replace(/\/$/, '')
-
       const [agentsRes, tasksRes, statsRes] = await Promise.allSettled([
-        fetch(`${hubUrl}/hub/agents`).then(r => r.json()),
-        fetch(`${hubUrl}/hub/tasks`).then(r => r.json()),
-        fetch(`${hubUrl}/hub/stats`).then(r => r.json()),
+        api.getA2AAgents(),
+        api.getA2ATasks(50),
+        api.getA2AStats(),
       ])
 
       if (agentsRes.status === 'fulfilled') setAgents(agentsRes.value.agents || [])
       if (tasksRes.status === 'fulfilled') setTasks(tasksRes.value.records || [])
       if (statsRes.status === 'fulfilled') setStats(statsRes.value)
+
+      // 检查是否配置了 Hub（通过 stats 是否返回来判断）
+      if (statsRes.status === 'rejected') {
+        setError('A2A Hub 未配置或无法连接，请前往「全局配置 → A2A 配置」设置')
+      }
     } catch (e: any) {
       setError(e.message || '获取 A2A 数据失败')
     } finally {

@@ -286,4 +286,9 @@ export const api = {
 
   updateRemote: (url: string) =>
     request(`/api/remote/update?url=${encodeURIComponent(url)}`, { method: 'POST' }),
+
+  // ── A2A Hub Proxy ──
+  getA2AStats: () => request<any>('/api/a2a/stats'),
+  getA2AAgents: () => request<any>('/api/a2a/agents'),
+  getA2ATasks: (limit?: number) => request<any>(`/api/a2a/tasks${limit ? `?limit=${limit}` : ''}`),
 }

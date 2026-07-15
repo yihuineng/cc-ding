@@ -1651,6 +1651,81 @@ async function handleGetStatus(req: http.IncomingMessage, res: http.ServerRespon
   jsonResponse(res, 200, { status });
 }
 
+// ==================== A2A Hub 代理 ====================
+
+/** 获取 A2A Hub 配置 */
+function getA2AConfig(): { hubUrl: string; apiKey: string } | null {
+  try {
+    if (fs.existsSync(GLOBAL_CONFIG_PATH)) {
+      const content = fs.readFileSync(GLOBAL_CONFIG_PATH, 'utf-8');
+      const parsed = JSON.parse(content);
+      const a2aCfg = parsed?.a2aCfg || {};
+      if (a2aCfg.hubUrl && a2aCfg.apiKey) {
+        return { hubUrl: a2aCfg.hubUrl.replace(/\/+$/, ''), apiKey: a2aCfg.apiKey };
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+/** 代理请求到 A2A Hub */
+async function proxyToA2AHub(hubUrl: string, apiKey: string, path: string, res: http.ServerResponse): Promise<void> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    const url = `${hubUrl}${path}`;
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { 'X-API-Key': apiKey },
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      jsonError(res, response.status, `Hub 请求失败: ${response.statusText}`);
+      return;
+    }
+
+    const data = await response.json();
+    jsonResponse(res, 200, data);
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      jsonError(res, 504, 'Hub 请求超时');
+    } else {
+      jsonError(res, 502, `Hub 请求失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+/** GET /api/a2a/stats - 获取 A2A Hub 统计信息 */
+async function handleGetA2AStats(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const cfg = getA2AConfig();
+  if (!cfg) { jsonError(res, 404, 'A2A Hub 未配置'); return; }
+  await proxyToA2AHub(cfg.hubUrl, cfg.apiKey, '/hub/stats', res);
+}
+
+/** GET /api/a2a/agents - 获取 A2A Hub 已注册 Agent 列表 */
+async function handleGetA2AAgents(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const cfg = getA2AConfig();
+  if (!cfg) { jsonError(res, 404, 'A2A Hub 未配置'); return; }
+  await proxyToA2AHub(cfg.hubUrl, cfg.apiKey, '/hub/agents', res);
+}
+
+/** GET /api/a2a/tasks - 获取 A2A Hub 任务记录 */
+async function handleGetA2ATasks(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  if (!requireAuth(req, res)) return;
+  const cfg = getA2AConfig();
+  if (!cfg) { jsonError(res, 404, 'A2A Hub 未配置'); return; }
+  // 转发 query 参数（如 limit）
+  const url = new URL(req.url || '', 'http://localhost');
+  const limit = url.searchParams.get('limit') || '50';
+  await proxyToA2AHub(cfg.hubUrl, cfg.apiKey, `/hub/tasks?limit=${limit}`, res);
+}
+
 /** GET /api/remote/status?url=... - 获取远程 Console 的系统状态 */
 async function handleGetRemoteStatus(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   if (!requireAuth(req, res)) return;
@@ -2579,6 +2654,20 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // GET /api/status
   if (pathname === '/api/status' && req.method === 'GET') {
     await handleGetStatus(req, res);
+    return;
+  }
+
+  // A2A Hub 代理路由
+  if (pathname === '/api/a2a/stats' && req.method === 'GET') {
+    await handleGetA2AStats(req, res);
+    return;
+  }
+  if (pathname === '/api/a2a/agents' && req.method === 'GET') {
+    await handleGetA2AAgents(req, res);
+    return;
+  }
+  if (pathname === '/api/a2a/tasks' && req.method === 'GET') {
+    await handleGetA2ATasks(req, res);
     return;
   }
 

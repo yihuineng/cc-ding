@@ -16,23 +16,11 @@ export default function A2AStatusCard() {
 
   const fetchStats = async () => {
     try {
-      const config = await api.getGlobalConfig()
-      const configObj = (config as any)?.config || config
-      const a2aCfg = configObj?.a2aCfg
-      if (!a2aCfg?.hubUrl) {
-        setLoading(false)
-        return
-      }
-
-      const hubUrl = a2aCfg.hubUrl.replace(/\/$/, '')
-      const res = await fetch(`${hubUrl}/hub/stats`, { signal: AbortSignal.timeout(3000) })
-      if (res.ok) {
-        const data = await res.json()
-        setOnline(true)
-        setAgentCount(data.onlineAgents || 0)
-      }
+      const data = await api.getA2AStats()
+      setOnline(true)
+      setAgentCount(data.onlineAgents || 0)
     } catch {
-      // Ignore errors
+      setOnline(false)
     } finally {
       setLoading(false)
     }
