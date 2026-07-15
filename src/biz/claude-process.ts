@@ -1319,27 +1319,12 @@ export async function executeClaudeQuery(
           ensureSettingsWithApiKey(dingGroupDir, currentSetting);
           consecutiveFastFail = 0;
           retryLogRetry = true;
-          // 通知用户 Key 已切换
-          const atUserId = senderStaffId || session.startStaffId;
-          await sendDingMessage(self, {
-            conversationId: getReplyConversationId(session),
-            sessionWebhook: getReplyWebhook(session),
-            atUserId,
-            content: `⚠️ API Key ${settingLabel(currentSetting)} 异常不可用，已自动切换到其他 Key\n\n错误: ${errorMsg.substring(0, 100)}`,
-          });
           continue;
         }
 
         // 无可用 Key，等待恢复
         console.log(`[${timestamp()}] 所有 Key 均不可用，等待恢复...`);
         fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均不可用，等待恢复\n`, 'utf-8');
-        // 通知用户无可用 Key
-        await sendDingMessage(self, {
-          conversationId: getReplyConversationId(session),
-          sessionWebhook: getReplyWebhook(session),
-          atUserId: senderStaffId || session.startStaffId,
-          content: `⚠️ API Key ${settingLabel(currentSetting)} 异常不可用，无其他可用 Key，等待冷却后重试\n\n错误: ${errorMsg.substring(0, 100)}`,
-        });
         // 等待期间定期更新 lastActivityTime，防止 Watchdog 误判超时
         const gotKey = await waitForKeyAvailableWithActivityUpdate(permanentCooldown, () => {
           const as = self.activeSessions.get(session.conversationId);
@@ -1361,13 +1346,6 @@ export async function executeClaudeQuery(
         fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: 所有 Key 均不可用，终止重试\n`, 'utf-8');
         retryHistory.push(`[${timestamp()}] 所有 Key 均不可用，终止重试`);
 
-        // 通知用户所有 Key 不可用
-        await sendDingMessage(self, {
-          conversationId: getReplyConversationId(session),
-          sessionWebhook: getReplyWebhook(session),
-          atUserId: senderStaffId || session.startStaffId,
-          content: `🔑 所有 API Key 均不可用，已终止重试\n\n请检查 API Key 配置或联系管理员`,
-        });
       }
 
       throw err;
