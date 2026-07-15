@@ -1140,9 +1140,16 @@ export async function executeClaudeQuery(
             retryLogRetry = true;
             continue;
           }
+
+          // 无可用 Key，终止重试（不再 fall through 到其他错误处理）
+          console.log(`[${timestamp()}] retryLogs 命中但无可用 Key，终止重试`);
+          fs.appendFileSync(sessionLog, `[${timestamp()}] [SYSTEM]: retryLogs 命中但无可用 Key，终止重试\n`, 'utf-8');
+          retryHistory.push(`[${timestamp()}] retryLogs 命中但无可用 Key，终止重试`);
+          return;
         }
       }
 
+      // retryLogs 未命中或无匹配关键词，继续其他错误处理
       if (err instanceof RetryableApiError) {
         totalRetries++; retryStartTime = retryStartTime || Date.now();
         if (err.isFastFail) {
