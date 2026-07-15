@@ -650,7 +650,20 @@ function buildContextContent(self: DingClaude, conversationId: string): string {
     lines.push('当用户请求需要其他 Agent 的专长处理时，可以直接调用上述命令。');
   }
 
-  // ── cc-ding task 后台任务说明 ──
+  // 团队协作 Agent 列表（teamAgents）
+  if (convCfg?.teamAgents?.length) {
+    lines.push('');
+    lines.push('## 团队协作 Agent');
+    lines.push('当前会话配置了以下可协作的 Agent，可以通过 A2A 协议与它们交互：');
+    lines.push('');
+    for (const teamAgent of convCfg.teamAgents) {
+      lines.push(`- \`${teamAgent}\``);
+    }
+    lines.push('');
+    lines.push('使用方式：`cc-ding a2a send <agent-id> <任务描述>`');
+  }
+
+  // ── cc-ding task 后台任务说明 ─
   lines.push('## cc-ding 后台任务');
   lines.push('当需要执行**预计超过 30 秒**的命令时（如 docker build、npm install、大规模文件处理等），');
   lines.push('应该使用 `cc-ding task` 包装命令。任务完成/失败后会**主动推送结果**到当前钉钉会话，无需用户询问。');
@@ -720,6 +733,19 @@ function buildCodexContext(self: DingClaude, conversationId: string): string {
     lines.push('cc-ding a2a status <id> <taskId>  # 查看任务状态');
     lines.push('```');
     lines.push('当用户请求需要其他 Agent 的专长处理时，可以直接调用上述命令。');
+  }
+
+  // 团队协作 Agent 列表（teamAgents）
+  if (convCfg?.teamAgents?.length) {
+    lines.push('');
+    lines.push('## 团队协作 Agent');
+    lines.push('当前会话配置了以下可协作的 Agent，可以通过 A2A 协议与它们交互：');
+    lines.push('');
+    for (const teamAgent of convCfg.teamAgents) {
+      lines.push(`- \`${teamAgent}\``);
+    }
+    lines.push('');
+    lines.push('使用方式：`cc-ding a2a send <agent-id> <任务描述>`');
   }
 
   // cc-ding task 后台任务说明

@@ -127,6 +127,8 @@ export interface IConversation {
   ensureAt?: boolean;
   /** 自定义环境变量（群维度，同名 key 覆盖 client 维度） */
   envs?: Record<string, string>;
+  /** 团队协作 Agent 列表（clientId:conversationId 格式，表示当前 agent 可以交互的其他 agents） */
+  teamAgents?: string[];
 }
 
 /** 问答模式配置 */

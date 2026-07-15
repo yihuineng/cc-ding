@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import {
   Tabs, Card, Tag, Button, Space, Form, Input, InputNumber, Switch, Select,
   Collapse, Row, Col, Popconfirm, message, Empty, Badge,
@@ -23,6 +23,21 @@ export default function ConversationsTab({ clientId, conversations, onRefresh }:
   const [editForms, setEditForms] = useState<Record<string, IConversation>>({})
   const [saving, setSaving] = useState<Record<string, boolean>>({})
   const [filterType, setFilterType] = useState<string>('all')
+  const [teamAgentOptions, setTeamAgentOptions] = useState<Array<{ value: string; label: string }>>([])
+
+  // 获取 A2A Agent 列表作为 teamAgents 选项
+  useEffect(() => {
+    api.getA2AAgents().then((data: any) => {
+      const agents = data.agents || []
+      const options = agents.map((a: any) => ({
+        value: a.id,
+        label: `${a.name || a.id} (${a.clientId || ''})`,
+      }))
+      setTeamAgentOptions(options)
+    }).catch(() => {
+      // A2A 未配置或获取失败，忽略
+    })
+  }, [])
 
   const filtered = useMemo(() => {
     if (filterType === 'all') return conversations
@@ -264,6 +279,22 @@ export default function ConversationsTab({ clientId, conversations, onRefresh }:
                         <Input
                           value={edit.taskCfg?.skill || ''}
                           onChange={e => updateField(conv.conversationId, 'taskCfg', { ...edit.taskCfg, skill: e.target.value })}
+                        />
+                      </Col>
+                      <Col xs={24} sm={12} md={8}>
+                        <label className="field-label">团队协作 Agent</label>
+                        <Select
+                          mode="multiple"
+                          value={edit.teamAgents || []}
+                          onChange={v => updateField(conv.conversationId, 'teamAgents', v)}
+                          style={{ width: '100%' }}
+                          allowClear
+                          placeholder="选择可协作的 Agent"
+                          options={teamAgentOptions}
+                          showSearch
+                          filterOption={(input, option) =>
+                            (option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+                          }
                         />
                       </Col>
                     </Row>

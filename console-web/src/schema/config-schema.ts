@@ -88,6 +88,11 @@ export const configSchema = {
             description: '会话级自定义环境变量',
             additionalProperties: { type: 'string' },
           },
+          teamAgents: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '团队协作 Agent 列表（clientId:conversationId 格式）',
+          },
         },
         required: ['conversationId', 'conversationType'],
       },
