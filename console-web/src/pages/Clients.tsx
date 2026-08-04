@@ -315,7 +315,7 @@ export default function Clients() {
         {/* Custom header with title and buttons */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
           <div style={{ fontSize: 15, fontWeight: 600 }}>
-            MB.LOCAL ({localClients.length})
+            {(status?.hostname || 'MB.LOCAL').toUpperCase()} ({localClients.length})
           </div>
           <Space wrap className="machine-header-actions">
             <Dropdown menu={{ items: localMachineMenuItems, onClick: handleLocalMachineClick }} disabled={machineLoading}>
@@ -452,7 +452,7 @@ export default function Clients() {
 
       {/* Create Client Modal */}
       <Modal
-        title={`新建 Client — ${createTarget === 'local' ? '本机 (MB.LOCAL)' : (remoteConsoles.find(rc => rc.url === createTarget)?.hostname || createTarget)}`}
+        title={`新建 Client — ${createTarget === 'local' ? `本机 (${(status?.hostname || 'MB.LOCAL').toUpperCase()})` : (remoteConsoles.find(rc => rc.url === createTarget)?.hostname || createTarget)}`}
         open={createModalOpen}
         onCancel={() => { setCreateModalOpen(false); createForm.resetFields(); setCreateTarget('local') }}
         onOk={() => handleCreateClient()}
