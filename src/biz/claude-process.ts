@@ -784,7 +784,7 @@ function writeCodexContext(self: DingClaude, conversationId: string): void {
     for (let i = 0; i < lines.length; i++) {
       if (lines[i].trim() === '# cc-ding Session Context') {
         startLine = i;
-      } else if (startLine >= 0 && lines[i].match(/^#{1,2} /) && !lines[i].includes('Client') && !lines[i].includes('Conversation') && !lines[i].includes('DingTalk') && !lines[i].includes('A2A')) {
+      } else if (startLine >= 0 && lines[i].match(/^#{1,2} /) && !lines[i].includes('Client') && !lines[i].includes('Conversation') && !lines[i].includes('DingTalk') && !lines[i].includes('A2A') && !lines[i].includes('团队协作') && !lines[i].includes('后台任务')) {
         endLine = i;
         break;
       }
