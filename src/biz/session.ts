@@ -702,7 +702,7 @@ export function saveActiveSession(self: DingClaude, conversationId: string): voi
       lastSenderStaffId: activeSession.lastSenderStaffId,
       conversationConfig: activeSession.conversationConfig,
       messageQueue: activeSession.messageQueue?.length ? activeSession.messageQueue : undefined,
-      isProcessing: activeSession.isProcessing || undefined,
+      isProcessing: activeSession.isProcessing,
     };
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, JSON.stringify(persistData, null, 2), 'utf-8');
