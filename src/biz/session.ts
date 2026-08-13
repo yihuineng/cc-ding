@@ -765,6 +765,8 @@ export function loadActiveSessions(self: DingClaude): IRestoredSession[] {
         messageQueue: data.messageQueue || [],
         conversationConfig: data.conversationConfig,
       });
+      // 恢复后立即保存，确保 isProcessing: false 写回磁盘
+      saveActiveSession(self, conv.conversationId);
       // 仅当持久化时正在处理中，才记录恢复的会话信息（用于异常中断通知）
       if (data.isProcessing) {
         restored.push({
