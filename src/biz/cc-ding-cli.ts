@@ -3,8 +3,9 @@ import { DingStreamClient, DWClientDownStream, dateUtil } from 'utils-ok';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import crypto from 'crypto';
 import { projUtil } from '../common';
-import { IConfig, IActiveSession, ISession, IRawCallbackData, IAuthRequest, IConversation } from './types';
+import { IConfig, IActiveSession, ISession, IRawCallbackData, IAuthRequest, IConversation, IChatSignal } from './types';
 import { extractQuoteInfo, formatPromptWithQuote, enrichQuoteInfo } from './quote';
 import { sendMessageToUser, sendOwnerMessage } from './messaging';
 import { processPictureMessage, processRichTextMessage, processFileMessage, extractDownloadCode } from './image';
@@ -30,7 +31,7 @@ import {
 } from './menu';
 import {
   getClientDir, getClientConfig, reloadClientConfig, authCheck, isOwner, isAdmin, isOwnerOrAdmin, debugLog,
-  hashConversationId, getConversationConfig,
+  hashConversationId, getConversationConfig, getConvHash,
   getConversationDir, getSessionsDir, getTasksDir,
   getSessionDir, getSessionId, formatSessionInfo, readSessionLogTail,
   findHistorySession, findLatestSession, updateSessionFile, appendSessionLog,
@@ -61,6 +62,8 @@ import { ICommandRoute, route } from './command-route';
 import { CronEngine, formatCronJobList, formatCronJobInfo, isValidCronExpression } from './cron';
 import { TimerEngine, formatTimerList, formatTimerInfo } from './timer';
 import { SendQueueProcessor } from './send-queue';
+import { ChatQueueProcessor } from './chat-queue';
+import { appendChatMessage } from './chat-messages';
 import { initModelOptions, loadModelOptions, addModelOptions, removeModelOptions, resolveCurrentModel, setConversationModel } from './model';
 import { commandExists, isWindows, isWindowsPlatform, spawnCommand } from './platform';
 import { isOldMessage, messageDedup, bounceDedup, PROCESS_START_TIME } from './dedup';
@@ -197,6 +200,9 @@ export class DingClaude {
   /** 消息推送队列处理器 */
   sendQueueProcessor!: SendQueueProcessor;
 
+  /** Web 聊天信号队列处理器 */
+  chatQueueProcessor: ChatQueueProcessor | null = null;
+
   /** A2A Hub WebSocket client */
   a2aHubClient: import('./a2a/client').HubClient | null = null;
 
@@ -317,6 +323,23 @@ export class DingClaude {
     msgCreateAt?: number; msgId?: string;
   }) => handleSessionMessage(this, opts);
   cleanCache = (conversationId: string | null, keepActiveSession = true) => cleanCache(this, conversationId, keepActiveSession);
+
+  /**
+   * 处理来自 Web 端的聊天信号（由 ChatQueueProcessor 消费调用）
+   * Web 消息由 console 已乐观写入 user 消息，这里复用 handleSessionMessage 处理
+   */
+  async handleWebMessage(signal: IChatSignal, convCfg: IConfig['conversations'][0]): Promise<void> {
+    await handleSessionMessage(this, {
+      conversationId: signal.conversationId,
+      sessionWebhook: convCfg.dingToken || this.config.defaultDingToken || '',
+      senderStaffId: signal.senderStaffId,
+      senderNick: signal.senderNick,
+      message: signal.message,
+      conversationConfig: convCfg,
+      msgCreateAt: signal.timestamp,
+      msgId: `web_${signal.timestamp}`,
+    });
+  }
 
   // task
   formatTaskInfo = () => formatTaskInfo(this);
@@ -3058,6 +3081,26 @@ export class DingClaude {
       finalPrompt = ` ${finalPrompt}`;
     }
 
+    // 在调用 handleSessionMessage 前，将钉钉 user 消息写入 messages.json
+    try {
+      const convHash = getConvHash(conversationId);
+      const convDir = path.join(this.getClientDir(), convHash);
+      if (!fs.existsSync(convDir)) {
+        fs.mkdirSync(convDir, { recursive: true });
+      }
+      appendChatMessage(convDir, {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: finalPrompt,
+        senderStaffId,
+        senderNick,
+        source: 'ding',
+        timestamp: msgCreateAt || Date.now(),
+      });
+    } catch (err) {
+      console.warn('[botMsgGetCallback] 写入 user 消息失败:', err);
+    }
+
     await this.handleSessionMessage({
       conversationId,
       sessionWebhook,
@@ -3403,6 +3446,10 @@ export class DingClaude {
     // 启动消息推送队列处理器
     this.sendQueueProcessor.start();
 
+    // 启动 Web 聊天信号队列处理器
+    this.chatQueueProcessor = new ChatQueueProcessor(this);
+    this.chatQueueProcessor.start();
+
     // 连接到 A2A Hub（WebSocket 模式）
     const hubClient = createHubClient(this);
     if (hubClient) {
@@ -3444,6 +3491,10 @@ export class DingClaude {
       this.a2aHubClient?.disconnect();
       this.timerEngine.destroy();
       this.sendQueueProcessor.destroy();
+      if (this.chatQueueProcessor) {
+        this.chatQueueProcessor.destroy();
+        this.chatQueueProcessor = null;
+      }
     };
     process.on('SIGTERM', onShutdown);
     process.on('SIGINT', onShutdown);

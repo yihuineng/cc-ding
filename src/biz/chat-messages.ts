@@ -27,7 +27,7 @@ export function appendChatMessage(convDir: string, msg: IChatMessage): void {
 
 export function readChatMessages(
   convDir: string,
-  opts?: { since?: number; limit?: number }
+  opts?: { since?: number; limit?: number },
 ): IChatMessage[] {
   const filePath = path.join(convDir, MESSAGES_FILE);
 

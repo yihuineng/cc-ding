@@ -11,6 +11,7 @@ import { sendDingMessage, queryUserIdByMobile, queryUserIdByJobNumber, queryDing
 import { createAgent } from './agent-registry';
 import { isWindows } from './platform';
 import { userMessageWatermark } from './dedup';
+import { appendChatMessage } from './chat-messages';
 
 // ==================== 消息确认辅助函数 ====================
 
@@ -426,6 +427,55 @@ export function hashConversationId(self: DingClaude, conversationId: string): st
   const convCfg = getConversationConfig(self, conversationId);
   const convId = convCfg?.linkConversationId || conversationId;
   return crypto.createHash('md5').update(convId).digest('hex');
+}
+
+/**
+ * 获取 conversationId 的 MD5 hash（不依赖 self，web 消息场景使用）
+ */
+export function getConvHash(conversationId: string): string {
+  return crypto.createHash('md5').update(conversationId).digest('hex');
+}
+
+/**
+ * 从 session.log 中读取最后一条 assistant 消息并写入 messages.json
+ * 在 executeQuery 成功后调用
+ */
+export function recordAssistantFromSessionLog(self: DingClaude, conversationId: string): void {
+  try {
+    const found = findActiveSession(self, conversationId);
+    if (!found) return;
+
+    const sessionDir = getSessionDir(self, found.session.session);
+    const logFile = path.join(sessionDir, 'session.log');
+    if (!fs.existsSync(logFile)) return;
+
+    const logContent = fs.readFileSync(logFile, 'utf-8');
+    const lines = logContent.trim().split('\n');
+    // 找最后一条 assistant 消息
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (line.includes('[assistant]:') || line.includes('[ASSISTANT]:')) {
+        const content = line.replace(/^\[.*?\]\s*\[assistant\]:\s*/i, '').trim();
+        if (content) {
+          const convHash = getConvHash(conversationId);
+          const convDir = path.join(getClientDir(self), convHash);
+          if (!fs.existsSync(convDir)) {
+            fs.mkdirSync(convDir, { recursive: true });
+          }
+          appendChatMessage(convDir, {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content,
+            source: 'ding',
+            timestamp: Date.now(),
+          });
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[recordAssistant] 写入 assistant 消息失败:', err);
+  }
 }
 
 /**
@@ -1224,6 +1274,8 @@ export async function handleSessionMessage(self: DingClaude, opts: {
         senderNick,
         senderStaffId,
       });
+      // executeQuery 成功后，从 session.log 记录 assistant 响应
+      recordAssistantFromSessionLog(self, conversationId);
     } catch (err) {
       // 恢复会话失败（可能会话已失效），生成新 agentSessionId 重新发起一次
       if (activeSession.session.agentSessionId) {
@@ -1245,6 +1297,8 @@ export async function handleSessionMessage(self: DingClaude, opts: {
             senderNick,
             senderStaffId,
           });
+          // 重试成功后，从 session.log 记录 assistant 响应
+          recordAssistantFromSessionLog(self, conversationId);
         } catch (retryErr) {
           console.error('重试执行 Agent 查询失败:', retryErr);
           await sendDingMessage(self, {

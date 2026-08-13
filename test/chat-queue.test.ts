@@ -50,7 +50,7 @@ describe('chat-queue', () => {
     fs.writeFileSync(
       path.join(queueDir, `${Date.now()}_test.json`),
       JSON.stringify(signal),
-      'utf-8'
+      'utf-8',
     );
 
     let processed = 0;

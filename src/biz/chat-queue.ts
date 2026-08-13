@@ -71,7 +71,7 @@ export class ChatQueueProcessor {
       }
 
       try {
-        await (this.dc as any).handleWebMessage(signal, convCfg);
+        await this.dc.handleWebMessage(signal, convCfg);
       } catch (err) {
         console.error('[ChatQueueProcessor] 处理信号失败:', fileName, err);
       }
