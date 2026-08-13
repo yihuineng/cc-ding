@@ -7,7 +7,9 @@ import { fileUtil } from 'utils-ok';
 import { spawnCommand, commandExists, isWindows } from './platform';
 import { getHomeDir } from './session';
 import { setCorsHeaders, readBody } from './a2a/http-utils';
-import type { IConfig, IClaudeSetting } from './types';
+import type { IConfig, IClaudeSetting, IChatSignal } from './types';
+import { writeChatSignal } from './chat-queue';
+import { appendChatMessage, readChatMessages } from './chat-messages';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
@@ -2606,6 +2608,140 @@ function query_safe(req: http.IncomingMessage, key: string): string | null {
   }
 }
 
+// ==================== Web Chat API 处理函数 ====================
+
+/** POST /api/clients/:id/conversations/:convId/chat */
+async function handleChatSend(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  clientId: string,
+  convId: string,
+  account: string,
+): Promise<void> {
+  try {
+    const homeDir = getHomeDir();
+    const configPath = path.join(homeDir, '.cc-ding', clientId, 'config.json');
+    if (!fs.existsSync(configPath)) {
+      jsonError(res, 404, 'Client not found');
+      return;
+    }
+
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as IConfig;
+    const convCfg = config.conversations.find(c => c.conversationId === convId);
+    if (!convCfg) {
+      jsonError(res, 404, 'Conversation not found');
+      return;
+    }
+
+    const body = await readBody(req);
+    const { message } = JSON.parse(body || '{}');
+    if (!message || typeof message !== 'string') {
+      jsonError(res, 400, 'message is required');
+      return;
+    }
+
+    const clientDir = path.join(homeDir, '.cc-ding', clientId);
+    const signal: IChatSignal = {
+      conversationId: convId,
+      message,
+      senderStaffId: `web:${account}`,
+      senderNick: account,
+      timestamp: Date.now(),
+    };
+
+    writeChatSignal(clientDir, signal);
+
+    // 乐观写入 user 消息
+    const convHash = crypto.createHash('md5').update(convId).digest('hex');
+    const convDir = path.join(clientDir, convHash);
+    if (!fs.existsSync(convDir)) {
+      fs.mkdirSync(convDir, { recursive: true });
+    }
+
+    const messageId = crypto.randomUUID();
+    appendChatMessage(convDir, {
+      id: messageId,
+      role: 'user',
+      content: message,
+      senderStaffId: signal.senderStaffId,
+      senderNick: signal.senderNick,
+      source: 'web',
+      timestamp: signal.timestamp,
+    });
+
+    jsonResponse(res, 200, { ok: true, messageId });
+  } catch (err) {
+    jsonError(res, 500, `发送消息失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** GET /api/clients/:id/conversations/:convId/messages */
+async function handleChatMessages(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  clientId: string,
+  convId: string,
+  query: URLSearchParams,
+): Promise<void> {
+  try {
+    const homeDir = getHomeDir();
+    const clientDir = path.join(homeDir, '.cc-ding', clientId);
+    if (!fs.existsSync(clientDir)) {
+      jsonError(res, 404, 'Client not found');
+      return;
+    }
+
+    const convHash = crypto.createHash('md5').update(convId).digest('hex');
+    const convDir = path.join(clientDir, convHash);
+
+    const since = query.get('since') ? Number(query.get('since')) : undefined;
+    const limit = query.get('limit') ? Number(query.get('limit')) : undefined;
+
+    const messages = readChatMessages(convDir, { since, limit });
+    jsonResponse(res, 200, { messages, hasMore: false });
+  } catch (err) {
+    jsonError(res, 500, `读取消息失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** GET /api/clients/:id/conversations/:convId/chat/status */
+async function handleChatStatus(
+  res: http.ServerResponse,
+  clientId: string,
+  convId: string,
+): Promise<void> {
+  try {
+    const homeDir = getHomeDir();
+    const clientDir = path.join(homeDir, '.cc-ding', clientId);
+    if (!fs.existsSync(clientDir)) {
+      jsonError(res, 404, 'Client not found');
+      return;
+    }
+
+    const clientOnline = checkClientOnline(clientId).online;
+
+    const convHash = crypto.createHash('md5').update(convId).digest('hex');
+    const convDir = path.join(clientDir, convHash);
+    const activeFile = path.join(convDir, '.sessions', 'active.json');
+    let isProcessing = false;
+    let queueLength = 0;
+
+    if (fs.existsSync(activeFile)) {
+      try {
+        const active = JSON.parse(fs.readFileSync(activeFile, 'utf-8'));
+        isProcessing = active.isProcessing || false;
+        queueLength = active.messageQueue?.length || 0;
+      } catch {
+        // ignore
+      }
+    }
+
+    jsonResponse(res, 200, { isProcessing, queueLength, clientOnline });
+  } catch (err) {
+    jsonError(res, 500, `读取状态失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // ==================== 路由分发 ====================
 
 async function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse, pathname: string, query: URLSearchParams): Promise<void> {
@@ -2632,6 +2768,9 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   const clientIdMatch = pathname.match(/^\/api\/clients\/([^\/]+)$/);
   const clientConvMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations$/);
   const clientConvIdMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/(.+)$/);
+  const clientConvChatMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/([^\/]+)\/chat$/);
+  const clientConvMessagesMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/([^\/]+)\/messages$/);
+  const clientConvChatStatusMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/([^\/]+)\/chat\/status$/);
 
   // POST /api/login
   if (pathname === '/api/login' && req.method === 'POST') {
@@ -3065,6 +3204,36 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   if (clientFilesMatch && req.method === 'PUT') {
     const name = query.get('name') || '';
     await handlePutClientFile(req, res, clientFilesMatch[1], name);
+    return;
+  }
+
+  // POST /api/clients/:id/conversations/:convId/chat
+  if (clientConvChatMatch && req.method === 'POST') {
+    const account = requireAuth(req, res);
+    if (!account) return;
+    const clientId = decodeURIComponent(clientConvChatMatch[1]);
+    const convId = decodeURIComponent(clientConvChatMatch[2]);
+    await handleChatSend(req, res, clientId, convId, account);
+    return;
+  }
+
+  // GET /api/clients/:id/conversations/:convId/messages
+  if (clientConvMessagesMatch && req.method === 'GET') {
+    const account = requireAuth(req, res);
+    if (!account) return;
+    const clientId = decodeURIComponent(clientConvMessagesMatch[1]);
+    const convId = decodeURIComponent(clientConvMessagesMatch[2]);
+    await handleChatMessages(req, res, clientId, convId, query);
+    return;
+  }
+
+  // GET /api/clients/:id/conversations/:convId/chat/status
+  if (clientConvChatStatusMatch && req.method === 'GET') {
+    const account = requireAuth(req, res);
+    if (!account) return;
+    const clientId = decodeURIComponent(clientConvChatStatusMatch[1]);
+    const convId = decodeURIComponent(clientConvChatStatusMatch[2]);
+    await handleChatStatus(res, clientId, convId);
     return;
   }
 
