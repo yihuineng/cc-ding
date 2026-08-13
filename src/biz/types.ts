@@ -364,3 +364,23 @@ export interface IDingUserDetail {
   senior?: boolean;
   userId?: string; // 兼容字段
 }
+
+// Web Chat 相关类型
+
+export interface IChatMessage {
+  id: string;                  // uuid
+  role: 'user' | 'assistant';
+  content: string;             // markdown 正文
+  senderStaffId?: string;      // user 消息的来源
+  senderNick?: string;
+  source: 'ding' | 'web';      // 来源渠道
+  timestamp: number;
+}
+
+export interface IChatSignal {
+  conversationId: string;      // 目标钉钉会话
+  message: string;             // 用户输入的内容
+  senderStaffId: string;       // web 用户标识
+  senderNick: string;          // 显示名
+  timestamp: number;
+}
