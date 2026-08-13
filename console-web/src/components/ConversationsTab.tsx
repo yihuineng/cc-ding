@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Tabs, Card, Tag, Button, Space, Form, Input, InputNumber, Switch, Select,
   Collapse, Row, Col, Popconfirm, message, Empty, Badge,
@@ -19,6 +20,7 @@ const typeLabel = (t: string) => (t === '2' ? '群聊' : '单聊')
 const typeColor = (t: string) => (t === '2' ? 'blue' : 'green')
 
 export default function ConversationsTab({ clientId, conversations, onRefresh }: Props) {
+  const navigate = useNavigate()
   const [expandedKeys, setExpandedKeys] = useState<string[]>([])
   const [editForms, setEditForms] = useState<Record<string, IConversation>>({})
   const [saving, setSaving] = useState<Record<string, boolean>>({})
@@ -145,9 +147,18 @@ export default function ConversationsTab({ clientId, conversations, onRefresh }:
                       {conv.conversationId}
                     </code>
                   </div>
-                  <span style={{ color: '#999', fontSize: 12, flexShrink: 0 }}>
+                  <Space size={4} style={{ flexShrink: 0 }}>
+                    <Button
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        navigate(`/client/${clientId}/chat/${encodeURIComponent(conv.conversationId)}`)
+                      }}
+                    >
+                      💬 打开对话
+                    </Button>
                     {isExpanded ? <UpOutlined /> : <DownOutlined />}
-                  </span>
+                  </Space>
                 </div>
 
                 {/* Expanded edit form */}

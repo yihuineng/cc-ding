@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bubble } from 'antd';
+import { Tag } from 'antd';
 import type { IChatMessage } from '../types';
 
 interface ChatBubbleProps {
@@ -10,16 +10,30 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message }) => {
   const isUser = message.role === 'user';
 
   return (
-    <Bubble
-      placement={isUser ? 'end' : 'start'}
-      content={message.content}
-      variant={isUser ? 'filled' : 'outlined'}
-      styles={{
-        content: {
-          backgroundColor: isUser ? '#1677ff' : '#f5f5f5',
-          color: isUser ? '#fff' : '#000',
-        },
-      }}
-    />
+    <div style={{
+      display: 'flex',
+      justifyContent: isUser ? 'flex-end' : 'flex-start',
+      marginBottom: 12,
+    }}>
+      <div style={{
+        maxWidth: '70%',
+        padding: '8px 12px',
+        borderRadius: 8,
+        backgroundColor: isUser ? '#1677ff' : '#1f1f1f',
+        color: isUser ? '#fff' : '#d4dce6',
+        border: isUser ? 'none' : '1px solid #2d3d4f',
+        wordBreak: 'break-word',
+        whiteSpace: 'pre-wrap',
+        fontSize: 14,
+        lineHeight: 1.6,
+      }}>
+        <div style={{ marginBottom: 4 }}>
+          <Tag color={isUser ? 'blue' : 'green'} style={{ fontSize: 11, margin: 0 }}>
+            {isUser ? 'User' : 'Assistant'}
+          </Tag>
+        </div>
+        {message.content}
+      </div>
+    </div>
   );
 };
