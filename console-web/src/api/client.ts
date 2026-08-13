@@ -1,4 +1,4 @@
-import { IClient, IConfig, IApiKey, IConversation, IGlobalConfig, IStatus } from '../types'
+import { IClient, IConfig, IApiKey, IConversation, IGlobalConfig, IStatus, IChatMessage } from '../types'
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('ccding_token')
@@ -291,4 +291,25 @@ export const api = {
   getA2AStats: () => request<any>('/api/a2a/stats'),
   getA2AAgents: () => request<any>('/api/a2a/agents'),
   getA2ATasks: (limit?: number) => request<any>(`/api/a2a/tasks${limit ? `?limit=${limit}` : ''}`),
+
+  // ── Chat ──
+  sendChatMessage: (clientId: string, convId: string, message: string) =>
+    request<{ ok: boolean; messageId: string }>(
+      `/api/clients/${enc(clientId)}/conversations/${enc(convId)}/chat`,
+      { method: 'POST', body: JSON.stringify({ message }) }
+    ),
+
+  getChatMessages: (clientId: string, convId: string, opts?: { since?: number; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.since) params.set('since', String(opts.since));
+    if (opts?.limit) params.set('limit', String(opts.limit));
+    return request<{ messages: IChatMessage[]; hasMore: boolean }>(
+      `/api/clients/${enc(clientId)}/conversations/${enc(convId)}/messages?${params}`
+    );
+  },
+
+  getChatStatus: (clientId: string, convId: string) =>
+    request<{ isProcessing: boolean; queueLength: number; clientOnline: boolean }>(
+      `/api/clients/${enc(clientId)}/conversations/${enc(convId)}/chat/status`
+    ),
 }

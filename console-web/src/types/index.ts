@@ -93,3 +93,13 @@ export interface IStatus {
   uptime: number
   buildTime?: string
 }
+
+export interface IChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  senderStaffId?: string;
+  senderNick?: string;
+  source: 'ding' | 'web';
+  timestamp: number;
+}
