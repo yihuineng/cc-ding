@@ -36,6 +36,7 @@ function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<Clients />} />
+          <Route path="/client/:clientId/chat/:convId" element={<ChatPage />} />
           <Route path="/client/:clientId" element={<ClientDetail />} />
           <Route path="/client/:clientId/:tab" element={<ClientDetail />} />
           <Route path="/global" element={<GlobalConfig />} />
@@ -43,7 +44,6 @@ function App() {
           <Route path="/remote-global/:remoteUrl" element={<RemoteGlobalConfig />} />
           <Route path="/remote-global/:remoteUrl/:tab" element={<RemoteGlobalConfig />} />
           <Route path="/a2a" element={<A2AMonitor />} />
-          <Route path="/client/:clientId/chat/:convId" element={<ChatPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
