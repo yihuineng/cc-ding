@@ -962,13 +962,38 @@ export async function startNewSession(self: DingClaude, opts: {
     const newSource = replySource || 'ding';
 
     if (existingSource !== newSource) {
-      const sourceName = existingSource === 'web' ? 'Web' : '钉钉';
-      const newSourceName = newSource === 'web' ? 'Web' : '钉钉';
+      const sourceName = existingSource === 'web' ? 'Web 控制台' : '钉钉';
+      const newSourceName = newSource === 'web' ? 'Web 控制台' : '钉钉';
+      const errorMsg = `⚠️ 会话来源冲突\n\n当前存在来自 **${sourceName}** 的活跃会话，无法从 **${newSourceName}** 开启新会话。\n\n**原因：** 为避免上下文混乱，同一会话不允许同时进行来自不同渠道的对话。\n\n**解决方案：**\n• 发送 \`/end\` 结束当前会话后重试\n• 或发送 \`/new\` 直接开启新会话（会自动结束当前会话）`;
+
       console.log(`会话来源冲突: 群=${conversationId}, 当前=${existingSource}, 新=${newSource}`);
-      await sendDingMessage(self, {
-        conversationId, sessionWebhook,
-        content: `⚠️ 当前存在${sourceName}活跃会话，无法开启${newSourceName}会话\n💡 请先发送 \`/end\` 结束当前会话，或使用 \`/new\` 开启新会话`,
-      });
+
+      // 根据来源选择不同的消息发送方式
+      if (replySource === 'web') {
+        // Web 会话：写入 messages.json
+        try {
+          const convHash = crypto.createHash('md5').update(conversationId).digest('hex');
+          const convDir = path.join(self.getClientDir(), convHash);
+          if (!fs.existsSync(convDir)) {
+            fs.mkdirSync(convDir, { recursive: true });
+          }
+          appendChatMessage(self.clientId, conversationId, {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: errorMsg,
+            source: 'web',
+            timestamp: Date.now(),
+          });
+        } catch (err) {
+          console.error('[session] 写入 Web 错误消息失败:', err);
+        }
+      } else {
+        // 钉钉会话：发送钉钉消息
+        await sendDingMessage(self, {
+          conversationId, sessionWebhook,
+          content: errorMsg,
+        });
+      }
       return;
     }
   }
