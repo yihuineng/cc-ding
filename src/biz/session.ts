@@ -955,6 +955,24 @@ export async function startNewSession(self: DingClaude, opts: {
     return;
   }
 
+  // 会话来源隔离检查：不允许同一会话同时进行钉钉和web的会话
+  const existingSession = self.activeSessions.get(conversationId);
+  if (existingSession) {
+    const existingSource = existingSession.session.replySource || 'ding';
+    const newSource = replySource || 'ding';
+
+    if (existingSource !== newSource) {
+      const sourceName = existingSource === 'web' ? 'Web' : '钉钉';
+      const newSourceName = newSource === 'web' ? 'Web' : '钉钉';
+      console.log(`会话来源冲突: 群=${conversationId}, 当前=${existingSource}, 新=${newSource}`);
+      await sendDingMessage(self, {
+        conversationId, sessionWebhook,
+        content: `⚠️ 当前存在${sourceName}活跃会话，无法开启${newSourceName}会话\n💡 请先发送 \`/end\` 结束当前会话，或使用 \`/new\` 开启新会话`,
+      });
+      return;
+    }
+  }
+
   const now = Date.now();
   const newSessionId = crypto.randomUUID();
   const session: ISession = {
