@@ -478,7 +478,9 @@ export class DingClaude {
       // /version 命令：显示版本信息
       route('/version', () => parseVersionCommand(prompt), async () => {
         try {
-          const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf-8'));
+          // 从 dist/src/biz/ 到项目根目录需要上三级
+          const pkgPath = path.join(__dirname, '../../../package.json');
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
           await sendWebMessage(`📦 **cc-ding** v${pkg.version}\n\n🚀 DingTalk AI Agent Framework`);
         } catch (err) {
           await sendWebMessage(`📦 **cc-ding**\n\n🚀 DingTalk AI Agent Framework\n\n⚠️ 无法读取版本号`);
