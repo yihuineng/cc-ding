@@ -991,13 +991,32 @@ export async function startNewSession(self: DingClaude, opts: {
           console.error('[session] ❌ 写入 Web 错误消息失败:', err);
         }
       } else {
-        // 钉钉会话：发送钉钉消息
-        console.log(`[session] 📤 发送钉钉错误消息到 conversationId=${conversationId}`);
-        await sendDingMessage(self, {
-          conversationId, sessionWebhook,
-          content: errorMsg,
-        });
-        console.log(`[session] ✅ 已发送钉钉错误消息`);
+        // 钉钉会话：直接发送钉钉消息，绕过 sendDingMessage 的 web 检查
+        // 因为活跃会话可能是 web 的，sendDingMessage 会错误地写入 messages.json
+        console.log(`[session] 📤 直接发送钉钉错误消息到 conversationId=${conversationId}`);
+        try {
+          const urllib = await import('urllib');
+          const body = {
+            msgtype: 'markdown',
+            markdown: { title: '会话来源冲突', text: errorMsg },
+            at: { atUserIds: [], isAtAll: false },
+          };
+          const accessToken = await self.dingStreamClient.getAccessToken();
+          const response = await urllib.request(sessionWebhook, {
+            method: 'POST',
+            data: body,
+            contentType: 'json',
+            headers: { 'x-acs-dingtalk-access-token': accessToken },
+            dataType: 'json',
+          });
+          if (response.data?.errcode && response.data.errcode !== 0) {
+            console.error(`[session] 发送钉钉错误消息失败: ${JSON.stringify(response.data)}`);
+          } else {
+            console.log(`[session] ✅ 已发送钉钉错误消息`);
+          }
+        } catch (err) {
+          console.error('[session] ❌ 发送钉钉错误消息失败:', err);
+        }
       }
       return;
     }
@@ -1288,13 +1307,32 @@ export async function handleSessionMessage(self: DingClaude, opts: {
           console.error('[session] ❌ 写入 Web 错误消息失败:', err);
         }
       } else {
-        // 钉钉会话：发送钉钉消息
-        console.log(`[session] 📤 发送钉钉错误消息到 conversationId=${conversationId}`);
-        await sendDingMessage(self, {
-          conversationId, sessionWebhook,
-          content: errorMsg,
-        });
-        console.log(`[session] ✅ 已发送钉钉错误消息`);
+        // 钉钉会话：直接发送钉钉消息，绕过 sendDingMessage 的 web 检查
+        // 因为活跃会话可能是 web 的，sendDingMessage 会错误地写入 messages.json
+        console.log(`[session] 📤 直接发送钉钉错误消息到 conversationId=${conversationId}`);
+        try {
+          const urllib = await import('urllib');
+          const body = {
+            msgtype: 'markdown',
+            markdown: { title: '会话来源冲突', text: errorMsg },
+            at: { atUserIds: [], isAtAll: false },
+          };
+          const accessToken = await self.dingStreamClient.getAccessToken();
+          const response = await urllib.request(sessionWebhook, {
+            method: 'POST',
+            data: body,
+            contentType: 'json',
+            headers: { 'x-acs-dingtalk-access-token': accessToken },
+            dataType: 'json',
+          });
+          if (response.data?.errcode && response.data.errcode !== 0) {
+            console.error(`[session] 发送钉钉错误消息失败: ${JSON.stringify(response.data)}`);
+          } else {
+            console.log(`[session] ✅ 已发送钉钉错误消息`);
+          }
+        } catch (err) {
+          console.error('[session] ❌ 发送钉钉错误消息失败:', err);
+        }
       }
       return;
     }
