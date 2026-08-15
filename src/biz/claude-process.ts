@@ -685,104 +685,50 @@ function buildContextContent(self: DingClaude, conversationId: string): string {
 }
 
 /**
- * 构建 Codex 上下文内容（AGENTS.md 格式，无 HTML 标记）。
+ * 从 CLAUDE.md 内容生成 AGENTS.md 内容（去除 HTML 注释标记）。
+ * 确保两者内容一致，仅格式不同。
  */
-function buildCodexContext(self: DingClaude, conversationId: string): string {
-  const convCfg = self.getConversationConfig(conversationId);
-  const config = self.config;
-  const lines: string[] = [
-    '# cc-ding Session Context',
-    '',
-    '## Client',
-    `- clientId: \`${self.clientId}\``,
-    config.clientName ? `- clientName: ${config.clientName}` : '',
-    `- owner: ${config.owner}`,
-    '',
-    '## Conversation',
-    `- conversationId: \`${conversationId}\``,
-    convCfg?.conversationType ? `- conversationType: ${convCfg.conversationType === '1' ? '单聊' : '群聊'}` : '',
-    convCfg?.conversationTitle ? `- conversationTitle: ${convCfg.conversationTitle}` : '',
-    '',
-    '## DingTalk Context',
-    '当 prompt 中包含 "消息来自: xxx(用户ID)" 时，说明消息来自钉钉用户。',
-    '- 回答时要考虑用户的使用场景（钉钉聊天界面，非终端环境）',
-    '- 用户一般情况下只能通过 cc-ding 进行操作',
-    '- cc-ding 文档: https://github.com/yihuineng/cc-ding',
-  ].filter(Boolean);
-
-  // A2A 协议上下文（如果已配置）
-  const a2aCfg = config.a2aCfg;
-  if (a2aCfg) {
-    lines.push('');
-    lines.push('## A2A (Agent-to-Agent)');
-    lines.push('cc-ding 支持 A2A 协议，可以调度任务到其他 cc-ding 实例。');
-    if (a2aCfg.remoteAgents?.length) {
-      lines.push('');
-      lines.push('### 可用 Agent');
-      for (const a of a2aCfg.remoteAgents) {
-        lines.push(`- \`${a.id}\` (${a.name}): \`${a.baseUrl}\``);
-      }
-    }
-    lines.push('');
-    lines.push('### 使用方式');
-    lines.push('可以通过执行以下命令将任务发送给其他 Agent：');
-    lines.push('```');
-    lines.push('cc-ding a2a send <agent-id> <任务描述>');
-    lines.push('cc-ding a2a list          # 查看可用 Agent');
-    lines.push('cc-ding a2a agents        # 查看 Hub 上所有在线 Agent');
-    lines.push('cc-ding a2a status <id> <taskId>  # 查看任务状态');
-    lines.push('```');
-    lines.push('当用户请求需要其他 Agent 的专长处理时，可以直接调用上述命令。');
-  }
-
-  // 团队协作 Agent 列表（teamAgents）
-  if (convCfg?.teamAgents?.length) {
-    lines.push('');
-    lines.push('## 团队协作 Agent');
-    lines.push('当前会话配置了以下可协作的 Agent，可以通过 A2A 协议与它们交互：');
-    lines.push('');
-    for (const teamAgent of convCfg.teamAgents) {
-      lines.push(`- \`${teamAgent}\``);
-    }
-    lines.push('');
-    lines.push('使用方式：`cc-ding a2a send <agent-id> <任务描述>`');
-  }
-
-  // cc-ding task 后台任务说明
-  lines.push('');
-  lines.push('## cc-ding 后台任务');
-  lines.push('当需要执行预计超过 30 秒的命令时（如 docker build、npm install 等），使用 `cc-ding task` 包装。');
-  lines.push('任务完成/失败后会主动推送结果到当前钉钉会话。');
-  lines.push('```');
-  lines.push(`# 后台运行（推荐）`);
-  lines.push(`cc-ding task -ci ${self.clientId} -c ${conversationId} --bg -t <任务名> -- <命令>`);
-  lines.push('```');
-
-  return lines.join('\n') + '\n';
+function deriveAgentsContentFromClaude(claudeContent: string): string {
+  return claudeContent
+    .replace(/<!-- cc-ding:session-context-start \(DO NOT EDIT\) -->\n?/g, '')
+    .replace(/<!-- cc-ding:session-context-end \(DO NOT EDIT\) -->\n?/g, '')
+    .trim() + '\n';
 }
 
 /**
  * 将 cc-ding 上下文写入 Codex 的 AGENTS.md 文件。
+ * 直接从 CLAUDE.md 派生内容，确保一致性。
  */
 function writeCodexContext(self: DingClaude, conversationId: string): void {
   const dingGroupDir = self.getConversationDir(conversationId);
   const agentsMdPath = path.join(dingGroupDir, 'AGENTS.md');
-  const newSection = buildCodexContext(self, conversationId);
+  const claudeMdPath = path.join(dingGroupDir, '.claude', 'CLAUDE.md');
+
+  // 从 CLAUDE.md 读取内容并派生 AGENTS.md 内容
+  if (!fs.existsSync(claudeMdPath)) {
+    console.log(`[${timestamp()}] CLAUDE.md 不存在，跳过 AGENTS.md 写入: ${claudeMdPath}`);
+    return;
+  }
+
+  const claudeContent = fs.readFileSync(claudeMdPath, 'utf-8');
+  const agentsContent = deriveAgentsContentFromClaude(claudeContent);
 
   if (!fs.existsSync(agentsMdPath)) {
-    fs.writeFileSync(agentsMdPath, newSection, 'utf-8');
+    fs.writeFileSync(agentsMdPath, agentsContent, 'utf-8');
     console.log(`[${timestamp()}] cc-ding 上下文已注入 AGENTS.md: ${agentsMdPath}`);
     return;
   }
 
   const existing = fs.readFileSync(agentsMdPath, 'utf-8');
-  if (existing.includes('# cc-ding Session Context')) {
+  const newSectionHeader = '# cc-ding Session Context';
+
+  if (existing.includes(newSectionHeader)) {
     // 已存在，替换整个 cc-ding 段落
     const lines = existing.split('\n');
     let startLine = -1;
     let endLine = lines.length;
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i].trim() === '# cc-ding Session Context') {
+      if (lines[i].trim() === newSectionHeader) {
         startLine = i;
       } else if (startLine >= 0 && lines[i].match(/^#{1,2} /) && !lines[i].includes('Client') && !lines[i].includes('Conversation') && !lines[i].includes('DingTalk') && !lines[i].includes('A2A') && !lines[i].includes('团队协作') && !lines[i].includes('后台任务')) {
         endLine = i;
@@ -792,11 +738,11 @@ function writeCodexContext(self: DingClaude, conversationId: string): void {
     if (startLine >= 0) {
       const before = lines.slice(0, startLine).join('\n');
       const after = lines.slice(endLine).join('\n');
-      fs.writeFileSync(agentsMdPath, [ before, newSection, after ].filter(Boolean).join('\n'), 'utf-8');
+      fs.writeFileSync(agentsMdPath, [ before, agentsContent, after ].filter(Boolean).join('\n'), 'utf-8');
       console.log(`[${timestamp()}] cc-ding 上下文已更新: ${agentsMdPath}`);
     }
   } else {
-    fs.writeFileSync(agentsMdPath, newSection + '\n' + existing, 'utf-8');
+    fs.writeFileSync(agentsMdPath, agentsContent + '\n' + existing, 'utf-8');
     console.log(`[${timestamp()}] cc-ding 上下文已追加到现有 AGENTS.md: ${agentsMdPath}`);
   }
 }
@@ -847,7 +793,7 @@ export function injectStartupContexts(self: DingClaude): void {
 }
 
 /**
- * 检查配置是否变更，仅在变更时写入 CLAUDE.md。
+ * 检查配置是否变更，仅在变更时写入 CLAUDE.md 和 AGENTS.md。
  * 避免每次消息都执行文件 I/O，提升性能。
  *
  * 策略：
@@ -868,6 +814,8 @@ export function injectSessionContextIfChanged(self: DingClaude, session: ISessio
   // 内容变更或首次（此群），写入文件并更新缓存
   injectedContextCache.set(conversationId, newSection);
   writeContextToFile(self, conversationId, newSection);
+  // 同步更新 AGENTS.md，确保与 CLAUDE.md 一致
+  writeCodexContext(self, conversationId);
 }
 
 /**
@@ -882,6 +830,8 @@ export function refreshSessionContext(self: DingClaude, conversationId: string):
   const claudeMdPath = path.join(claudeDir, 'CLAUDE.md');
   fs.writeFileSync(claudeMdPath, newSection, 'utf-8');
   console.log(`[${timestamp()}] QA 模式切换，CLAUDE.md 已刷新: ${claudeMdPath}`);
+  // 同步更新 AGENTS.md，确保与 CLAUDE.md 一致
+  writeCodexContext(self, conversationId);
 }
 
 /**
