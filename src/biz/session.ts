@@ -961,12 +961,14 @@ export async function startNewSession(self: DingClaude, opts: {
     const existingSource = existingSession.session.replySource || 'ding';
     const newSource = replySource || 'ding';
 
+    console.log(`[session] 来源检查: conversationId=${conversationId}, existingSource=${existingSource}, newSource=${newSource}`);
+
     if (existingSource !== newSource) {
       const sourceName = existingSource === 'web' ? 'Web 控制台' : '钉钉';
       const newSourceName = newSource === 'web' ? 'Web 控制台' : '钉钉';
       const errorMsg = `⚠️ 会话来源冲突\n\n当前存在来自 **${sourceName}** 的活跃会话，无法从 **${newSourceName}** 开启新会话。\n\n**原因：** 为避免上下文混乱，同一会话不允许同时进行来自不同渠道的对话。\n\n**解决方案：**\n• 发送 \`/end\` 结束当前会话后重试\n• 或发送 \`/new\` 直接开启新会话（会自动结束当前会话）`;
 
-      console.log(`会话来源冲突: 群=${conversationId}, 当前=${existingSource}, 新=${newSource}`);
+      console.log(`[session] ⚠️ 会话来源冲突: 群=${conversationId}, 当前=${existingSource}, 新=${newSource}`);
 
       // 根据来源选择不同的消息发送方式
       if (replySource === 'web') {
@@ -984,15 +986,18 @@ export async function startNewSession(self: DingClaude, opts: {
             source: 'web',
             timestamp: Date.now(),
           });
+          console.log(`[session] ✅ 已写入 Web 错误消息到 messages.json`);
         } catch (err) {
-          console.error('[session] 写入 Web 错误消息失败:', err);
+          console.error('[session] ❌ 写入 Web 错误消息失败:', err);
         }
       } else {
         // 钉钉会话：发送钉钉消息
+        console.log(`[session] 📤 发送钉钉错误消息到 conversationId=${conversationId}`);
         await sendDingMessage(self, {
           conversationId, sessionWebhook,
           content: errorMsg,
         });
+        console.log(`[session] ✅ 已发送钉钉错误消息`);
       }
       return;
     }
