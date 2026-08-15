@@ -94,6 +94,15 @@ export interface IStatus {
   buildTime?: string
 }
 
+export interface IAttachment {
+  type: 'image' | 'file';
+  fileId: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  url: string;
+}
+
 export interface IChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -102,4 +111,5 @@ export interface IChatMessage {
   senderNick?: string;
   source: 'ding' | 'web';
   timestamp: number;
+  attachments?: IAttachment[];
 }

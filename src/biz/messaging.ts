@@ -2,9 +2,11 @@ import { asyncUtil } from 'utils-ok';
 import urllib from 'urllib';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import type { DingClaude } from './cc-ding-cli';
 import { ISendMsgOpts, IDingUserDetail } from './types';
 import { resolveSecret } from './secrets';
+import { appendChatMessage } from './chat-messages';
 
 const DING_API_BASE = 'https://api.dingtalk.com';
 const DING_OAPI_BASE = 'https://oapi.dingtalk.com';
@@ -282,6 +284,31 @@ export async function sendDingMessage(self: DingClaude, opts: ISendMsgOpts): Pro
   const { conversationId, sessionWebhook, atUserId, content, msgType = 'text' } = opts;
   const conversation = self.config.conversations.find(it => it.conversationId === conversationId);
 
+  // 检查当前活跃会话是否来自 Web 端
+  const activeSession = self.activeSessions.get(conversationId);
+  if (activeSession?.session.replySource === 'web') {
+    // Web 会话：写入 messages.json，不发送钉钉消息
+    // 命令响应和通知都会写入，实现"哪边发的就回哪边"
+    try {
+      const convHash = crypto.createHash('md5').update(conversationId).digest('hex');
+      const convDir = path.join(self.getClientDir(), convHash);
+      if (!fs.existsSync(convDir)) {
+        fs.mkdirSync(convDir, { recursive: true });
+      }
+      appendChatMessage(convDir, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content,
+        source: 'web',
+        timestamp: Date.now(),
+      }, { replaceLastAssistant: true });
+      self.debugLog?.(`[web reply] 已写入 messages.json: ${content.slice(0, 50)}...`);
+    } catch (err) {
+      console.error('[sendDingMessage] 写入 web 回复失败:', err);
+    }
+    return;
+  }
+
   // 会话级 atSender 为 false 或单聊时，不 at 发送人
   let effectiveAtUserId = atUserId;
   if (conversation?.atSender === false || conversation?.conversationType === '1') {
@@ -381,6 +408,29 @@ export async function sendClaudeResponseToDing(
   const filteredContent = filterToolUseContent(content);
   if (!filteredContent) {
     self.debugLog('过滤后内容为空，跳过发送');
+    return;
+  }
+
+  // 检查当前活跃会话是否来自 Web 端，如果是则写入 messages.json
+  const activeSession = self.activeSessions.get(conversationId);
+  if (activeSession?.session.replySource === 'web') {
+    try {
+      const convHash = crypto.createHash('md5').update(conversationId).digest('hex');
+      const convDir = path.join(self.getClientDir(), convHash);
+      if (!fs.existsSync(convDir)) {
+        fs.mkdirSync(convDir, { recursive: true });
+      }
+      appendChatMessage(convDir, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: filteredContent,
+        source: 'web',
+        timestamp: Date.now(),
+      }, { replaceLastAssistant: true }); // 重试场景下替换上一条，避免重复
+      self.debugLog?.(`[web reply] 已写入 messages.json: ${filteredContent.slice(0, 50)}...`);
+    } catch (err) {
+      console.error('[sendClaudeResponseToDing] 写入 web 回复失败:', err);
+    }
     return;
   }
 

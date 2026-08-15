@@ -1039,9 +1039,11 @@ export async function executeClaudeQuery(
   };
 
   // 检查是否启用流式输出，创建 StreamingCard
+  // Web 来源不使用钉钉流式卡片，走 sendDingMessage 直接写入 messages.json
   const convCfg = self.getConversationConfig(session.conversationId);
   let streamingCard: StreamingCard | null = null;
-  if (convCfg?.streaming && self.config.cardTemplateId && originalActiveSession) {
+  const isWebSession = originalActiveSession?.session.replySource === 'web';
+  if (convCfg?.streaming && self.config.cardTemplateId && originalActiveSession && !isWebSession) {
     streamingCard = await StreamingCard.create({
       self,
       cardTemplateId: self.config.cardTemplateId,

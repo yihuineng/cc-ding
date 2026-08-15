@@ -14,6 +14,7 @@ export class ChatQueueProcessor {
   private dc: DingClaude;
   private timer: NodeJS.Timeout | null = null;
   private queueDir: string;
+  private processing = false; // 防止并发处理
 
   constructor(dc: DingClaude) {
     this.dc = dc;
@@ -43,44 +44,57 @@ export class ChatQueueProcessor {
   }
 
   async processQueue(): Promise<void> {
-    if (!fs.existsSync(this.queueDir)) return;
+    // 防止并发：如果上一次处理还没完成，跳过本次
+    if (this.processing) return;
+    this.processing = true;
 
-    const files = fs.readdirSync(this.queueDir).filter(f => f.endsWith('.json'));
-    if (files.length === 0) return;
+    try {
+      if (!fs.existsSync(this.queueDir)) return;
 
-    files.sort();
+      const files = fs.readdirSync(this.queueDir).filter(f => f.endsWith('.json'));
+      if (files.length === 0) return;
 
-    for (const fileName of files) {
-      const filePath = path.join(this.queueDir, fileName);
+      files.sort();
 
-      let signal: IChatSignal;
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        signal = JSON.parse(content) as IChatSignal;
-      } catch (err) {
-        console.warn('[ChatQueueProcessor] 信号文件解析失败:', filePath, err);
-        fs.unlinkSync(filePath);
-        continue;
+      for (const fileName of files) {
+        const filePath = path.join(this.queueDir, fileName);
+
+        let signal: IChatSignal;
+        try {
+          const content = fs.readFileSync(filePath, 'utf-8');
+          signal = JSON.parse(content) as IChatSignal;
+        } catch (err) {
+          console.warn('[ChatQueueProcessor] 信号文件解析失败:', filePath, err);
+          try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+          continue;
+        }
+
+        const convCfg = this.dc.config.conversations.find(c => c.conversationId === signal.conversationId);
+        if (!convCfg) {
+          console.warn('[ChatQueueProcessor] 会话未注册:', signal.conversationId);
+          try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+          continue;
+        }
+
+        // 先删除信号文件再处理，避免异步处理期间被重复扫描
+        try {
+          fs.unlinkSync(filePath);
+        } catch (err) {
+          console.warn('[ChatQueueProcessor] 删除信号文件失败:', filePath, err);
+          continue; // 删除失败则跳过，下次再处理
+        }
+
+        console.log(`[ChatQueueProcessor] 准备处理信号: ${fileName}, attachments: ${signal.attachments ? signal.attachments.length : 0}`);
+
+        try {
+          await this.dc.handleWebMessage(signal, convCfg);
+          console.log(`[ChatQueueProcessor] 信号处理完成: ${fileName}`);
+        } catch (err) {
+          console.error('[ChatQueueProcessor] 处理信号失败:', fileName, err);
+        }
       }
-
-      const convCfg = this.dc.config.conversations.find(c => c.conversationId === signal.conversationId);
-      if (!convCfg) {
-        console.warn('[ChatQueueProcessor] 会话未注册:', signal.conversationId);
-        fs.unlinkSync(filePath);
-        continue;
-      }
-
-      try {
-        await this.dc.handleWebMessage(signal, convCfg);
-      } catch (err) {
-        console.error('[ChatQueueProcessor] 处理信号失败:', fileName, err);
-      }
-
-      try {
-        fs.unlinkSync(filePath);
-      } catch {
-        // ignore
-      }
+    } finally {
+      this.processing = false;
     }
   }
 }

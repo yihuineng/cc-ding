@@ -312,4 +312,40 @@ export const api = {
     request<{ isProcessing: boolean; queueLength: number; clientOnline: boolean }>(
       `/api/clients/${enc(clientId)}/conversations/${enc(convId)}/chat/status`
     ),
+
+  getClaudeMd: (clientId: string, convId: string) =>
+    request<{ content: string }>(
+      `/api/clients/${enc(clientId)}/conversations/${enc(convId)}/claude-md`
+    ),
+
+  uploadFile: async (clientId: string, file: File): Promise<{
+    fileId: string;
+    originalName: string;
+    mimeType: string;
+    size: number;
+    url: string;
+  }> => {
+    const token = localStorage.getItem('ccding_token');
+    const headers: Record<string, string> = {
+      'Content-Type': file.type || 'application/octet-stream',
+      'X-File-Name': encodeURIComponent(file.name),
+    };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await fetch(`/api/clients/${enc(clientId)}/files/upload`, {
+      method: 'POST',
+      headers,
+      body: file,
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || '上传失败');
+    }
+    return res.json();
+  },
+
+  getFileUrl: (clientId: string, fileId: string): string => {
+    return `/api/clients/${enc(clientId)}/files/${enc(fileId)}/download`;
+  },
 }

@@ -10,6 +10,7 @@ import { setCorsHeaders, readBody } from './a2a/http-utils';
 import type { IConfig, IClaudeSetting, IChatSignal } from './types';
 import { writeChatSignal } from './chat-queue';
 import { appendChatMessage, readChatMessages } from './chat-messages';
+import { saveUploadedFile, getFilePath, validateFileSize } from './file-upload';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
@@ -699,7 +700,7 @@ async function handleGetClientConfig(req: http.IncomingMessage, res: http.Server
     }
 
     // 直接返回完整配置（前端直接编辑，不再脱敏）
-    jsonResponse(res, 200, { config });
+    jsonResponse(res, 200, config);
   } catch (err) {
     jsonError(res, 500, `读取配置失败: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -2634,19 +2635,44 @@ async function handleChatSend(
     }
 
     const body = await readBody(req);
-    const { message } = JSON.parse(body || '{}');
-    if (!message || typeof message !== 'string') {
+    const parsed = JSON.parse(body || '{}');
+
+    // 支持两种格式：旧格式（直接字符串）和新格式（JSON对象）
+    let message: string;
+    let attachments: any[] | undefined;
+
+    if (typeof parsed.message === 'string') {
+      // 检查是否是新的JSON格式
+      try {
+        const messageData = JSON.parse(parsed.message);
+        if (messageData.message !== undefined) {
+          message = messageData.message;
+          attachments = messageData.attachments;
+        } else {
+          message = parsed.message;
+        }
+      } catch {
+        // 不是JSON，直接使用原字符串
+        message = parsed.message;
+      }
+    } else {
       jsonError(res, 400, 'message is required');
+      return;
+    }
+
+    if (!message && (!attachments || attachments.length === 0)) {
+      jsonError(res, 400, 'message or attachments is required');
       return;
     }
 
     const clientDir = path.join(homeDir, '.cc-ding', clientId);
     const signal: IChatSignal = {
       conversationId: convId,
-      message,
+      message: message || '',
       senderStaffId: `web:${account}`,
       senderNick: account,
       timestamp: Date.now(),
+      attachments,
     };
 
     writeChatSignal(clientDir, signal);
@@ -2662,11 +2688,12 @@ async function handleChatSend(
     appendChatMessage(convDir, {
       id: messageId,
       role: 'user',
-      content: message,
+      content: message || '',
       senderStaffId: signal.senderStaffId,
       senderNick: signal.senderNick,
       source: 'web',
       timestamp: signal.timestamp,
+      attachments,
     });
 
     jsonResponse(res, 200, { ok: true, messageId });
@@ -2742,6 +2769,142 @@ async function handleChatStatus(
   }
 }
 
+/** GET /api/clients/:id/conversations/:convId/claude-md */
+async function handleClaudeMd(
+  res: http.ServerResponse,
+  clientId: string,
+  convId: string,
+): Promise<void> {
+  try {
+    const homeDir = getHomeDir();
+    const clientDir = path.join(homeDir, '.cc-ding', clientId);
+    if (!fs.existsSync(clientDir)) {
+      jsonError(res, 404, 'Client not found');
+      return;
+    }
+
+    console.log('[handleClaudeMd] clientId:', clientId, 'convId:', convId);
+
+    // 获取会话配置
+    const configPath = path.join(clientDir, 'config.json');
+    let convDir: string | undefined;
+    if (fs.existsSync(configPath)) {
+      try {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        const conv = config.conversations?.find((c: any) => c.conversationId === convId);
+        console.log('[handleClaudeMd] 找到会话:', conv ? { id: conv.conversationId, workDir: conv.workDir } : '未找到');
+
+        // 使用 getConversationDir 的逻辑获取会话目录
+        if (conv?.workDir) {
+          convDir = conv.workDir;
+        } else {
+          // 使用 conversationId 的 MD5 哈希作为目录名
+          const hashedId = crypto.createHash('md5').update(convId).digest('hex');
+          convDir = path.join(clientDir, hashedId);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // 构建搜索路径列表，优先级从高到低
+    const claudeMdPaths: string[] = [];
+
+    // 1. 会话目录下的 .claude/CLAUDE.md
+    if (convDir) {
+      claudeMdPaths.push(path.join(convDir, '.claude', 'CLAUDE.md'));
+    }
+
+    // 2. 会话目录下的 CLAUDE.md
+    if (convDir) {
+      claudeMdPaths.push(path.join(convDir, 'CLAUDE.md'));
+    }
+
+    console.log('[handleClaudeMd] 搜索路径:', claudeMdPaths);
+
+    // 查找第一个存在的文件
+    let content = '';
+    for (const claudeMdPath of claudeMdPaths) {
+      if (fs.existsSync(claudeMdPath)) {
+        console.log('[handleClaudeMd] 找到文件:', claudeMdPath);
+        content = fs.readFileSync(claudeMdPath, 'utf-8');
+        break;
+      }
+    }
+
+    console.log('[handleClaudeMd] 内容长度:', content.length);
+    jsonResponse(res, 200, { content });
+  } catch (err) {
+    jsonError(res, 500, `读取 CLAUDE.md 失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** POST /api/clients/:id/files/upload */
+async function handleFileUpload(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  clientId: string,
+): Promise<void> {
+  try {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+    const buffer = Buffer.concat(chunks);
+
+    if (!validateFileSize(buffer.length)) {
+      jsonError(res, 413, '文件过大，最大支持 50MB');
+      return;
+    }
+
+    const contentType = req.headers['content-type'] || 'application/octet-stream';
+    const fileName = req.headers['x-file-name']
+      ? decodeURIComponent(req.headers['x-file-name'] as string)
+      : 'upload';
+
+    const fileInfo = saveUploadedFile(clientId, buffer, fileName, contentType);
+    jsonResponse(res, 200, fileInfo);
+  } catch (err) {
+    jsonError(res, 500, `文件上传失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** GET /api/clients/:id/files/:fileId/download */
+async function handleFileDownload(
+  res: http.ServerResponse,
+  clientId: string,
+  fileId: string,
+): Promise<void> {
+  try {
+    const filePath = getFilePath(clientId, fileId);
+    if (!filePath || !fs.existsSync(filePath)) {
+      jsonError(res, 404, '文件不存在');
+      return;
+    }
+
+    const fileBuffer = fs.readFileSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeTypes: Record<string, string> = {
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.pdf': 'application/pdf',
+      '.txt': 'text/plain',
+    };
+    const mimeType = mimeTypes[ext] || 'application/octet-stream';
+
+    res.writeHead(200, {
+      'Content-Type': mimeType,
+      'Content-Length': fileBuffer.length,
+    });
+    res.end(fileBuffer);
+  } catch (err) {
+    jsonError(res, 500, `文件下载失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // ==================== 路由分发 ====================
 
 async function handleApiRequest(req: http.IncomingMessage, res: http.ServerResponse, pathname: string, query: URLSearchParams): Promise<void> {
@@ -2771,6 +2934,9 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   const clientConvChatMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/([^\/]+)\/chat$/);
   const clientConvMessagesMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/([^\/]+)\/messages$/);
   const clientConvChatStatusMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/([^\/]+)\/chat\/status$/);
+  const clientConvClaudeMdMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/([^\/]+)\/claude-md$/);
+  const clientFileUploadMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/files\/upload$/);
+  const clientFileDownloadMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/files\/([^\/]+)\/download$/);
 
   // POST /api/login
   if (pathname === '/api/login' && req.method === 'POST') {
@@ -3234,6 +3400,35 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
     const clientId = decodeURIComponent(clientConvChatStatusMatch[1]);
     const convId = decodeURIComponent(clientConvChatStatusMatch[2]);
     await handleChatStatus(res, clientId, convId);
+    return;
+  }
+
+  // GET /api/clients/:id/conversations/:convId/claude-md
+  if (clientConvClaudeMdMatch && req.method === 'GET') {
+    const account = requireAuth(req, res);
+    if (!account) return;
+    const clientId = decodeURIComponent(clientConvClaudeMdMatch[1]);
+    const convId = decodeURIComponent(clientConvClaudeMdMatch[2]);
+    await handleClaudeMd(res, clientId, convId);
+    return;
+  }
+
+  // POST /api/clients/:id/files/upload
+  if (clientFileUploadMatch && req.method === 'POST') {
+    const account = requireAuth(req, res);
+    if (!account) return;
+    const clientId = decodeURIComponent(clientFileUploadMatch[1]);
+    await handleFileUpload(req, res, clientId);
+    return;
+  }
+
+  // GET /api/clients/:id/files/:fileId/download
+  if (clientFileDownloadMatch && req.method === 'GET') {
+    const account = requireAuth(req, res);
+    if (!account) return;
+    const clientId = decodeURIComponent(clientFileDownloadMatch[1]);
+    const fileId = decodeURIComponent(clientFileDownloadMatch[2]);
+    await handleFileDownload(res, clientId, fileId);
     return;
   }
 

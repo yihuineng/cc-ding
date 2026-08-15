@@ -329,15 +329,36 @@ export class DingClaude {
    * Web 消息由 console 已乐观写入 user 消息，这里复用 handleSessionMessage 处理
    */
   async handleWebMessage(signal: IChatSignal, convCfg: IConfig['conversations'][0]): Promise<void> {
+    // 调试：写入到文件
+    const debugLog = `/tmp/handleWebMessage_debug.log`;
+    fs.appendFileSync(debugLog, `[${new Date().toISOString()}] handleWebMessage called\n`);
+    fs.appendFileSync(debugLog, `  signal.message: ${signal.message}\n`);
+    fs.appendFileSync(debugLog, `  signal.attachments: ${JSON.stringify(signal.attachments)}\n`);
+
+    // 如果有附件，将文件路径注入到消息中
+    let message = signal.message;
+    if (signal.attachments && signal.attachments.length > 0) {
+      const clientDir = getClientDir(this);
+      const fileInfos = signal.attachments.map(att => {
+        const filePath = path.join(clientDir, '.files', `${att.fileId}${path.extname(att.fileName)}`);
+        return `📎 ${att.fileName}: ${filePath}`;
+      }).join('\n');
+      message = message ? `${message}\n\n附件文件路径：\n${fileInfos}` : `附件文件路径：\n${fileInfos}`;
+      fs.appendFileSync(debugLog, `  注入文件路径后的消息: ${message}\n`);
+    } else {
+      fs.appendFileSync(debugLog, `  没有附件\n`);
+    }
+
     await handleSessionMessage(this, {
       conversationId: signal.conversationId,
       sessionWebhook: convCfg.dingToken || this.config.defaultDingToken || '',
       senderStaffId: signal.senderStaffId,
       senderNick: signal.senderNick,
-      message: signal.message,
+      message,
       conversationConfig: convCfg,
       msgCreateAt: signal.timestamp,
       msgId: `web_${signal.timestamp}`,
+      replySource: 'web',
     });
   }
 
@@ -2335,6 +2356,7 @@ export class DingClaude {
               conversationId, sessionWebhook,
               content: `📂 已在文件管理器中打开:\n\`\`\`\n${conversationDir}\n\`\`\``,
               msgType: 'markdown',
+              isStatusMsg: true, // 通知类消息，不写入 web 聊天记录
             });
           } else if (openTarget === 'code') {
             if (!commandExists('code')) {
@@ -2736,6 +2758,7 @@ export class DingClaude {
           sessionWebhook,
           content: `📂 ${targetLabel} (展开${depth}层):\n\`\`\`\n${structure}\n\`\`\``,
           msgType: 'markdown',
+          isStatusMsg: true, // 命令响应，不写入 web 聊天记录
         });
       }),
 
@@ -2747,6 +2770,7 @@ export class DingClaude {
           sessionWebhook,
           content: result,
           msgType: 'markdown',
+          isStatusMsg: true, // 命令响应，不写入 web 聊天记录
         });
       }),
 
@@ -2758,6 +2782,7 @@ export class DingClaude {
             conversationId,
             sessionWebhook,
             content: '📋 任务已收到,完成后我会回复',
+            isStatusMsg: true, // 命令响应，不写入 web 聊天记录
           });
           await this.saveTask({
             conversationId,

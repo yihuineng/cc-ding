@@ -8,7 +8,11 @@ interface MessagesFile {
   messages: IChatMessage[];
 }
 
-export function appendChatMessage(convDir: string, msg: IChatMessage): void {
+/**
+ * 追加消息到 messages.json
+ * @param opts.replaceLastAssistant 如果为 true，替换最后一条 assistant 消息（用于 web 会话避免重试导致重复）
+ */
+export function appendChatMessage(convDir: string, msg: IChatMessage, opts?: { replaceLastAssistant?: boolean }): void {
   const filePath = path.join(convDir, MESSAGES_FILE);
 
   let data: MessagesFile = { messages: [] };
@@ -18,6 +22,17 @@ export function appendChatMessage(convDir: string, msg: IChatMessage): void {
       data = JSON.parse(content) as MessagesFile;
     } catch (err) {
       console.error('[chat-messages] 读取 messages.json 失败，将覆盖:', err);
+    }
+  }
+
+  // Web 会话：如果最后一条是 assistant 消息且时间相近（10秒内），替换它（避免重试/多次响应导致重复）
+  if (opts?.replaceLastAssistant && msg.role === 'assistant') {
+    const lastMsg = data.messages[data.messages.length - 1];
+    if (lastMsg && lastMsg.role === 'assistant' && lastMsg.source === 'web' &&
+        Math.abs(msg.timestamp - lastMsg.timestamp) < 10000) {
+      data.messages[data.messages.length - 1] = msg;
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
+      return;
     }
   }
 

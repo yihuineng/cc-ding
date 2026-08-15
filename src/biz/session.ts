@@ -41,6 +41,7 @@ export async function sendAckConfirmation(
     await sendDingMessage(self, {
       conversationId, sessionWebhook,
       content: textContent,
+      isStatusMsg: true,
     }).catch(() => {});
   }
 }
@@ -439,11 +440,15 @@ export function getConvHash(conversationId: string): string {
 /**
  * 从 session.log 中读取最后一条 assistant 消息并写入 messages.json
  * 在 executeQuery 成功后调用
+ * Web 来源的消息已由 sendDingMessage 实时写入，此处跳过避免重复
  */
 export function recordAssistantFromSessionLog(self: DingClaude, conversationId: string): void {
   try {
     const found = findActiveSession(self, conversationId);
     if (!found) return;
+
+    // Web 来源：sendDingMessage 已实时写入 messages.json，无需再从 log 重复写入
+    if (found.session.session.replySource === 'web') return;
 
     const sessionDir = getSessionDir(self, found.session.session);
     const logFile = path.join(sessionDir, 'session.log');
@@ -656,7 +661,7 @@ export function findLatestSession(self: DingClaude, conversationId: string): ISe
 export function updateSessionFile(
   self: DingClaude,
   session: ISession,
-  opts: { agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string },
+  opts: { agentSessionId?: string; sessionWebhook?: string; currentWebhook?: string; currentConversationId?: string; replySource?: 'ding' | 'web' },
 ): void {
   if (opts.agentSessionId && !session.agentSessionId) {
     session.agentSessionId = opts.agentSessionId;
@@ -667,8 +672,9 @@ export function updateSessionFile(
     if (opts.sessionWebhook) session.sessionWebhook = opts.sessionWebhook;
     if (opts.currentWebhook !== undefined) session.currentWebhook = opts.currentWebhook || undefined;
     if (opts.currentConversationId !== undefined) session.currentConversationId = opts.currentConversationId || undefined;
+    if (opts.replySource !== undefined) session.replySource = opts.replySource || undefined;
     fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2), 'utf-8');
-    const changedField = opts.agentSessionId ? 'agentSessionId' : opts.currentWebhook !== undefined ? 'currentWebhook' : 'sessionWebhook';
+    const changedField = opts.agentSessionId ? 'agentSessionId' : opts.currentWebhook !== undefined ? 'currentWebhook' : opts.replySource !== undefined ? 'replySource' : 'sessionWebhook';
     console.log(`[${timestamp()}] 会话文件已保存: ${changedField}`);
     saveActiveSession(self, session.conversationId);
   } catch (err) {
@@ -935,8 +941,9 @@ export async function startNewSession(self: DingClaude, opts: {
   conversationConfig: IConfig['conversations'][0];
   msgCreateAt?: number; // 消息创建时间戳（用于水印）
   msgId?: string; // 钉钉消息ID（用于 Reaction 确认）
+  replySource?: 'ding' | 'web'; // 消息来源：钉钉 or Web 控制台
 }): Promise<void> {
-  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig, msgCreateAt, msgId } = opts;
+  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig, msgCreateAt, msgId, replySource } = opts;
 
   const maxConcurrency = self.config.sessionMaxConcurrency ?? self.DEFAULT_SESSION_MAX_CONCURRENCY;
   if (self.activeSessions.size >= maxConcurrency) {
@@ -958,6 +965,7 @@ export async function startNewSession(self: DingClaude, opts: {
     startStaffId: senderStaffId,
     startNickName: senderNick,
     agentSessionId: newSessionId, // 预生成 UUID 作为目录名，后续 Claude 返回的 sessionId 不再改变目录路径
+    ...(replySource ? { replySource } : {}),
   };
 
   console.log(`创建新会话: 群=${conversationId}, 会话ID=${newSessionId}, 发起者=${senderStaffId}, 当前并发=${self.activeSessions.size + 1}/${maxConcurrency}`);
@@ -1005,6 +1013,7 @@ export async function startNewSession(self: DingClaude, opts: {
     const activeSession = self.activeSessions.get(conversationId);
     if (activeSession) {
       activeSession.isProcessing = false;
+      saveActiveSession(self, conversationId); // 持久化状态，确保前端能读取到最新的 isProcessing
     }
     // 水印：新会话处理完成
     if (msgCreateAt) userMessageWatermark.markCompleted(conversationId, msgCreateAt);
@@ -1131,11 +1140,13 @@ export async function processMessageQueue(self: DingClaude, conversationId: stri
         console.error('goonPending 恢复执行失败:', err);
       } finally {
         activeSession.isProcessing = false;
+        saveActiveSession(self, conversationId); // 持久化状态
       }
     }
   } finally {
     // 确保无论如何都会继续处理队列中的下一条消息
     activeSession.isProcessing = false;
+    saveActiveSession(self, conversationId); // 持久化状态，确保前端能读取到最新的 isProcessing
     // 水印：队列消息处理完成
     if (entryCreateAt) userMessageWatermark.markCompleted(conversationId, entryCreateAt);
   }
@@ -1155,8 +1166,9 @@ export async function handleSessionMessage(self: DingClaude, opts: {
   conversationConfig: IConfig['conversations'][0];
   msgCreateAt?: number; // 消息创建时间戳（用于水印时序检查）
   msgId?: string; // 钉钉消息ID（用于 Reaction 确认）
+  replySource?: 'ding' | 'web'; // 消息来源：钉钉 or Web 控制台
 }): Promise<void> {
-  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig, msgCreateAt, msgId } = opts;
+  const { conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig, msgCreateAt, msgId, replySource } = opts;
 
   // 剥离可能存在的 [提及用户: ...] 前缀，确保命令精确匹配
   const rawMessage = message.replace(/^\[提及用户: .+\]\n/, '');
@@ -1179,7 +1191,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     if (actualMsg) {
       await startNewSession(self, {
         conversationId, sessionWebhook, senderStaffId, senderNick,
-        message: actualMsg, conversationConfig, msgCreateAt, msgId,
+        message: actualMsg, conversationConfig, msgCreateAt, msgId, replySource,
       });
     } else {
       await sendDingMessage(self, {
@@ -1230,6 +1242,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
       await sendDingMessage(self, {
         conversationId, sessionWebhook,
         content: `⏳ 正在处理中，已加入队列（排队第 ${queuePos} 条）`,
+        isStatusMsg: true,
       });
       return;
     }
@@ -1258,7 +1271,8 @@ export async function handleSessionMessage(self: DingClaude, opts: {
     // 始终更新提问来源信息，确保回复到正确的群
     activeSession.session.currentWebhook = sessionWebhook;
     activeSession.session.currentConversationId = conversationId;
-    updateSessionFile(self, activeSession.session, { currentWebhook: sessionWebhook, currentConversationId: conversationId });
+    if (replySource) activeSession.session.replySource = replySource;
+    updateSessionFile(self, activeSession.session, { currentWebhook: sessionWebhook, currentConversationId: conversationId, replySource });
 
     if (conversationConfig.receiveReply !== false && !conversationConfig.streaming) {
       await sendAckConfirmation(
@@ -1319,6 +1333,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
       });
     } finally {
       activeSession.isProcessing = false;
+      saveActiveSession(self, found!.key); // 持久化状态，确保前端能读取到最新的 isProcessing
       // 水印：标记处理完成
       if (msgCreateAt) userMessageWatermark.markCompleted(conversationId, msgCreateAt);
       // 处理完成，撤回确认表情（用 try-catch 包裹，避免影响后续队列处理）
@@ -1357,7 +1372,7 @@ export async function handleSessionMessage(self: DingClaude, opts: {
   } else {
     await startNewSession(self, {
       conversationId, sessionWebhook, senderStaffId, senderNick, message, conversationConfig,
-      msgCreateAt, msgId,
+      msgCreateAt, msgId, replySource,
     });
   }
 }

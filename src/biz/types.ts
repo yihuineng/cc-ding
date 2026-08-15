@@ -147,6 +147,7 @@ export interface ISession {
   sessionWebhook: string;
   currentWebhook?: string; // 当前提问来源的回复webhook(关联群场景)
   currentConversationId?: string;  // 当前提问来源的会话ID(关联群场景)
+  replySource?: 'ding' | 'web'; // 当前提问来源类型：钉钉 or Web 控制台
   startTime: number;
   startTimeStr: string;
   startStaffId: string;
@@ -332,6 +333,8 @@ export interface ISendMsgOpts {
   atUserName?: string;
   content: string;
   msgType?: 'text' | 'markdown';
+  /** 状态类消息（如"排队中"、"收到"），Web 端不写入 messages.json */
+  isStatusMsg?: boolean;
 }
 
 /** 钉钉 /topapi/v2/user/get 返回的用户详情 */
@@ -367,6 +370,21 @@ export interface IDingUserDetail {
 
 // Web Chat 相关类型
 
+export interface IAttachment {
+  type: 'image' | 'file';
+  fileId: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  url: string;
+}
+
+export interface IMessageQuote {
+  messageId: string;
+  content: string;
+  senderNick?: string;
+}
+
 export interface IChatMessage {
   id: string;                  // uuid
   role: 'user' | 'assistant';
@@ -375,6 +393,8 @@ export interface IChatMessage {
   senderNick?: string;
   source: 'ding' | 'web';      // 来源渠道
   timestamp: number;
+  attachments?: IAttachment[]; // 附件（图片、文件等）
+  quote?: IMessageQuote;       // 引用的消息
 }
 
 export interface IChatSignal {
@@ -383,4 +403,5 @@ export interface IChatSignal {
   senderStaffId: string;       // web 用户标识
   senderNick: string;          // 显示名
   timestamp: number;
+  attachments?: IAttachment[]; // 附件（图片、文件等）
 }
