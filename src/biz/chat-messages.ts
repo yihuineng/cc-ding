@@ -130,12 +130,18 @@ export function appendChatMessage(
 export function readChatMessages(
   clientId: string,
   conversationId: string,
-  opts?: { since?: number; limit?: number },
+  opts?: { since?: number; limit?: number; source?: 'ding' | 'web' },
 ): IChatMessage[] {
   const db = getDatabase(clientId);
 
   let sql = 'SELECT * FROM messages WHERE conversation_id = ?';
   const params: any[] = [ conversationId ];
+
+  // 按来源过滤
+  if (opts?.source !== undefined) {
+    sql += ' AND source = ?';
+    params.push(opts.source);
+  }
 
   if (opts?.since !== undefined) {
     sql += ' AND timestamp > ?';

@@ -2721,7 +2721,8 @@ async function handleChatMessages(
     const since = query.get('since') ? Number(query.get('since')) : undefined;
     const limit = query.get('limit') ? Number(query.get('limit')) : undefined;
 
-    const messages = readChatMessages(clientId, convId, { since, limit });
+    // Web 端只读取 source='web' 的消息，避免显示钉钉端的消息
+    const messages = readChatMessages(clientId, convId, { since, limit, source: 'web' });
     jsonResponse(res, 200, { messages, hasMore: false });
   } catch (err) {
     jsonError(res, 500, `读取消息失败: ${err instanceof Error ? err.message : String(err)}`);
