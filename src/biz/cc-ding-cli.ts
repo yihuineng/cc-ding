@@ -391,6 +391,17 @@ export class DingClaude {
   }): Promise<boolean> {
     const { prompt, conversationId, conversationConfig } = opts;
 
+    // Web 端消息发送辅助函数（写入 messages.json）
+    const sendWebMessage = async (content: string) => {
+      appendChatMessage(this.clientId, conversationId, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content,
+        source: 'web',
+        timestamp: Date.now(),
+      });
+    };
+
     // 命令路由辅助函数
     const route = <T>(name: string, parser: () => T | null, handler: (parsed: T) => Promise<void>) => ({
       name,
@@ -426,12 +437,7 @@ export class DingClaude {
           '💡 更多命令请在钉钉端查看',
         ].join('\n');
 
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook: conversationConfig.dingToken || this.config.defaultDingToken || '',
-          content: `📖 **可用命令列表**\n\n${helpText}`,
-          msgType: 'markdown',
-        });
+        await sendWebMessage(`📖 **可用命令列表**\n\n${helpText}`);
       }),
 
       // /info 命令：显示会话信息
@@ -439,12 +445,7 @@ export class DingClaude {
         if (infoType === 'session') {
           const session = this.activeSessions.get(conversationId);
           if (!session) {
-            await this.sendDingMessage({
-              conversationId,
-              sessionWebhook: conversationConfig.dingToken || this.config.defaultDingToken || '',
-              content: '⚠️ 当前没有活跃的会话',
-              msgType: 'markdown',
-            });
+            await sendWebMessage('⚠️ 当前没有活跃的会话');
             return;
           }
 
@@ -458,12 +459,7 @@ export class DingClaude {
             `- **队列消息**: ${session.messageQueue?.length || 0} 条`,
           ].join('\n');
 
-          await this.sendDingMessage({
-            conversationId,
-            sessionWebhook: conversationConfig.dingToken || this.config.defaultDingToken || '',
-            content: sessionInfo,
-            msgType: 'markdown',
-          });
+          await sendWebMessage(sessionInfo);
         } else {
           // robot info
           const robotInfo = [
@@ -475,24 +471,14 @@ export class DingClaude {
             `- **白名单**: ${this.config.whiteUserList?.length || 0} 人`,
           ].join('\n');
 
-          await this.sendDingMessage({
-            conversationId,
-            sessionWebhook: conversationConfig.dingToken || this.config.defaultDingToken || '',
-            content: robotInfo,
-            msgType: 'markdown',
-          });
+          await sendWebMessage(robotInfo);
         }
       }),
 
       // /version 命令：显示版本信息
       route('/version', () => parseVersionCommand(prompt), async () => {
         const pkg = require('../../package.json');
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook: conversationConfig.dingToken || this.config.defaultDingToken || '',
-          content: `📦 **cc-ding** v${pkg.version}\n\n🚀 DingTalk AI Agent Framework`,
-          msgType: 'markdown',
-        });
+        await sendWebMessage(`📦 **cc-ding** v${pkg.version}\n\n🚀 DingTalk AI Agent Framework`);
       }),
 
       // /model 命令：查看或切换模型
@@ -504,43 +490,23 @@ export class DingClaude {
             return `${i + 1}. ${m.model}${current}`;
           }).join('\n');
 
-          await this.sendDingMessage({
-            conversationId,
-            sessionWebhook: conversationConfig.dingToken || this.config.defaultDingToken || '',
-            content: `🤖 **可用模型**\n\n${modelList}\n\n💡 使用 \`/model <模型名>\` 切换模型`,
-            msgType: 'markdown',
-          });
+          await sendWebMessage(`🤖 **可用模型**\n\n${modelList}\n\n💡 使用 \`/model <模型名>\` 切换模型`);
         } else if (modelOpts.action === 'set' && modelOpts.model) {
           const models = this.config.apiKeyCfg?.modelSettings || [];
           const targetModel = models.find(m => m.model === modelOpts.model);
 
           if (!targetModel) {
-            await this.sendDingMessage({
-              conversationId,
-              sessionWebhook: conversationConfig.dingToken || this.config.defaultDingToken || '',
-              content: `❌ 模型 ${modelOpts.model} 不存在`,
-              msgType: 'markdown',
-            });
+            await sendWebMessage(`❌ 模型 ${modelOpts.model} 不存在`);
             return;
           }
 
           conversationConfig.model = targetModel.model;
           saveClientConfig(this);
 
-          await this.sendDingMessage({
-            conversationId,
-            sessionWebhook: conversationConfig.dingToken || this.config.defaultDingToken || '',
-            content: `✅ 已切换模型为: **${targetModel.model}**`,
-            msgType: 'markdown',
-          });
+          await sendWebMessage(`✅ 已切换模型为: **${targetModel.model}**`);
         } else {
           const currentModel = conversationConfig.model || this.config.model || '默认';
-          await this.sendDingMessage({
-            conversationId,
-            sessionWebhook: conversationConfig.dingToken || this.config.defaultDingToken || '',
-            content: `🤖 当前模型: **${currentModel}**\n\n💡 使用 \`/model list\` 查看可用模型\n💡 使用 \`/model <模型名>\` 切换模型`,
-            msgType: 'markdown',
-          });
+          await sendWebMessage(`🤖 当前模型: **${currentModel}**\n\n💡 使用 \`/model list\` 查看可用模型\n💡 使用 \`/model <模型名>\` 切换模型`);
         }
       }),
     ];
