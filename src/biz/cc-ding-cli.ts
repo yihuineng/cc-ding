@@ -333,34 +333,31 @@ export class DingClaude {
     const debugLog = `/tmp/handleWebMessage_debug.log`;
     fs.appendFileSync(debugLog, `[${new Date().toISOString()}] handleWebMessage called\n`);
     fs.appendFileSync(debugLog, `  signal.message: ${signal.message}\n`);
-    fs.appendFileSync(debugLog, `  signal.attachments: ${JSON.stringify(signal.attachments)}\n`);
 
-    // 如果有附件，将文件路径注入到消息中
-    let message = signal.message;
-    if (signal.attachments && signal.attachments.length > 0) {
-      const clientDir = getClientDir(this);
-      const fileInfos = signal.attachments.map(att => {
-        const filePath = path.join(clientDir, '.files', `${att.fileId}${path.extname(att.fileName)}`);
-        return `📎 ${att.fileName}: ${filePath}`;
-      }).join('\n');
-      message = message ? `${message}\n\n附件文件路径：\n${fileInfos}` : `附件文件路径：\n${fileInfos}`;
-      fs.appendFileSync(debugLog, `  注入文件路径后的消息: ${message}\n`);
-    } else {
-      fs.appendFileSync(debugLog, `  没有附件\n`);
-    }
+    // Web 端回复函数（写入数据库）
+    const webReplyFn = async (content: string) => {
+      appendChatMessage(this.clientId, signal.conversationId, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content,
+        source: 'web',
+        timestamp: Date.now(),
+      });
+    };
 
-    // ==================== 命令处理（Web 端） ====================
-    // 尝试处理命令，如果命令已处理则直接返回
-    const commandHandled = await this.tryHandleWebCommand({
-      prompt: message,
+    // 尝试处理命令（Web 端跳过鉴权）
+    const commandHandled = await this.handleCommands({
+      prompt: signal.message,
       conversationId: signal.conversationId,
       senderStaffId: signal.senderStaffId,
       senderNick: signal.senderNick,
       conversationConfig: convCfg,
+      replyFn: webReplyFn,
+      skipAuth: true, // Web 端是 admin 最高权限
     });
 
     if (commandHandled) {
-      fs.appendFileSync(debugLog, `  命令已处理，跳过会话处理\n`);
+      fs.appendFileSync(debugLog, `  命令已处理\n`);
       return;
     }
 
@@ -370,161 +367,12 @@ export class DingClaude {
       sessionWebhook: convCfg.dingToken || this.config.defaultDingToken || '',
       senderStaffId: signal.senderStaffId,
       senderNick: signal.senderNick,
-      message,
+      message: signal.message,
       conversationConfig: convCfg,
       msgCreateAt: signal.timestamp,
       msgId: `web_${signal.timestamp}`,
       replySource: 'web',
     });
-  }
-
-  /**
-   * 尝试处理 Web 端命令
-   * @returns true 表示命令已处理，false 表示不是命令
-   */
-  private async tryHandleWebCommand(opts: {
-    prompt: string;
-    conversationId: string;
-    senderStaffId: string;
-    senderNick: string;
-    conversationConfig: IConfig['conversations'][0];
-  }): Promise<boolean> {
-    const { prompt, conversationId, conversationConfig } = opts;
-
-    // Web 端消息发送辅助函数（写入 messages.json）
-    const sendWebMessage = async (content: string) => {
-      appendChatMessage(this.clientId, conversationId, {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content,
-        source: 'web',
-        timestamp: Date.now(),
-      });
-    };
-
-    // 命令路由辅助函数
-    const route = <T>(name: string, parser: () => T | null, handler: (parsed: T) => Promise<void>) => ({
-      name,
-      tryHandle: async () => {
-        const parsed = parser();
-        if (parsed) {
-          await handler(parsed);
-          return true;
-        }
-        return false;
-      },
-    });
-
-    // Web 端可用的命令路由
-    const webRoutes: ICommandRoute[] = [
-      // /help 命令：显示帮助信息
-      route('/help', () => parseHelpCommand(prompt), async () => {
-        const helpText = [
-          '**会话管理**',
-          '/new [消息] - 创建新会话',
-          '/end - 结束当前会话',
-          '',
-          '**信息查询**',
-          '/help - 显示此帮助信息',
-          '/info [session|robot] - 显示会话或机器人信息',
-          '/version - 显示版本信息',
-          '/model [list|模型名] - 查看或切换模型',
-          '',
-          '**配置管理**',
-          '/cfg - 配置群设置',
-          '/auth - 白名单管理',
-          '',
-          '💡 更多命令请在钉钉端查看',
-        ].join('\n');
-
-        await sendWebMessage(`📖 **可用命令列表**\n\n${helpText}`);
-      }),
-
-      // /info 命令：显示会话信息
-      route('/info', () => parseInfoCommand(prompt), async (infoType) => {
-        if (infoType === 'session') {
-          const session = this.activeSessions.get(conversationId);
-          if (!session) {
-            await sendWebMessage('⚠️ 当前没有活跃的会话');
-            return;
-          }
-
-          const sessionInfo = [
-            `**会话信息**`,
-            `- **会话ID**: ${session.session.agentSessionId || 'N/A'}`,
-            `- **开始时间**: ${session.session.startTimeStr}`,
-            `- **发起者**: ${session.session.startNickName} (${session.session.startStaffId})`,
-            `- **来源**: ${session.session.replySource || 'ding'}`,
-            `- **处理中**: ${session.isProcessing ? '是' : '否'}`,
-            `- **队列消息**: ${session.messageQueue?.length || 0} 条`,
-          ].join('\n');
-
-          await sendWebMessage(sessionInfo);
-        } else {
-          // robot info
-          const robotInfo = [
-            `**机器人信息**`,
-            `- **Client ID**: ${this.clientId}`,
-            `- **Owner**: ${this.config.owner}`,
-            `- **模型**: ${this.config.model || '默认'}`,
-            `- **活跃会话数**: ${this.activeSessions.size}`,
-            `- **白名单**: ${this.config.whiteUserList?.length || 0} 人`,
-          ].join('\n');
-
-          await sendWebMessage(robotInfo);
-        }
-      }),
-
-      // /version 命令：显示版本信息
-      route('/version', () => parseVersionCommand(prompt), async () => {
-        try {
-          // 从 dist/src/biz/ 到项目根目录需要上三级
-          const pkgPath = path.join(__dirname, '../../../package.json');
-          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-          await sendWebMessage(`📦 **cc-ding** v${pkg.version}\n\n🚀 DingTalk AI Agent Framework`);
-        } catch (err) {
-          await sendWebMessage(`📦 **cc-ding**\n\n🚀 DingTalk AI Agent Framework\n\n⚠️ 无法读取版本号`);
-        }
-      }),
-
-      // /model 命令：查看或切换模型
-      route('/model', () => parseModelCommand(prompt), async (modelOpts) => {
-        if (modelOpts.action === 'list') {
-          const models = this.config.apiKeyCfg?.modelSettings || [];
-          const modelList = models.map((m, i) => {
-            const current = m.model === (conversationConfig.model || this.config.model) ? ' ✅' : '';
-            return `${i + 1}. ${m.model}${current}`;
-          }).join('\n');
-
-          await sendWebMessage(`🤖 **可用模型**\n\n${modelList}\n\n💡 使用 \`/model <模型名>\` 切换模型`);
-        } else if (modelOpts.action === 'set' && modelOpts.model) {
-          const models = this.config.apiKeyCfg?.modelSettings || [];
-          const targetModel = models.find(m => m.model === modelOpts.model);
-
-          if (!targetModel) {
-            await sendWebMessage(`❌ 模型 ${modelOpts.model} 不存在`);
-            return;
-          }
-
-          conversationConfig.model = targetModel.model;
-          saveClientConfig(this);
-
-          await sendWebMessage(`✅ 已切换模型为: **${targetModel.model}**`);
-        } else {
-          const currentModel = conversationConfig.model || this.config.model || '默认';
-          await sendWebMessage(`🤖 当前模型: **${currentModel}**\n\n💡 使用 \`/model list\` 查看可用模型\n💡 使用 \`/model <模型名>\` 切换模型`);
-        }
-      }),
-    ];
-
-    // 尝试匹配并处理命令
-    for (const route of webRoutes) {
-      if (await route.tryHandle()) {
-        return true;
-      }
-    }
-
-    return false;
   }
 
   // task
@@ -1140,6 +988,145 @@ export class DingClaude {
       content: '❌ 当前群未配置 dingToken 且无客户端级 defaultDingToken, 定时任务无法主动发送消息, 请联系管理员配置',
       msgType: 'markdown',
     });
+  }
+
+  /**
+   * 统一命令处理器（钉钉和 Web 通用）
+   * @param opts.replyFn 回复函数，用于发送消息
+   * @param opts.skipAuth 是否跳过权限检查（Web 端为 true）
+   * @returns true 表示命令已处理，false 表示不是命令
+   */
+  async handleCommands(opts: {
+    prompt: string;
+    conversationId: string;
+    senderStaffId: string;
+    senderNick: string;
+    conversationConfig: IConfig['conversations'][0];
+    replyFn: (content: string) => Promise<void>;
+    skipAuth?: boolean;
+  }): Promise<boolean> {
+    const { prompt, conversationId, senderStaffId, conversationConfig, replyFn, skipAuth = false } = opts;
+
+    // 权限检查辅助函数
+    const requireOwnerOrAdmin = async (): Promise<boolean> => {
+      if (skipAuth) return true;
+      if (!this.isOwnerOrAdmin(senderStaffId)) {
+        await replyFn('❌ 只有 owner 或管理员才能执行此操作');
+        return false;
+      }
+      return true;
+    };
+
+    // 命令路由辅助函数
+    const route = <T>(name: string, parser: () => T | null, handler: (parsed: T) => Promise<void>) => ({
+      name,
+      tryHandle: async () => {
+        const parsed = parser();
+        if (parsed) {
+          await handler(parsed);
+          return true;
+        }
+        return false;
+      },
+    });
+
+    // ==================== 命令路由 ====================
+    const routes: ICommandRoute[] = [
+      // /help 命令
+      route('/help', () => parseHelpCommand(prompt), async () => {
+        const helpText = [
+          '**会话管理**',
+          '/new [消息] - 创建新会话',
+          '/end - 结束当前会话',
+          '',
+          '**信息查询**',
+          '/help - 显示此帮助信息',
+          '/info [session|robot] - 显示会话或机器人信息',
+          '/version - 显示版本信息',
+          '/model [list|模型名] - 查看或切换模型',
+          '',
+          '**配置管理**',
+          '/cfg - 配置群设置',
+          '/auth - 白名单管理',
+        ].join('\n');
+        await replyFn(`📖 **可用命令列表**\n\n${helpText}`);
+      }),
+
+      // /version 命令
+      route('/version', () => parseVersionCommand(prompt), async () => {
+        try {
+          const pkgPath = path.join(__dirname, '../../../package.json');
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+          await replyFn(`📦 **cc-ding** v${pkg.version}\n\n🚀 DingTalk AI Agent Framework`);
+        } catch {
+          await replyFn(`📦 **cc-ding**\n\n🚀 DingTalk AI Agent Framework`);
+        }
+      }),
+
+      // /info 命令
+      route('/info', () => parseInfoCommand(prompt), async (infoType) => {
+        if (infoType === 'session') {
+          const session = this.activeSessions.get(conversationId);
+          if (!session) {
+            await replyFn('⚠️ 当前没有活跃的会话');
+            return;
+          }
+          const info = [
+            `**会话信息**`,
+            `- **会话ID**: ${session.session.agentSessionId || 'N/A'}`,
+            `- **开始时间**: ${session.session.startTimeStr}`,
+            `- **发起者**: ${session.session.startNickName}`,
+            `- **来源**: ${session.session.replySource || 'ding'}`,
+            `- **处理中**: ${session.isProcessing ? '是' : '否'}`,
+          ].join('\n');
+          await replyFn(info);
+        } else {
+          const info = [
+            `**机器人信息**`,
+            `- **Client ID**: ${this.clientId}`,
+            `- **Owner**: ${this.config.owner}`,
+            `- **模型**: ${this.config.model || '默认'}`,
+            `- **活跃会话数**: ${this.activeSessions.size}`,
+          ].join('\n');
+          await replyFn(info);
+        }
+      }),
+
+      // /model 命令
+      route('/model', () => parseModelCommand(prompt), async (modelOpts) => {
+        const models = this.config.apiKeyCfg?.modelSettings || [];
+
+        if (modelOpts.action === 'list') {
+          const list = models.map((m, i) => {
+            const current = m.model === (conversationConfig.model || this.config.model) ? ' ✅' : '';
+            return `${i + 1}. ${m.model}${current}`;
+          }).join('\n');
+          await replyFn(`🤖 **可用模型**\n\n${list}\n\n💡 使用 \`/model <模型名>\` 切换`);
+        } else if (modelOpts.action === 'set' && modelOpts.model) {
+          if (!(await requireOwnerOrAdmin())) return;
+          const target = models.find(m => m.model === modelOpts.model);
+          if (!target) {
+            await replyFn(`❌ 模型 ${modelOpts.model} 不存在`);
+            return;
+          }
+          conversationConfig.model = target.model;
+          saveClientConfig(this);
+          await replyFn(`✅ 已切换模型为: **${target.model}**`);
+        } else {
+          const current = conversationConfig.model || this.config.model || '默认';
+          await replyFn(`🤖 当前模型: **${current}**\n\n💡 使用 \`/model list\` 查看可用模型`);
+        }
+      }),
+    ];
+
+    // 尝试匹配并处理命令
+    for (const route of routes) {
+      if (await route.tryHandle()) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   /**
