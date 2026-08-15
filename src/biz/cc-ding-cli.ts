@@ -3113,7 +3113,7 @@ export class DingClaude {
       if (!fs.existsSync(convDir)) {
         fs.mkdirSync(convDir, { recursive: true });
       }
-      appendChatMessage(convDir, {
+      appendChatMessage(this.clientId, conversationId, {
         id: crypto.randomUUID(),
         role: 'user',
         content: finalPrompt,

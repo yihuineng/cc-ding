@@ -467,7 +467,7 @@ export function recordAssistantFromSessionLog(self: DingClaude, conversationId: 
           if (!fs.existsSync(convDir)) {
             fs.mkdirSync(convDir, { recursive: true });
           }
-          appendChatMessage(convDir, {
+          appendChatMessage(self.clientId, conversationId, {
             id: crypto.randomUUID(),
             role: 'assistant',
             content,

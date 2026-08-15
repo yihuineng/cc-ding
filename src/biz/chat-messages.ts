@@ -1,21 +1,35 @@
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import type { IChatMessage } from './types';
 
 const DB_FILE = 'messages.db';
-const JSON_FILE = 'messages.json';
 
 // 数据库连接缓存（避免重复打开）
 const dbCache = new Map<string, any>();
 
 /**
- * 获取或创建数据库连接
+ * 获取客户端数据库目录（~/.cc-ding/clientId/）
  */
-function getDatabase(convDir: string): any {
-  const dbPath = path.join(convDir, DB_FILE);
+function getClientDbDir(clientId: string): string {
+  return path.join(os.homedir(), '.cc-ding', clientId);
+}
+
+/**
+ * 获取或创建数据库连接
+ * 所有会话共享一个数据库，存放在 ~/.cc-ding/clientId/messages.db
+ */
+function getDatabase(clientId: string): any {
+  const clientDbDir = getClientDbDir(clientId);
+  const dbPath = path.join(clientDbDir, DB_FILE);
 
   if (dbCache.has(dbPath)) {
     return dbCache.get(dbPath);
+  }
+
+  // 确保目录存在
+  if (!fs.existsSync(clientDbDir)) {
+    fs.mkdirSync(clientDbDir, { recursive: true });
   }
 
   // 延迟加载 better-sqlite3，避免未安装时启动失败
@@ -59,73 +73,19 @@ function getDatabase(convDir: string): any {
 }
 
 /**
- * 检查并执行 JSON -> SQLite 迁移
- */
-function migrateIfNeeded(convDir: string): void {
-  const jsonPath = path.join(convDir, JSON_FILE);
-  const dbPath = path.join(convDir, DB_FILE);
-
-  // 已迁移或无 JSON 文件
-  if (!fs.existsSync(jsonPath) || fs.existsSync(dbPath)) {
-    return;
-  }
-
-  try {
-    // 读取 JSON
-    const content = fs.readFileSync(jsonPath, 'utf-8');
-    const data = JSON.parse(content) as { messages: IChatMessage[] };
-
-    if (!data.messages || data.messages.length === 0) {
-      // 空文件，直接备份
-      fs.renameSync(jsonPath, jsonPath + '.bak');
-      console.log(`[chat-messages] ✅ 空 JSON 文件已备份: ${jsonPath}.bak`);
-      return;
-    }
-
-    // 批量插入到 SQLite
-    const db = getDatabase(convDir);
-    const insert = db.prepare(`
-      INSERT INTO messages (id, conversation_id, role, content, sender_staff_id, sender_nick, source, timestamp, attachments, quote)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const insertMany = db.transaction((messages: IChatMessage[]) => {
-      for (const msg of messages) {
-        insert.run(
-          msg.id,
-          convDir,
-          msg.role,
-          msg.content,
-          msg.senderStaffId || null,
-          msg.senderNick || null,
-          msg.source,
-          msg.timestamp,
-          msg.attachments ? JSON.stringify(msg.attachments) : null,
-          msg.quote ? JSON.stringify(msg.quote) : null,
-        );
-      }
-    });
-
-    insertMany(data.messages);
-
-    // 迁移成功，备份原文件
-    fs.renameSync(jsonPath, jsonPath + '.bak');
-    console.log(`[chat-messages] ✅ 已迁移 ${data.messages.length} 条消息到 SQLite: ${dbPath}`);
-  } catch (err) {
-    console.error('[chat-messages] ❌ 迁移失败，保留原 JSON 文件:', err);
-    // 迁移失败，不删除原文件
-  }
-}
-
-/**
  * 追加消息到数据库
+ * @param clientId 客户端ID，用于定位数据库文件
+ * @param conversationId 会话ID，用于区分不同会话的消息
+ * @param msg 消息对象
  * @param opts.replaceLastAssistant 如果为 true，替换最后一条 assistant 消息（用于 web 会话避免重试导致重复）
  */
-export function appendChatMessage(convDir: string, msg: IChatMessage, opts?: { replaceLastAssistant?: boolean }): void {
-  // 自动迁移
-  migrateIfNeeded(convDir);
-
-  const db = getDatabase(convDir);
+export function appendChatMessage(
+  clientId: string,
+  conversationId: string,
+  msg: IChatMessage,
+  opts?: { replaceLastAssistant?: boolean },
+): void {
+  const db = getDatabase(clientId);
 
   // replaceLastAssistant 逻辑
   if (opts?.replaceLastAssistant && msg.role === 'assistant') {
@@ -133,7 +93,7 @@ export function appendChatMessage(convDir: string, msg: IChatMessage, opts?: { r
       SELECT id, timestamp FROM messages
       WHERE conversation_id = ? AND role = 'assistant' AND source = 'web'
       ORDER BY timestamp DESC LIMIT 1
-    `).get(convDir) as any;
+    `).get(conversationId) as any;
 
     if (lastMsg && Math.abs(msg.timestamp - lastMsg.timestamp) < 10000) {
       db.prepare(`
@@ -149,7 +109,7 @@ export function appendChatMessage(convDir: string, msg: IChatMessage, opts?: { r
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     msg.id,
-    convDir,
+    conversationId,
     msg.role,
     msg.content,
     msg.senderStaffId || null,
@@ -161,17 +121,21 @@ export function appendChatMessage(convDir: string, msg: IChatMessage, opts?: { r
   );
 }
 
+/**
+ * 读取会话消息
+ * @param clientId 客户端ID，用于定位数据库文件
+ * @param conversationId 会话ID，用于查询特定会话的消息
+ * @param opts 查询选项
+ */
 export function readChatMessages(
-  convDir: string,
+  clientId: string,
+  conversationId: string,
   opts?: { since?: number; limit?: number },
 ): IChatMessage[] {
-  // 自动迁移
-  migrateIfNeeded(convDir);
-
-  const db = getDatabase(convDir);
+  const db = getDatabase(clientId);
 
   let sql = 'SELECT * FROM messages WHERE conversation_id = ?';
-  const params: any[] = [ convDir ];
+  const params: any[] = [ conversationId ];
 
   if (opts?.since !== undefined) {
     sql += ' AND timestamp > ?';
@@ -203,8 +167,9 @@ export function readChatMessages(
 /**
  * 关闭数据库连接（用于测试或清理）
  */
-export function closeDatabase(convDir: string): void {
-  const dbPath = path.join(convDir, DB_FILE);
+export function closeDatabase(clientId: string): void {
+  const clientDbDir = getClientDbDir(clientId);
+  const dbPath = path.join(clientDbDir, DB_FILE);
   if (dbCache.has(dbPath)) {
     const db = dbCache.get(dbPath);
     db.close();

@@ -2685,7 +2685,7 @@ async function handleChatSend(
     }
 
     const messageId = crypto.randomUUID();
-    appendChatMessage(convDir, {
+    appendChatMessage(clientId, convId, {
       id: messageId,
       role: 'user',
       content: message || '',
@@ -2718,13 +2718,10 @@ async function handleChatMessages(
       return;
     }
 
-    const convHash = crypto.createHash('md5').update(convId).digest('hex');
-    const convDir = path.join(clientDir, convHash);
-
     const since = query.get('since') ? Number(query.get('since')) : undefined;
     const limit = query.get('limit') ? Number(query.get('limit')) : undefined;
 
-    const messages = readChatMessages(convDir, { since, limit });
+    const messages = readChatMessages(clientId, convId, { since, limit });
     jsonResponse(res, 200, { messages, hasMore: false });
   } catch (err) {
     jsonError(res, 500, `读取消息失败: ${err instanceof Error ? err.message : String(err)}`);

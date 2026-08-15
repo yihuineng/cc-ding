@@ -295,7 +295,7 @@ export async function sendDingMessage(self: DingClaude, opts: ISendMsgOpts): Pro
       if (!fs.existsSync(convDir)) {
         fs.mkdirSync(convDir, { recursive: true });
       }
-      appendChatMessage(convDir, {
+      appendChatMessage(self.clientId, conversationId, {
         id: crypto.randomUUID(),
         role: 'assistant',
         content,
@@ -420,7 +420,7 @@ export async function sendClaudeResponseToDing(
       if (!fs.existsSync(convDir)) {
         fs.mkdirSync(convDir, { recursive: true });
       }
-      appendChatMessage(convDir, {
+      appendChatMessage(self.clientId, conversationId, {
         id: crypto.randomUUID(),
         role: 'assistant',
         content: filteredContent,
