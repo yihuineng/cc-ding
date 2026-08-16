@@ -107,6 +107,12 @@ export const api = {
       method: 'DELETE',
     }),
 
+  starConversation: (clientId: string, convId: string, starred: boolean) =>
+    request(`/api/clients/${enc(clientId)}/conversations/${enc(convId)}/star`, {
+      method: 'POST',
+      body: JSON.stringify({ starred }),
+    }),
+
   // ── API Keys ──
   getApiKeys: (clientId: string) =>
     request<{ keys: IApiKey[] }>(`/api/clients/${enc(clientId)}/apikeys`),

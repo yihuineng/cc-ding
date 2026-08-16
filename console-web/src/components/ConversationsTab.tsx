@@ -150,6 +150,22 @@ export default function ConversationsTab({ clientId, conversations, onRefresh }:
                   <Space size={4} style={{ flexShrink: 0 }}>
                     <Button
                       size="small"
+                      type={conv.starred ? 'primary' : 'default'}
+                      icon={<span style={{ fontSize: 16 }}>{conv.starred ? '⭐' : '☆'}</span>}
+                      onClick={async (e) => {
+                        e.stopPropagation()
+                        try {
+                          await api.starConversation(clientId, conv.conversationId, !conv.starred)
+                          message.success(conv.starred ? '已取消收藏' : '已收藏')
+                          onRefresh()
+                        } catch (e: any) {
+                          message.error(e.message || '操作失败')
+                        }
+                      }}
+                      style={{ padding: '0 8px' }}
+                    />
+                    <Button
+                      size="small"
                       onClick={(e) => {
                         e.stopPropagation()
                         navigate(`/client/${clientId}/chat/${encodeURIComponent(conv.conversationId)}`)

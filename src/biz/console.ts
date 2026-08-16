@@ -1008,6 +1008,38 @@ async function handleUpdateConversation(req: http.IncomingMessage, res: http.Ser
   }
 }
 
+/** POST /api/clients/:id/conversations/:convId/star — 标星/取消标星会话 */
+async function handleStarConversation(req: http.IncomingMessage, res: http.ServerResponse, clientId: string, convId: string): Promise<void> {
+  if (!requireAuth(req, res)) return;
+
+  const configPath = path.join(getHomeDir(), '.cc-ding', clientId, 'config.json');
+  if (!fs.existsSync(configPath)) {
+    jsonError(res, 404, '客户端配置不存在');
+    return;
+  }
+
+  try {
+    const body = await readBody(req);
+    const data = JSON.parse(body || '{}');
+    const starred = data.starred === true;
+    const config = fileUtil.getJSON(configPath) as IConfig;
+
+    const idx = config.conversations?.findIndex(c => c.conversationId === convId) ?? -1;
+    if (idx < 0) {
+      jsonError(res, 404, '会话不存在');
+      return;
+    }
+
+    (config.conversations![idx] as any).starred = starred;
+
+    backupFile(configPath);
+    atomicWrite(configPath, JSON.stringify(config, null, 2));
+    jsonResponse(res, 200, { message: starred ? '已收藏' : '已取消收藏', starred });
+  } catch (err) {
+    jsonError(res, 400, '请求格式错误');
+  }
+}
+
 /** DELETE /api/clients/:id/conversations/:convId — 删除会话 */
 async function handleDeleteConversation(req: http.IncomingMessage, res: http.ServerResponse, clientId: string, convId: string): Promise<void> {
   if (!requireAuth(req, res)) return;
@@ -2929,6 +2961,7 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   const clientIdMatch = pathname.match(/^\/api\/clients\/([^\/]+)$/);
   const clientConvMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations$/);
   const clientConvIdMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/(.+)$/);
+  const clientConvStarMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/([^\/]+)\/star$/);
   const clientConvChatMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/([^\/]+)\/chat$/);
   const clientConvMessagesMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/([^\/]+)\/messages$/);
   const clientConvChatStatusMatch = pathname.match(/^\/api\/clients\/([^\/]+)\/conversations\/([^\/]+)\/chat\/status$/);
@@ -3445,6 +3478,12 @@ async function handleApiRequest(req: http.IncomingMessage, res: http.ServerRespo
   // DELETE /api/clients/:id/conversations/:convId
   if (clientConvIdMatch && req.method === 'DELETE') {
     await handleDeleteConversation(req, res, clientConvIdMatch[1], decodeURIComponent(clientConvIdMatch[2]));
+    return;
+  }
+
+  // POST /api/clients/:id/conversations/:convId/star
+  if (clientConvStarMatch && req.method === 'POST') {
+    await handleStarConversation(req, res, clientConvStarMatch[1], decodeURIComponent(clientConvStarMatch[2]));
     return;
   }
 

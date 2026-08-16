@@ -7,6 +7,7 @@ import { api } from '../api/client'
 import { IConfig } from '../types'
 import ConfigTab from '../components/ConfigTab'
 import ConversationsTab from '../components/ConversationsTab'
+import StarredTab from '../components/StarredTab'
 import KeysTab from '../components/KeysTab'
 import FilesTab from '../components/FilesTab'
 import EnvTab from '../components/EnvTab'
@@ -137,6 +138,17 @@ export default function ClientDetail() {
             label: '💬 会话',
             children: (
               <ConversationsTab
+                clientId={clientId!}
+                conversations={config.conversations || []}
+                onRefresh={loadConfig}
+              />
+            ),
+          },
+          {
+            key: 'starred',
+            label: `⭐ 收藏 (${(config.conversations || []).filter(c => c.starred).length})`,
+            children: (
+              <StarredTab
                 clientId={clientId!}
                 conversations={config.conversations || []}
                 onRefresh={loadConfig}

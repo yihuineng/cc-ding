@@ -58,6 +58,8 @@ export interface IConversation {
   taskCfg?: { skill?: string }
   /** 团队协作 Agent 列表（clientId:conversationId 格式） */
   teamAgents?: string[]
+  /** 是否已收藏 */
+  starred?: boolean
 }
 
 export interface IApiKey {
