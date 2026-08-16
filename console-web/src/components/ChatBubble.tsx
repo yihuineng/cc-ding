@@ -1,6 +1,8 @@
 import React from 'react';
 import { Avatar, Tooltip } from 'antd';
 import { UserOutlined, RobotOutlined, FileOutlined } from '@ant-design/icons';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { IChatMessage } from '../types';
 
 interface ChatBubbleProps {
@@ -106,12 +108,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message }) => {
             backgroundColor: '#1677ff',
             color: '#fff',
             wordBreak: 'break-word',
-            whiteSpace: 'pre-wrap',
             fontSize: 14,
             lineHeight: 1.6,
             boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
-          }}>
-            {message.content}
+          }} className="markdown-content">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              {message.content}
+            </ReactMarkdown>
           </div>
           {message.attachments && message.attachments.length > 0 && (
             <AttachmentDisplay attachments={message.attachments} />
@@ -150,12 +153,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message }) => {
           color: '#d4dce6',
           border: '1px solid #2d3d4f',
           wordBreak: 'break-word',
-          whiteSpace: 'pre-wrap',
           fontSize: 14,
           lineHeight: 1.6,
           boxShadow: '0 1px 2px rgba(0,0,0,0.2)',
-        }}>
-          {message.content}
+        }} className="markdown-content">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {message.content}
+          </ReactMarkdown>
         </div>
         {message.attachments && message.attachments.length > 0 && (
           <AttachmentDisplay attachments={message.attachments} />
