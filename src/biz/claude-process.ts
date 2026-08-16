@@ -685,66 +685,31 @@ function buildContextContent(self: DingClaude, conversationId: string): string {
 }
 
 /**
- * 从 CLAUDE.md 内容生成 AGENTS.md 内容（去除 HTML 注释标记）。
- * 确保两者内容一致，仅格式不同。
- */
-function deriveAgentsContentFromClaude(claudeContent: string): string {
-  return claudeContent
-    .replace(/<!-- cc-ding:session-context-start \(DO NOT EDIT\) -->\n?/g, '')
-    .replace(/<!-- cc-ding:session-context-end \(DO NOT EDIT\) -->\n?/g, '')
-    .trim() + '\n';
-}
-
-/**
  * 将 cc-ding 上下文写入 Codex 的 AGENTS.md 文件。
- * 直接从 CLAUDE.md 派生内容，确保一致性。
+ * 使用符号链接指向 CLAUDE.md，确保内容完全一致。
  */
 function writeCodexContext(self: DingClaude, conversationId: string): void {
   const dingGroupDir = self.getConversationDir(conversationId);
   const agentsMdPath = path.join(dingGroupDir, 'AGENTS.md');
   const claudeMdPath = path.join(dingGroupDir, '.claude', 'CLAUDE.md');
 
-  // 从 CLAUDE.md 读取内容并派生 AGENTS.md 内容
+  // 检查 CLAUDE.md 是否存在
   if (!fs.existsSync(claudeMdPath)) {
     console.log(`[${timestamp()}] CLAUDE.md 不存在，跳过 AGENTS.md 写入: ${claudeMdPath}`);
     return;
   }
 
-  const claudeContent = fs.readFileSync(claudeMdPath, 'utf-8');
-  const agentsContent = deriveAgentsContentFromClaude(claudeContent);
+  // 计算相对路径（从 AGENTS.md 到 CLAUDE.md）
+  const relativePath = path.relative(dingGroupDir, claudeMdPath);
 
-  if (!fs.existsSync(agentsMdPath)) {
-    fs.writeFileSync(agentsMdPath, agentsContent, 'utf-8');
-    console.log(`[${timestamp()}] cc-ding 上下文已注入 AGENTS.md: ${agentsMdPath}`);
-    return;
+  // 如果 AGENTS.md 已存在，先删除
+  if (fs.existsSync(agentsMdPath) || fs.lstatSync(agentsMdPath).isSymbolicLink()) {
+    fs.unlinkSync(agentsMdPath);
   }
 
-  const existing = fs.readFileSync(agentsMdPath, 'utf-8');
-  const newSectionHeader = '# cc-ding Session Context';
-
-  if (existing.includes(newSectionHeader)) {
-    // 已存在，替换整个 cc-ding 段落
-    const lines = existing.split('\n');
-    let startLine = -1;
-    let endLine = lines.length;
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].trim() === newSectionHeader) {
-        startLine = i;
-      } else if (startLine >= 0 && lines[i].match(/^#{1,2} /) && !lines[i].includes('Client') && !lines[i].includes('Conversation') && !lines[i].includes('DingTalk') && !lines[i].includes('A2A') && !lines[i].includes('团队协作') && !lines[i].includes('后台任务')) {
-        endLine = i;
-        break;
-      }
-    }
-    if (startLine >= 0) {
-      const before = lines.slice(0, startLine).join('\n');
-      const after = lines.slice(endLine).join('\n');
-      fs.writeFileSync(agentsMdPath, [ before, agentsContent, after ].filter(Boolean).join('\n'), 'utf-8');
-      console.log(`[${timestamp()}] cc-ding 上下文已更新: ${agentsMdPath}`);
-    }
-  } else {
-    fs.writeFileSync(agentsMdPath, agentsContent + '\n' + existing, 'utf-8');
-    console.log(`[${timestamp()}] cc-ding 上下文已追加到现有 AGENTS.md: ${agentsMdPath}`);
-  }
+  // 创建符号链接
+  fs.symlinkSync(relativePath, agentsMdPath);
+  console.log(`[${timestamp()}] AGENTS.md 已链接到 CLAUDE.md: ${agentsMdPath} -> ${relativePath}`);
 }
 function writeContextToFile(self: DingClaude, conversationId: string, newSection: string): void {
   const dingGroupDir = self.getConversationDir(conversationId);
