@@ -67,7 +67,7 @@ import { appendChatMessage } from './chat-messages';
 import { initModelOptions, loadModelOptions, addModelOptions, removeModelOptions, resolveCurrentModel, setConversationModel } from './model';
 import { commandExists, isWindows, isWindowsPlatform, spawnCommand } from './platform';
 import { isOldMessage, messageDedup, bounceDedup, PROCESS_START_TIME } from './dedup';
-import { checkForUpdates } from './version-check';
+import { checkForUpdates, formatVersionInfo } from './version-check';
 
 /** 工具版本号 */
 const TOOL_VERSION = projUtil().getPkgVersion();
@@ -1054,49 +1054,41 @@ export class DingClaude {
 
       // /version 命令
       route('/version', () => parseVersionCommand(prompt), async () => {
+        let claudeCliVersion = '未安装';
         try {
-          const pkgPath = path.join(__dirname, '../../../package.json');
-          const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-
-          // 检查 claude 和 codex 版本
-          let claudeVersion = '未安装';
-          let codexVersion = '未安装';
-
-          try {
-            const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
-              childExec('claude --version', { timeout: 5000 }, (err, stdout) => {
-                if (err) reject(err);
-                else resolve({ stdout });
-              });
+          const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+            childExec('claude --version', { timeout: 5000 }, (err, stdout) => {
+              if (err) reject(err);
+              else resolve({ stdout });
             });
-            claudeVersion = (stdout.trim() || '未知').replace(/\s*\(.*\)\s*$/, '');
-          } catch { /* ignore */ }
+          });
+          claudeCliVersion = (stdout.trim() || '未知').replace(/\s*\(.*\)\s*$/, '');
+        } catch { /* ignore */ }
 
-          try {
-            const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
-              childExec('codex --version', { timeout: 5000 }, (err, stdout) => {
-                if (err) reject(err);
-                else resolve({ stdout });
-              });
+        let codexVersion = '未安装';
+        try {
+          const { stdout } = await new Promise<{ stdout: string }>((resolve, reject) => {
+            childExec('codex --version', { timeout: 5000 }, (err, stdout) => {
+              if (err) reject(err);
+              else resolve({ stdout });
             });
-            codexVersion = stdout.trim() || '未知';
-          } catch { /* ignore */ }
+          });
+          codexVersion = stdout.trim() || '未知';
+        } catch { /* ignore */ }
 
-          const versionInfo = [
-            `📦 **cc-ding** v${pkg.version}`,
-            ``,
-            `**运行环境**`,
-            `- **claude:** ${claudeVersion}`,
-            `- **codex:** ${codexVersion}`,
-            `- **os:** ${os.hostname()} ${os.platform()} ${os.release()}`,
-            `- **node:** ${process.version}`,
-            `- **model:** ${conversationConfig.model || this.config.model || '(默认)'}`,
-          ].join('\n');
+        const versionInfo = formatVersionInfo();
+        const envInfo = [
+          '',
+          '---',
+          `- **claude:** ${claudeCliVersion}`,
+          `- **codex:** ${codexVersion}`,
+          `- **os:** ${os.hostname()} ${os.platform()} ${os.release()}`,
+          `- **node:** ${process.version}`,
+          `- **cardTemplateId:** ${this.config.cardTemplateId || '(未配置)'}`,
+          `- **model:** ${conversationConfig.model || this.config.model || '(默认)'}`,
+        ].join('\n');
 
-          await replyFn(versionInfo);
-        } catch {
-          await replyFn(`📦 **cc-ding**\n\n🚀 DingTalk AI Agent Framework`);
-        }
+        await replyFn(versionInfo + envInfo);
       }),
 
       // /info 命令

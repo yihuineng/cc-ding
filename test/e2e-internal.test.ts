@@ -261,7 +261,7 @@ describe('E2E: 内部消息链路测试', () => {
       const hasInfo = texts.some(t =>
         t.includes('配置') || t.includes('config') ||
         t.includes('机器人信息') || t.includes('Client ID') ||
-        t.includes('Owner') || t.includes('模型')
+        t.includes('Owner') || t.includes('模型'),
       );
       assert(hasInfo, `应该返回配置或机器人信息，实际: ${texts.join(' | ').substring(0, 200)}`);
     });
