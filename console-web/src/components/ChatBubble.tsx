@@ -104,7 +104,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message }) => {
           </div>
           <div style={{
             padding: '10px 14px',
-            borderRadius: '16px 16px 4px 16px',
+            borderRadius: '16px 4px 16px 16px',
             backgroundColor: '#1677ff',
             color: '#fff',
             wordBreak: 'break-word',
@@ -148,7 +148,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message }) => {
         </div>
         <div style={{
           padding: '10px 14px',
-          borderRadius: '16px 16px 16px 4px',
+          borderRadius: '4px 16px 16px 16px',
           backgroundColor: '#262626',
           color: '#d4dce6',
           border: '1px solid #2d3d4f',
