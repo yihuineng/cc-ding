@@ -1034,22 +1034,8 @@ export class DingClaude {
     const routes: ICommandRoute[] = [
       // /help 命令
       route('/help', () => parseHelpCommand(prompt), async () => {
-        const helpText = [
-          '**会话管理**',
-          '/new [消息] - 创建新会话',
-          '/end - 结束当前会话',
-          '',
-          '**信息查询**',
-          '/help - 显示此帮助信息',
-          '/info [session|robot] - 显示会话或机器人信息',
-          '/version - 显示版本信息',
-          '/model [list|模型名] - 查看或切换模型',
-          '',
-          '**配置管理**',
-          '/cfg - 配置群设置',
-          '/auth - 白名单管理',
-        ].join('\n');
-        await replyFn(`📖 **可用命令列表**\n\n${helpText}`);
+        const helpText = formatHelpOverview(TOOL_VERSION, this.isOwnerOrAdmin(senderStaffId));
+        await replyFn(helpText);
       }),
 
       // /version 命令
@@ -1673,14 +1659,7 @@ export class DingClaude {
 
       // 帮助类命令：未注册群也可查看
       // /help 命令：查看所有可用命令
-      route('/help', () => parseHelpCommand(prompt), async () => {
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: formatHelpOverview(TOOL_VERSION, this.isOwnerOrAdmin(senderStaffId)),
-          msgType: 'markdown',
-        });
-      }),
+      // /help 命令已移到统一的 handleCommands 方法中
 
       // /version 命令已移到统一的 handleCommands 方法中
 
