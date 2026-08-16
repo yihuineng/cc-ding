@@ -1079,56 +1079,84 @@ export class DingClaude {
 
       // /info 命令
       route('/info', () => parseInfoCommand(prompt), async (infoType) => {
-        if (infoType === 'session') {
-          const session = this.activeSessions.get(conversationId);
-          if (!session) {
-            await replyFn('⚠️ 当前没有活跃的会话');
-            return;
-          }
-          const info = [
-            `**会话信息**`,
-            `- **会话ID**: ${session.session.agentSessionId || 'N/A'}`,
-            `- **开始时间**: ${session.session.startTimeStr}`,
-            `- **发起者**: ${session.session.startNickName}`,
-            `- **来源**: ${session.session.replySource || 'ding'}`,
-            `- **处理中**: ${session.isProcessing ? '是' : '否'}`,
-          ].join('\n');
-          await replyFn(info);
-        } else {
-          const info = [
-            `**机器人信息**`,
-            `- **Client ID**: ${this.clientId}`,
-            `- **Owner**: ${this.config.owner}`,
-            `- **模型**: ${this.config.model || '默认'}`,
-            `- **活跃会话数**: ${this.activeSessions.size}`,
-          ].join('\n');
-          await replyFn(info);
+        const parts: string[] = [];
+        const workDir = this.getConversationDir(conversationId);
+        if (infoType === 'all' || infoType === 'robot') {
+          parts.push('### 🌐 全局核心配置\n' + formatGlobalConfig(this.config, this.getApiKeyCfg()));
+          parts.push('### 🤖 群配置信息\n' + formatConversationInfo(conversationConfig, conversationId, (uid) => userIdToPhone(this, uid), workDir));
         }
+        if (infoType === 'all' || infoType === 'session') {
+          const sessionInfo = this.formatSessionInfo(conversationId);
+          if (sessionInfo) {
+            parts.push('### 💬 当前会话信息\n' + sessionInfo);
+          } else {
+            parts.push('### 💬 当前会话信息\n无活跃会话');
+          }
+        }
+        if (infoType === 'all' || infoType === 'task') {
+          parts.push('### 📝 任务队列信息\n' + this.formatTaskInfo());
+        }
+        await replyFn(parts.join('\n\n'));
       }),
 
       // /model 命令
       route('/model', () => parseModelCommand(prompt), async (modelOpts) => {
-        const models = this.config.apiKeyCfg?.modelSettings || [];
+        if (!(await requireOwnerOrAdmin())) return;
+
+        const models = loadModelOptions(this);
+        const currentModel = resolveCurrentModel(this, conversationId);
+        const globalModel = this.config.model || '(未设置)';
+        const convModel = conversationConfig?.model;
 
         if (modelOpts.action === 'list') {
-          const list = models.map((m, i) => {
-            const current = m.model === (conversationConfig.model || this.config.model) ? ' ✅' : '';
-            return `${i + 1}. ${m.model}${current}`;
-          }).join('\n');
-          await replyFn(`🤖 **可用模型**\n\n${list}\n\n💡 使用 \`/model <模型名>\` 切换`);
-        } else if (modelOpts.action === 'set' && modelOpts.model) {
-          if (!(await requireOwnerOrAdmin())) return;
-          const target = models.find(m => m.model === modelOpts.model);
-          if (!target) {
-            await replyFn(`❌ 模型 ${modelOpts.model} 不存在`);
+          const lines = [
+            '###  模型设置',
+            '',
+            `- **当前生效模型:** ${currentModel || '(默认)'}`,
+            `- **会话级 model:** ${convModel || '(未设置)'}`,
+            `- **全局 model:** ${globalModel}`,
+            '',
+            '**可用模型列表:**',
+          ];
+          for (const m of models) {
+            const marker = m === currentModel ? ' ✅' : '';
+            lines.push(`- \`${m}\`${marker}`);
+          }
+          lines.push('');
+          lines.push('💡 使用 `/model <model-name>` 切换当前会话模型');
+          lines.push('💡 使用 `/model add <model-name>` 添加自定义模型');
+          lines.push('💡 使用 `/model rm <model-name>` 从列表移除模型');
+          await replyFn(lines.join('\n'));
+        } else if (modelOpts.action === 'set') {
+          setConversationModel(this, conversationId, modelOpts.model);
+          await replyFn(`✅ 已设置当前会话模型为: \`${modelOpts.model}\`\n\n💡 仅影响后续新建的 Agent 会话`);
+        } else if (modelOpts.action === 'add') {
+          const updated = addModelOptions(this, [ modelOpts.model ]);
+          const lines = [
+            `✅ 已添加模型: \`${modelOpts.model}\``,
+            '',
+            '**当前可用模型:**',
+          ];
+          for (const m of updated) {
+            lines.push(`- \`${m}\``);
+          }
+          await replyFn(lines.join('\n'));
+        } else if (modelOpts.action === 'remove') {
+          const presetModels = [ 'claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-haiku-4-20251001' ];
+          if (presetModels.includes(modelOpts.model)) {
+            await replyFn(`❌ 无法移除预设模型: \`${modelOpts.model}\``);
             return;
           }
-          conversationConfig.model = target.model;
-          saveClientConfig(this);
-          await replyFn(`✅ 已切换模型为: **${target.model}**`);
-        } else {
-          const current = conversationConfig.model || this.config.model || '默认';
-          await replyFn(`🤖 当前模型: **${current}**\n\n💡 使用 \`/model list\` 查看可用模型`);
+          const updated = removeModelOptions(this, [ modelOpts.model ]);
+          const lines = [
+            `✅ 已移除模型: \`${modelOpts.model}\``,
+            '',
+            '**当前可用模型:**',
+          ];
+          for (const m of updated) {
+            lines.push(`- \`${m}\``);
+          }
+          await replyFn(lines.join('\n'));
         }
       }),
     ];
@@ -2584,85 +2612,7 @@ export class DingClaude {
       }),
 
       // /model 命令：查看或切换当前会话使用的模型
-      route('/model', () => parseModelCommand(prompt), async modelCmd => {
-        if (!(await this.requireOwnerOrAdmin(conversationId, sessionWebhook, senderStaffId))) return;
-
-        const models = loadModelOptions(this);
-        const currentModel = resolveCurrentModel(this, conversationId);
-        const globalModel = this.config.model || '(未设置)';
-        const convModel = conversationConfig?.model;
-
-        if (modelCmd.action === 'list') {
-          const lines = [
-            '###  模型设置',
-            '',
-            `- **当前生效模型:** ${currentModel || '(默认)'}`,
-            `- **会话级 model:** ${convModel || '(未设置)'}`,
-            `- **全局 model:** ${globalModel}`,
-            '',
-            '**可用模型列表:**',
-          ];
-          for (const m of models) {
-            const marker = m === currentModel ? ' ✅' : '';
-            lines.push(`- \`${m}\`${marker}`);
-          }
-          lines.push('');
-          lines.push('💡 使用 `/model <model-name>` 切换当前会话模型');
-          lines.push('💡 使用 `/model add <model-name>` 添加自定义模型');
-          lines.push('💡 使用 `/model rm <model-name>` 从列表移除模型');
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: lines.join('\n'),
-            msgType: 'markdown',
-          });
-        } else if (modelCmd.action === 'set') {
-          setConversationModel(this, conversationId, modelCmd.model);
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: `✅ 已设置当前会话模型为: \`${modelCmd.model}\`\n\n💡 仅影响后续新建的 Agent 会话`,
-            msgType: 'markdown',
-          });
-        } else if (modelCmd.action === 'add') {
-          const updated = addModelOptions(this, [ modelCmd.model ]);
-          const lines = [
-            `✅ 已添加模型: \`${modelCmd.model}\``,
-            '',
-            '**当前可用模型:**',
-          ];
-          for (const m of updated) {
-            lines.push(`- \`${m}\``);
-          }
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: lines.join('\n'),
-            msgType: 'markdown',
-          });
-        } else if (modelCmd.action === 'remove') {
-          const presetModels = [ 'claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-haiku-4-20251001' ];
-          if (presetModels.includes(modelCmd.model)) {
-            await this.sendDingMessage({
-              conversationId, sessionWebhook,
-              content: `❌ 无法移除预设模型: \`${modelCmd.model}\``,
-              msgType: 'markdown',
-            });
-            return;
-          }
-          const updated = removeModelOptions(this, [ modelCmd.model ]);
-          const lines = [
-            `✅ 已移除模型: \`${modelCmd.model}\``,
-            '',
-            '**当前可用模型:**',
-          ];
-          for (const m of updated) {
-            lines.push(`- \`${m}\``);
-          }
-          await this.sendDingMessage({
-            conversationId, sessionWebhook,
-            content: lines.join('\n'),
-            msgType: 'markdown',
-          });
-        }
-      }),
+      // /model 命令已移到统一的 handleCommands 方法中
 
       // /todo 命令：待办管理
       route('/todo', () => parseTodoCommand(prompt, rawData.atUsers), async todoCmd => {
@@ -2821,31 +2771,7 @@ export class DingClaude {
       }),
 
       // /info 命令：查看群配置和会话信息
-      route('/info', () => parseInfoCommand(prompt), async infoType => {
-        const parts: string[] = [];
-        const workDir = this.getConversationDir(conversationId);
-        if (infoType === 'all' || infoType === 'robot') {
-          parts.push('### 🌐 全局核心配置\n' + formatGlobalConfig(this.config, this.getApiKeyCfg()));
-          parts.push('### 🤖 群配置信息\n' + formatConversationInfo(conversationConfig, conversationId, (uid) => userIdToPhone(this, uid), workDir));
-        }
-        if (infoType === 'all' || infoType === 'session') {
-          const sessionInfo = this.formatSessionInfo(conversationId);
-          if (sessionInfo) {
-            parts.push('### 💬 当前会话信息\n' + sessionInfo);
-          } else {
-            parts.push('### 💬 当前会话信息\n无活跃会话');
-          }
-        }
-        if (infoType === 'all' || infoType === 'task') {
-          parts.push('### 📝 任务队列信息\n' + this.formatTaskInfo());
-        }
-        await this.sendDingMessage({
-          conversationId,
-          sessionWebhook,
-          content: parts.join('\n\n'),
-          msgType: 'markdown',
-        });
-      }),
+      // /info 命令已移到统一的 handleCommands 方法中
 
       // /ls 命令：查看目录结构
       route('/ls', () => parseLsCommand(prompt), async lsParsed => {
