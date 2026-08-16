@@ -43,6 +43,7 @@ export default function ConversationsTab({ clientId, conversations, onRefresh }:
 
   const filtered = useMemo(() => {
     if (filterType === 'all') return conversations
+    if (filterType === 'starred') return conversations.filter(c => c.starred)
     return conversations.filter(c => c.conversationType === filterType)
   }, [conversations, filterType])
 
@@ -93,6 +94,7 @@ export default function ConversationsTab({ clientId, conversations, onRefresh }:
     all: conversations.length,
     '2': conversations.filter(c => c.conversationType === '2').length,
     '1': conversations.filter(c => c.conversationType === '1').length,
+    starred: conversations.filter(c => c.starred).length,
   }), [conversations])
 
   return (
@@ -105,6 +107,7 @@ export default function ConversationsTab({ clientId, conversations, onRefresh }:
           style={{ marginBottom: 0 }}
           items={[
             { key: 'all', label: `全部 (${convCounts.all})` },
+            { key: 'starred', label: `⭐ 收藏 (${convCounts.starred})` },
             { key: '2', label: `群聊 (${convCounts['2']})` },
             { key: '1', label: `单聊 (${convCounts['1']})` },
           ]}
